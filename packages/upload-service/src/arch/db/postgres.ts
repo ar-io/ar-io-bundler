@@ -20,6 +20,7 @@ import winston from "winston";
 
 import {
   batchingSize,
+  defaultDeadlineHeight,
   failedReasons,
   maxDataItemsPerBundle,
   retryLimitForFailedDataItems,
@@ -1448,6 +1449,22 @@ export class PostgresDatabase implements Database {
       createdAt: row.created_at,
       settledAt: row.settled_at,
     }));
+  }
+
+  public async updatePlannedDataItemsToDefaultDeadlineHeight(
+    dataItemIds: DataItemId[]
+  ): Promise<void> {
+    this.log.info("Updating planned data items to default deadline height...", {
+      dataItemIds,
+    });
+
+    await this.writer.transaction(async (knexTransaction) => {
+      await knexTransaction(tableNames.plannedDataItem)
+        .whereIn(columnNames.dataItemId, dataItemIds)
+        .update({
+          deadline_height: defaultDeadlineHeight,
+        });
+    });
   }
 }
 

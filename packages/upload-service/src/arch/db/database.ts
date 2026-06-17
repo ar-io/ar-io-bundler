@@ -213,6 +213,10 @@ export interface Database {
 
   /** Check if data item IDs already exist in the database (across all tables) */
   getExistingDataItemIds(dataItemIds: TransactionId[]): Promise<Set<TransactionId>>;
+
+  updatePlannedDataItemsToDefaultDeadlineHeight(
+    dataItemIds: DataItemId[]
+  ): Promise<void>;
 }
 
 export type UpdateDataItemsToPermanentParams = {

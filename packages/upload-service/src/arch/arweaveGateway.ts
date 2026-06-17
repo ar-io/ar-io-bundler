@@ -358,6 +358,15 @@ async function getCurrentBlockInfoViaGraphQL({
         blockHeight,
         timestamp,
       });
+
+      if (!blockHeight || !timestamp) {
+        logger.error("Invalid block info shape returned from GQL", {
+          blockHeight,
+          timestamp,
+          response: statusResponse.data,
+        });
+        throw Error("Failed to fetch block info via gql");
+      }
       return {
         blockHeight,
         timestamp,
