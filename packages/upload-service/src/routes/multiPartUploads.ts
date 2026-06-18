@@ -37,6 +37,7 @@ import {
   fastFinalityIndexes,
   jobLabels,
   multipartChunkMaxSize,
+  maxSingleDataItemByteCount,
   multipartChunkMinSize,
   multipartDefaultChunkSize,
   receiptVersion,
@@ -930,6 +931,20 @@ export async function finalizeMPUWithInFlightEntity({
     .getPayloadSize()
     .catch(cleanUpDataItemStreamAndThrow);
   const rawDataItemByteCount = payloadDataStart + payloadDataByteCount;
+
+  // Reject items larger than the single-shot ingest limit — the multipart
+  // finalize path must enforce the same ceiling as direct data-item posts,
+  // otherwise a client can assemble an oversized item via multipart.
+  if (rawDataItemByteCount > maxSingleDataItemByteCount) {
+    fnLogger.error("Data item exceeds maximum allowed size", {
+      rawDataItemByteCount,
+      maxSingleDataItemByteCount,
+    });
+    dataItemReadable.destroy();
+    throw new InvalidDataItem(
+      `Data item is too large (${rawDataItemByteCount} bytes). Maximum allowed is ${maxSingleDataItemByteCount} bytes.`
+    );
+  }
 
   // end the stream
   dataItemReadable.destroy();
