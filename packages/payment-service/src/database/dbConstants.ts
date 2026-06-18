@@ -57,6 +57,7 @@ export const columnNames = {
   userCreationDate: "user_creation_date",
   winstonCreditBalance: "winston_credit_balance",
   promotionalInfo: "promotional_info",
+  walletLabels: "wallet_labels",
 
   // Top up quote
   topUpQuoteId: "top_up_quote_id",
@@ -70,6 +71,7 @@ export const columnNames = {
   quoteCreationDate: "quote_creation_date",
   paymentProvider: "payment_provider",
   giftMessage: "gift_message", // Optional gift message, ignored in non-gift top-ups for now
+  referer: "referer", // HTTP Referer that originated the quote/payment, for attribution
 
   // Failed top up quote
   failedReason: "failed_reason",
@@ -147,6 +149,8 @@ export const columnNames = {
   blockHeight: "block_height",
   createdDate: "created_date",
   transactionQuantity: "transaction_quantity",
+  transactionSenderAddress: "transaction_sender_address", // on-chain sender of the crypto tx
+  usdEquivalent: "usd_equivalent", // USD value of the crypto payment at credit time
 
   // Failed Payment Transaction
   failedDate: "failed_date",

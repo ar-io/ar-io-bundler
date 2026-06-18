@@ -768,3 +768,149 @@ export class KyveFeeMigrator extends Migrator {
     });
   }
 }
+
+export class RefererMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  // The HTTP Referer is captured at quote/payment creation; it implicitly
+  // propagates to the failed/receipt/chargeback variants via row-copy spreads,
+  // which is why every table in the lifecycle gets the column.
+  private tablesToAddReferer = [
+    tableNames.topUpQuote,
+    tableNames.paymentReceipt,
+    tableNames.failedTopUpQuote,
+    tableNames.chargebackReceipt,
+    tableNames.pendingPaymentTransaction,
+    tableNames.creditedPaymentTransaction,
+    tableNames.failedPaymentTransaction,
+    tableNames.arNSPurchaseQuote,
+    tableNames.arNSPurchaseReceipt,
+    tableNames.failedArNSPurchase,
+  ];
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to add referer and wallet labels",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddReferer.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.string(columnNames.referer).nullable();
+            })
+          )
+        );
+        await this.knex.schema.alterTable(tableNames.user, (t) => {
+          t.string(columnNames.walletLabels).nullable();
+        });
+      },
+    });
+  }
+
+  public rollback(): Promise<void> {
+    return this.operate({
+      name: "rollback from add referer and wallet labels",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddReferer.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.dropColumn(columnNames.referer);
+            })
+          )
+        );
+        await this.knex.schema.alterTable(tableNames.user, (t) => {
+          t.dropColumn(columnNames.walletLabels);
+        });
+      },
+    });
+  }
+}
+
+export class AddTransactionSenderAddressPaymentTxMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  private tablesToAddTransactionSenderAddress = [
+    tableNames.pendingPaymentTransaction,
+    tableNames.creditedPaymentTransaction,
+    tableNames.failedPaymentTransaction,
+  ];
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to add transaction sender address to payment tx",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddTransactionSenderAddress.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.string(columnNames.transactionSenderAddress)
+                .notNullable()
+                .defaultTo("");
+            })
+          )
+        );
+      },
+    });
+  }
+
+  public rollback(): Promise<void> {
+    return this.operate({
+      name: "rollback from add transaction sender address to payment tx",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddTransactionSenderAddress.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.dropColumn(columnNames.transactionSenderAddress);
+            })
+          )
+        );
+      },
+    });
+  }
+}
+
+export class AddUsdEquivalentToCryptoPaymentsMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  private tablesToAddUsdEquivalent = [
+    tableNames.creditedPaymentTransaction,
+    tableNames.pendingPaymentTransaction,
+    tableNames.failedPaymentTransaction,
+  ];
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to add usd equivalent to payment transactions",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddUsdEquivalent.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.decimal(columnNames.usdEquivalent, 24, 6)
+                .notNullable()
+                .defaultTo(0);
+            })
+          )
+        );
+      },
+    });
+  }
+
+  public rollback(): Promise<void> {
+    return this.operate({
+      name: "rollback from add usd equivalent to payment transactions",
+      operation: async () => {
+        await Promise.all(
+          this.tablesToAddUsdEquivalent.map((table) =>
+            this.knex.schema.alterTable(table, (t) => {
+              t.dropColumn(columnNames.usdEquivalent);
+            })
+          )
+        );
+      },
+    });
+  }
+}
