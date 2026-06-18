@@ -15,9 +15,10 @@
 # This matches the convention already used in docker-compose.yml
 # (context: ./packages/<service>).
 #
-# The committed Dockerfiles pin NODE_VERSION=18.x; the codebase requires
-# Node 22 (.nvmrc v22.22.0, engines >=22.12). We override that here via
-# build-args rather than editing the Dockerfiles.
+# The Dockerfiles now default to Node 22 (.nvmrc v22.22.0, engines >=22.12;
+# @ar.io/sdk v4 is ESM-only). We still pass NODE_VERSION / NODE_VERSION_SHORT
+# as build-args below so the published image version is pinned centrally and
+# can be bumped from one place.
 name: Docker
 
 on:

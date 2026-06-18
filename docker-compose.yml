@@ -99,7 +99,7 @@ services:
   payment-migrator:
     build:
       context: ./packages/payment-service
-      dockerfile: ../../infrastructure/docker/payment-service.Dockerfile
+      dockerfile: Dockerfile.migration
     container_name: ar-io-bundler-payment-migrator
     environment:
       NODE_ENV: ${NODE_ENV:-production}
@@ -117,7 +117,7 @@ services:
   upload-migrator:
     build:
       context: ./packages/upload-service
-      dockerfile: ../../infrastructure/docker/upload-service.Dockerfile
+      dockerfile: Dockerfile.migration
     container_name: ar-io-bundler-upload-migrator
     environment:
       NODE_ENV: ${NODE_ENV:-production}

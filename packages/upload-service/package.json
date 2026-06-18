@@ -4,6 +4,9 @@
   "main": "index.js",
   "packageManager": "yarn@3.2.1",
   "type": "commonjs",
+  "resolutions": {
+    "ioredis": "5.8.2"
+  },
   "scripts": {
     "clean": "rimraf [ lib .nyc_output coverage ]",
     "format:fix": "prettier --write \"src/**/*.ts\"",
@@ -90,6 +93,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@alexsasharegan/simple-cache": "^3.3.3",
     "@ardrive/ardrive-promise-cache": "1.2.0-alpha.6",
     "@aws-sdk/client-s3": "3.529.0",
     "@aws-sdk/lib-storage": "3.529.0",
@@ -111,7 +115,9 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.46.0",
     "@opentelemetry/instrumentation-aws-sdk": "^0.37.1",
     "@opentelemetry/instrumentation-pg": "^0.37.1",
+    "@opentelemetry/resources": "^1.19.0",
     "@opentelemetry/sdk-node": "^0.46.0",
+    "@opentelemetry/semantic-conventions": "^1.19.0",
     "@smithy/node-http-handler": "^3.2.5",
     "arweave": "^1.15.1",
     "arweave-stream-tx": "^1.2.2",
