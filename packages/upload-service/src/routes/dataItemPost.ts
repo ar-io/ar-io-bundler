@@ -85,6 +85,7 @@ import {
   markInFlight,
   removeFromInFlight,
 } from "../utils/inFlightDataItemCache";
+import { extractClientIp } from "../utils/ipRateLimitCache";
 import {
   containsAns104Tags,
   encodeTagsForOptical,
@@ -112,6 +113,9 @@ export const inMemoryDataItemThreshold = 10 * 1024; // 10 KiB
 
 export async function dataItemRoute(ctx: KoaContext, next: Next) {
   let { logger } = ctx.state;
+
+  // Client IP for per-IP free-upload byte limiting (PE-9011)
+  const ipAddress = extractClientIp(ctx.req);
 
   // Smart detection: Check if this is raw data or a signed ANS-104 data item
   // For raw data uploads (enabled via feature flag), we handle differently
@@ -452,6 +456,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         paidBy,
         size: rawContentLength,
         signatureType,
+        ipAddress,
       });
     } catch (error) {
       await removeFromInFlight({ dataItemId, cacheService, logger });
@@ -751,6 +756,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         dataItemId,
         signatureType,
         paidBy,
+        ipAddress,
       });
       logger = logger.child({ paymentResponse });
     } catch (error) {
@@ -766,6 +772,12 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       logger.debug("Balance successfully reserved", {
         assessedWinstonPrice: paymentResponse.costOfDataItem,
       });
+
+      // Track per-IP free-upload byte usage when the upload was free
+      // (cost of 0 winston). PE-9011.
+      if (ipAddress && paymentResponse.costOfDataItem.toString() === "0") {
+        await paymentService.trackIpUsage(ipAddress, totalSize, logger);
+      }
     } else {
       if (!paymentResponse.walletExists) {
         logger.debug("Wallet does not exist.");
