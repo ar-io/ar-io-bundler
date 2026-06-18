@@ -31,7 +31,7 @@ import { factorBundlesByTargetSize } from "../utils/planningUtils";
 // Jobs with full loads take ~10-15 seconds. Lambda timeout is 15 minutes.
 // Cancel the job if it runs for more than 14 minutes.
 const REPEAT_JOB_LIMIT_MINS_MS = 14 * 60 * 1000;
-const PARALLEL_LIMIT = 5;
+const PARALLEL_LIMIT = 1; //5; // Parallelism is thought to be causing lock contention during bitmap heap scans.
 
 export async function planBundleHandler(
   database: Database = new PostgresDatabase(),

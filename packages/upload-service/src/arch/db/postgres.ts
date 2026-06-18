@@ -351,7 +351,9 @@ export class PostgresDatabase implements Database {
       const fetchStartTimestamp = Date.now();
       const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
         (
-          (await this.reader.raw(
+          // Read from the writer to avoid stale reader/replica rows when the
+          // plan job loops repeatedly (PE-8989).
+          (await this.writer.raw(
             `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
               FROM ${tableNames.newDataItem}
               ORDER BY uploaded_date
