@@ -124,6 +124,10 @@ export interface PricingService {
     bytes: ByteCount,
     userAddress?: UserAddress
   ) => Promise<WincForBytesResponse>;
+  getWCForDataItem: (
+    bytes: ByteCount,
+    userAddress?: UserAddress
+  ) => Promise<WincForBytesResponse>;
   convertFromUSDAmount: (params: {
     amount: number;
     type: CurrencyType;
@@ -153,6 +157,11 @@ const maxStripeDigits = 8;
 
 /** This is a cleaner representation of the actual max: 999_999_99 */
 const maxStripeAmount = 990_000_00;
+
+/** $0.00002 per data item is $0.02 per 1,000 data items */
+export const usdPricePerDataItem = +(
+  process.env.USD_PRICE_PER_DATA_ITEM || 0.00002
+);
 
 export class TurboPricingService implements PricingService {
   private logger: winston.Logger;
@@ -612,6 +621,34 @@ export class TurboPricingService implements PricingService {
       networkPrice,
       deprecatedChunkBasedNetworkPrice,
       adjustments,
+    };
+  }
+
+  async getWCForDataItem(
+    bytes: ByteCount,
+    userAddress?: UserAddress
+  ): Promise<WincForBytesResponse> {
+    const priceForBytes = await this.getWCForBytes(bytes, userAddress);
+    const wincPerUsd =
+      oneARInWinston /
+      (await this.tokenToFiatOracle.getUsdPriceForOneToken("arweave"));
+    const pricePerDataItem = W(Math.ceil(usdPricePerDataItem * wincPerUsd));
+    const finalPrice = new FinalPrice(
+      priceForBytes.finalPrice.winc.plus(pricePerDataItem)
+    );
+    this.logger.debug(
+      "Calculated price for data item with price per data item.",
+      {
+        bytes,
+        pricePerDataItem: pricePerDataItem.toString(),
+        finalPrice: finalPrice.toString(),
+        priceForBytes,
+      }
+    );
+
+    return {
+      ...priceForBytes,
+      finalPrice,
     };
   }
 
