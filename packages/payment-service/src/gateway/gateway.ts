@@ -43,7 +43,13 @@ export type TransactionInfo = {
   transactionQuantity: BigNumber;
   transactionSenderAddress: string;
   transactionRecipientAddress: string;
+  turboCreditDestinationAddress?: string;
 };
+
+// Matches `turboCreditDestinationAddress=<address>` embedded in a payment
+// transaction memo, used to credit a different account than the sender.
+export const turboCreditDestinationAddressRegex =
+  /\bturboCreditDestinationAddress=([A-Za-z0-9_-]+)/i;
 
 export abstract class Gateway {
   public abstract endpoint: URL;

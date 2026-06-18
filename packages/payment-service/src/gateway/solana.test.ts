@@ -52,7 +52,7 @@ describe("SolanaGateway", () => {
             ],
           },
         },
-      } as VersionedTransactionResponse;
+      } as unknown as VersionedTransactionResponse;
       const instructions = gateway["getAllTxInstructions"](mockTx);
       expect(instructions).to.have.length(1);
       expect(instructions[0].programId.toBase58()).to.equal(
