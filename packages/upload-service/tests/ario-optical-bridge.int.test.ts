@@ -19,7 +19,6 @@ import Arweave from "arweave";
 import axios from "axios";
 import { expect } from "chai";
 import { Server } from "http";
-import { Queue } from "bullmq";
 import * as sinon from "sinon";
 
 import { jobLabels } from "../src/constants";
@@ -69,7 +68,7 @@ describe("AR.IO Gateway Optical Bridge Integration", function () {
       }
 
       // For other requests, call through to real axios
-      axiosPostStub.wrappedMethod(url, data, config);
+      return axiosPostStub.wrappedMethod(url, data, config);
     });
 
     server = await createServer({

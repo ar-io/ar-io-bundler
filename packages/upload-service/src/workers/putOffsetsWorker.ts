@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { Job } from "bullmq";
+import { knex as knexFactory } from "knex";
 
 import { getWriterConfig } from "../arch/db/knexConfig";
 import { EnqueuedOffsetsBatch } from "../arch/queues";
@@ -23,7 +24,7 @@ import { putOffsetsHandler } from "../jobs/putOffsets";
 import logger from "../logger";
 import { createWorker, setupGracefulShutdown } from "./workerUtils";
 
-const knex = require("knex")(getWriterConfig());
+const knex = knexFactory(getWriterConfig());
 
 const worker = createWorker<EnqueuedOffsetsBatch>(
   jobLabels.putOffsets,
