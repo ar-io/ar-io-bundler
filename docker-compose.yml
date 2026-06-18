@@ -1,15 +1,16 @@
-version: '3.8'
-
 services:
   # PostgreSQL - Both payment and upload databases
   postgres:
     image: postgres:16.1
     container_name: ar-io-bundler-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-turbo_admin}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # Bind to localhost by default; PM2 services connect via localhost.
+      # Never expose Postgres on a public interface.
+      - "${INFRA_BIND_IP:-127.0.0.1}:${DB_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infrastructure/postgres/init-databases.sql:/docker-entrypoint-initdb.d/01-init.sql
@@ -25,7 +26,7 @@ services:
     container_name: ar-io-bundler-redis-cache
     restart: unless-stopped
     ports:
-      - "${REDIS_CACHE_PORT:-6379}:6379"
+      - "${INFRA_BIND_IP:-127.0.0.1}:${REDIS_CACHE_PORT:-6379}:6379"
     command: ["redis-server"]
     volumes:
       - redis-cache-data:/data
@@ -41,7 +42,7 @@ services:
     container_name: ar-io-bundler-redis-queues
     restart: unless-stopped
     ports:
-      - "${REDIS_QUEUE_PORT:-6381}:6381"
+      - "${INFRA_BIND_IP:-127.0.0.1}:${REDIS_QUEUE_PORT:-6381}:6381"
     command: ["redis-server", "--port", "6381"]
     volumes:
       - redis-queues-data:/data
@@ -53,11 +54,18 @@ services:
 
   # MinIO - S3-compatible object storage
   minio:
-    image: minio/minio:latest
+    # Pinned to the known-good release validated on the dev box (was :latest).
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: ar-io-bundler-minio
+    restart: unless-stopped
     ports:
-      - "9000:9000"  # S3 API
-      - "9001:9001"  # Console UI
+      # S3 API: localhost by default. For remote AR.IO gateways to pull data
+      # items over the Hetzner vSwitch, set MINIO_S3_BIND_IP to the private
+      # interface IP (NOT a public address). Same-host gateways use the
+      # ar-io-network docker alias below and don't need this host port.
+      - "${MINIO_S3_BIND_IP:-127.0.0.1}:9000:9000"
+      # Console UI: admin-only, never public.
+      - "${INFRA_BIND_IP:-127.0.0.1}:9001:9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin123}
@@ -80,7 +88,7 @@ services:
 
   # MinIO Initialization - Create buckets
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     container_name: ar-io-bundler-minio-init
     depends_on:
       minio:
