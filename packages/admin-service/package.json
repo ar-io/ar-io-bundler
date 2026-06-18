@@ -1,6 +1,7 @@
 {
   "name": "@ar-io-bundler/admin-service",
   "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
   "description": "Admin Dashboard for AR.IO Bundler - System monitoring and statistics",
   "main": "server.js",
   "type": "commonjs",

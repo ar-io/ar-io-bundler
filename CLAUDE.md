@@ -68,6 +68,12 @@ Both services use Mocha + nyc + ts-node (config in each package's `.mocharc.js`)
 
 Note: upload integration is serial (`parallel: false`, 20s timeout); payment integration runs parallel (7s timeout).
 
+**End-to-end tests** (upload service only) exercise the full stack against live local infra. Each spec has a dedicated script (`packages/upload-service/package.json`):
+- `test:e2e:turbo` — full upload flow via the Turbo SDK (120s timeout)
+- `test:e2e:ario` — ar.io optical-bridge integration
+- `test:e2e:aws-free` — the de-AWS path (MinIO/PostgreSQL/BullMQ)
+- `test:e2e:local` — brings up infra (incl. `arlocal`), runs the suite, tears down
+
 ### Database
 ```bash
 yarn db:migrate                 # Migrate both databases
