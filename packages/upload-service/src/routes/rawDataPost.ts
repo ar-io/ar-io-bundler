@@ -19,7 +19,12 @@ import { Readable } from "stream";
 
 import { enqueue } from "../arch/queues";
 import { InMemoryDataItem } from "../bundles/streamingDataItem";
-import { dataCaches, fastFinalityIndexes, jobLabels } from "../constants";
+import {
+  dataCaches,
+  fastFinalityIndexes,
+  jobLabels,
+  maxSingleDataItemByteCount,
+} from "../constants";
 import { KoaContext } from "../server";
 import { fromB64Url, jwkToPublicArweaveAddress } from "../utils/base64";
 import { errorResponse } from "../utils/common";
@@ -103,6 +108,20 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     return errorResponse(ctx, {
       errorMessage: "Content-Length header is required when providing payment",
       status: 400,
+    });
+  }
+
+  // Enforce a byte ceiling on the raw (server-signed) upload endpoint — the
+  // bundler signs these with its own wallet, so an unbounded payload must not
+  // be accepted. Mirrors the single-data-item ingest limit.
+  const declaredByteCount = +contentLengthHeader;
+  if (
+    !isNaN(declaredByteCount) &&
+    declaredByteCount > maxSingleDataItemByteCount
+  ) {
+    return errorResponse(ctx, {
+      errorMessage: `Data is too large (${declaredByteCount} bytes). Maximum allowed is ${maxSingleDataItemByteCount} bytes.`,
+      status: 413,
     });
   }
 
