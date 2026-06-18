@@ -113,7 +113,7 @@
     "@smithy/node-http-handler": "^3.2.5",
     "arweave": "^1.15.1",
     "arweave-stream-tx": "^1.2.2",
-    "axios": "^1.8.4",
+    "axios": "1.15.2",
     "axios-retry": "^3.4.0",
     "bignumber.js": "^9.1.0",
     "bs58": "^5.0.0",
