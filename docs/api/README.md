@@ -11,19 +11,24 @@ The Upload Service handles data item uploads and bundle management.
 
 #### Quick Reference
 
+Routes are served at both the root and a `/v1` prefix; the `/v1` forms are shown.
+
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/tx` | POST | Upload signed ANS-104 data item (x402 or balance) |
-| `/v1/tx/raw` | POST | Upload unsigned data blob (x402 required) |
+| `/v1/tx` (or `/v1/tx/:token`) | POST | Upload a signed ANS-104 data item (x402 or balance) |
+| `/v1/x402/upload/unsigned` | POST | Upload raw bytes; bundler signs (x402 required) |
+| `/v1/x402/upload/signed` | POST | Signed data-item upload paid via x402 |
 | `/v1/tx/:id/status` | GET | Check data item status |
-| `/v1/tx/:id/offset` | GET | Get data item offset information |
-| `/v1/upload` | POST | Create multipart upload |
-| `/v1/upload/:id/:chunk` | PUT | Upload chunk |
-| `/v1/upload/:id` | POST | Finalize multipart upload |
-| `/v1/upload/:id` | DELETE | Abort multipart upload |
-| `/v1/upload/:id` | GET | Get upload status |
-| `/v1/info` | GET | Service info and health |
-| `/swagger` | GET | Swagger API documentation |
+| `/v1/tx/:id/offsets` | GET | Get data item offset information |
+| `/v1/chunks/:token/-1/-1` | GET | Create a multipart upload (returns uploadId) |
+| `/v1/chunks/:token/:uploadId/:chunkOffset` | POST | Upload a chunk at byte offset |
+| `/v1/chunks/:token/:uploadId/-1` | POST | Finalize the upload (sync) |
+| `/v1/chunks/:token/:uploadId/finalize` | POST | Finalize the upload (async) |
+| `/v1/chunks/:token/:uploadId/status` | GET | Get multipart upload status |
+| `/v1/price/x402/data-item/:token/:byteCount` | GET | x402 price quote for a data item |
+| `/info` (or `/v1/info`) | GET | Service info |
+| `/health` | GET | Health check |
+| `/api-docs`, `/openapi.json` | GET | Swagger UI / OpenAPI document |
 
 ### Payment Service
 **Base URL**: `http://localhost:4001`
@@ -35,13 +40,13 @@ The Payment Service manages user balances and payment processing.
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/v1/balance` | GET | Get user balance |
-| `/v1/balance/:token` | POST | Add pending crypto payment |
-| `/v1/reserve-balance` | POST | Reserve balance for operation |
-| `/v1/refund-balance` | POST | Refund reserved balance |
-| `/v1/top-up/:currency` | POST | Create Stripe payment |
+| `/v1/account/balance/:token` | POST | Add a pending crypto payment |
+| `/v1/reserve-balance` | GET | Reserve balance for an operation |
+| `/v1/refund-balance` | GET | Refund reserved balance |
+| `/v1/top-up/:method/:address/:currency/:amount` | GET | Create a top-up (e.g. Stripe) |
 | `/v1/stripe-webhook` | POST | Stripe webhook handler |
-| `/v1/redeem` | POST | Redeem promotional code |
-| `/v1/price/:currency/:amount` | GET | Calculate storage price |
+| `/v1/redeem` | GET | Redeem a gift/promo code |
+| `/v1/price/bytes/:bytes` | GET | Storage price (Winston) for a byte count |
 | `/v1/x402/price/:signatureType/:address` | GET | Get x402 payment quote (USDC) |
 | `/v1/x402/payment/:signatureType/:address` | POST | Verify and settle x402 payment |
 | `/v1/x402/finalize` | POST | Finalize x402 payment (fraud detection) |
@@ -84,17 +89,17 @@ AR.IO Bundler implements Coinbase's **x402 payment standard** for HTTP 402 Payme
 - Can use x402 payment OR traditional balance
 - Data item retains user's signature
 
-**Unsigned Data Blobs** (`POST /v1/tx/raw`):
-- User sends raw data without ANS-104 signing
+**Unsigned Data Blobs** (`POST /v1/x402/upload/unsigned`):
+- User sends raw bytes without ANS-104 signing
 - x402 payment REQUIRED (no balance fallback)
-- Bundler creates ANS-104 and signs with its wallet
-- Payment metadata injected as tags
+- Bundler creates the ANS-104 item and signs it with its own wallet (`RAW_DATA_ITEM_JWK_FILE`)
+- Payment metadata injected as tags (e.g. `Payer-Address`, `Upload-Type`)
 
 ### Comprehensive Guide
 
 For complete x402 implementation details, examples, and troubleshooting:
 
-**[X402 Integration Guide](../X402_INTEGRATION_GUIDE.md)**
+**[X402 Integration Guide](../guides/X402_INTEGRATION_GUIDE.md)**
 
 ## Detailed Documentation
 
@@ -106,8 +111,8 @@ For complete API documentation including request/response examples, authenticati
 
 Both services provide Swagger UI for interactive API exploration:
 
-- **Upload Service**: http://localhost:3001/swagger
-- **Payment Service**: http://localhost:4001/swagger (if configured)
+- **Upload Service**: http://localhost:3001/api-docs (OpenAPI at `/openapi.json`)
+- **Payment Service**: http://localhost:4001/api-docs (if configured)
 
 ## Authentication
 
@@ -162,29 +167,26 @@ curl -X POST http://localhost:3001/v1/tx \
 ### Upload Unsigned Data Blob (x402 Required)
 
 ```bash
-# Step 1: Get 402 payment requirements
-curl -X POST http://localhost:3001/v1/tx/raw \
-  -H "Content-Type: application/json" \
-  --data '{
-    "data": "SGVsbG8gQXJ3ZWF2ZSE=",
-    "tags": [{"name": "Content-Type", "value": "text/plain"}]
-  }'
+# Step 1: POST raw bytes to get 402 payment requirements
+curl -X POST http://localhost:3001/v1/x402/upload/unsigned \
+  -H "Content-Type: text/plain" \
+  --data-binary @file.txt
 
-# Step 2: Retry with X-PAYMENT header
-curl -X POST http://localhost:3001/v1/tx/raw \
-  -H "Content-Type: application/json" \
+# Step 2: Retry with the X-PAYMENT header (EIP-712 transferWithAuthorization)
+curl -X POST http://localhost:3001/v1/x402/upload/unsigned \
+  -H "Content-Type: text/plain" \
   -H "X-PAYMENT: eyJ2ZXJzaW9uIjoiMS4wIiwicGF5bG9hZCI6..." \
-  --data '{
-    "data": "SGVsbG8gQXJ3ZWF2ZSE=",
-    "tags": [{"name": "Content-Type", "value": "text/plain"}]
-  }'
+  --data-binary @file.txt
 ```
 
 ### Get x402 Price Quote
 
 ```bash
-# Get USDC payment requirements for uploading 1 KiB via Ethereum wallet
-curl "http://localhost:4001/v1/x402/price/3/0xYourEthereumAddress?byteCount=1024"
+# Payment-service x402 price quote (signatureType 3 = Ethereum), bytes via query
+curl "http://localhost:4001/v1/x402/price/3/0xYourEthereumAddress?bytes=1024"
+
+# Or the upload-service quote with the byte count as a path segment:
+curl "http://localhost:3001/v1/price/x402/data-item/ethereum/1024"
 
 # Returns payment requirements including USDC amount, contract, recipient
 ```
@@ -199,8 +201,8 @@ curl http://localhost:4001/v1/balance \
 ### Get Traditional Price Quote
 
 ```bash
-curl "http://localhost:4001/v1/price/usd/1048576"
-# Returns price for 1 MiB of storage
+curl "http://localhost:4001/v1/price/bytes/1048576"
+# Returns the Winston price for 1 MiB of storage
 ```
 
 ## Client Libraries
@@ -237,5 +239,5 @@ Standard HTTP status codes:
 For issues or questions:
 - [Main Documentation](../README.md)
 - [Architecture Guide](../architecture/ARCHITECTURE.md)
-- [X402 Integration Guide](../X402_INTEGRATION_GUIDE.md)
-- [GitHub Issues](https://github.com/vilenarios/ar-io-bundler/issues)
+- [X402 Integration Guide](../guides/X402_INTEGRATION_GUIDE.md)
+- [GitHub Issues](https://github.com/ar-io/ar-io-bundler/issues)

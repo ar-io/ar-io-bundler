@@ -1,112 +1,83 @@
-# Turbo Payment Service
+# AR.IO Bundler — Payment Service
 
-Welcome to the Turbo Payment Service 👋
+The Payment Service handles payment processing, credit (Winston) management, and
+blockchain payment-gateway integrations for the
+[AR.IO Bundler](https://github.com/ar-io/ar-io-bundler) platform.
 
-## Overview
+> A de-AWS fork of ArDrive's Turbo Payment Service. Background work runs on
+> **BullMQ** (the `payment-workers` PM2 process), and all configuration loads from
+> the shared repo-root `.env` — there is no AWS Secrets Manager/SSM.
 
-The Turbo Payment Service handles payment processing, credit management, and blockchain payment gateway integrations for the AR.IO Bundler platform.
+## Supported payment methods
 
-### Supported Payment Methods
+- **x402 (primary)**: HTTP 402 + USDC via EIP-3009 — see [examples/](../../examples/)
+- **Cryptocurrency**: Arweave, Ethereum, Solana, Matic/POL, KYVE, Base-ETH
+- **Stripe**: credit-card top-ups
+- **Account credits**: balance with reservations/refunds
+- **ArNS purchases**: Arweave Name System, settled on Solana via `@ar.io/sdk` v4
 
-- **x402 Protocol (Primary)**: HTTP 402 standard with USDC payments via EIP-3009 - See [examples/](../../examples/) for integration guides
-- **Cryptocurrency Payments**: Arweave, Ethereum, Solana, Matic/POL, KYVE, Base-ETH
-- **Stripe Payments**: Credit card processing for account top-ups
-- **Account Credits**: Balance-based payment system with reservations and refunds
-- **ArNS Purchases**: Arweave Name System integration
+## x402 payment protocol
 
-### x402 Payment Protocol
+Implements Coinbase's x402 standard as the primary payment method:
 
-The service implements Coinbase's x402 standard as the primary payment method:
+- `GET /v1/x402/price/:signatureType/:address` — payment requirements (returns 402)
+- `POST /v1/x402/payment/:signatureType/:address` — verify and settle
+- `POST /v1/x402/finalize` — finalize with fraud detection
+- `POST /v1/x402/top-up/:signatureType/:address` — top up a balance via x402
 
-- **GET /v1/x402/price/:signatureType/:address?bytes=N** - Get payment requirements (returns 402 Payment Required)
-- **POST /v1/x402/payment/:signatureType/:address** - Verify and settle x402 payment
-- **POST /v1/x402/finalize** - Finalize payment with fraud detection
+See [../../docs/guides/X402_INTEGRATION_GUIDE.md](../../docs/guides/X402_INTEGRATION_GUIDE.md)
+and [examples/README.md](../../examples/README.md).
 
-For implementation details and examples, see [examples/README.md](../../examples/README.md).
+## Running locally
 
-## Local Development
+Requires Node 22 (`.nvmrc` v22.22.0), Yarn 3, and Docker. Most operators run the
+whole platform from the repo root (see the root [README](../../README.md)); to run
+just this service:
 
-### Requirements
+```bash
+cp ../../.env.sample ../../.env   # single shared root .env
+yarn
+yarn build
+yarn db:up                         # local Postgres + migrations
+yarn start                         # or: yarn start:watch (hot reload)
+```
 
-For a compatible development environment, we require the following packages installed on the system:
+Set `NODE_ENV=test` for local test runs. The API listens on `PAYMENT_SERVICE_PORT`
+(default 4001).
 
-- `yarn`
-- `nvm` (optional)
-- `husky` (optional)
-- `docker` (optional)
-
-### Running Locally
-
-With a compatible system, follow these steps to start the upload service:
-
-- `cp .env.sample .env` (and update values)
-- `yarn`
-- `yarn build`
-- `yarn db:up`
-- `yarn start`
-  - alternatively use `yarn start:watch` to run the app in development mode with hot reloading provided by `nodemon`
-
-Note: we store credentials for the service in AWS - to avoid these requests - set your NODE_ENV to `test` in your .env file.
+> Crypto-payment credits are finalized by the **`payment-workers`** process
+> (BullMQ). In production this is one of the five PM2 processes (started via
+> `yarn pm2:start` from the repo root); without it, pending crypto credits never
+> finalize.
 
 ## Database
 
-The service relies on a postgres database. The following scripts can be used to create a local postgres database via docker:
-
-- `yarn db:up`: Starts a local docker PostgreSQL container on port 5432
-- `yarn db:migrate:latest`: Runs migrations on a local PostgreSQL database
-- `yarn db:down`: Tears down local docker PostgreSQL container and deletes the db volume
-
-### Migrations
-
-Knex is used to create and run migrations. To make a migration follow these steps:
-
-1. Add migration function and logic to `schema.ts`
-2. Run the yarn command to stage the migration, which generates a new migration script in `migrations/` directory
-
-- `yarn db:make:migration MIGRATION_NAME`
-
-3. Update the new migration to call the static function created in step 1.
-
-4. Run the migration
-
-- `yarn db:migration:latest` or `yarn knex migration:up MIGRATION_NAME.TS`
-
-### Rollbacks
-
-You can rollback knex migrations using the following command:
-
-- `yarn db:migrate:rollback` - rolls back the most recent migration
-- `yarn db:migrate:rollback --all` - rolls back all migrations
-- `yarn knex migrate:list` - lists all the migrations applied to the database
-- `yarn knex migrate:down MIGRATION_NAME.ts --knexfile src/database/knexfile.ts` - rolls back a specific migration
-
-Additional `knex` documentation can be found [here](https://knexjs.org/guide/migrations.html).
-
-### Docker
-
-To run this service and a connected postgres database, fully migrated.
-
-- `cp .env.sample .env` (and update values)
-- `yarn start:docker` - run the local service and postgres database in docker containers
-
-Alternatively, you can run the service in docker and connect to a local postgres database. You will need to standup `postgres` in a separate container.
+Knex; database name `PAYMENT_DB_DATABASE` (default `payment_service`).
 
 ```bash
-docker run --name turbo-payment-service-postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres
-docker run --env-file .env -p 4000:4000 ghcr.io/ardriveapp/turbo-payment-service:latest
+yarn db:up                 # start local Postgres (port 5432) + migrate
+yarn db:down               # tear down the container and volume
+yarn db:migrate:latest     # apply migrations
+yarn db:migrate:list       # list applied migrations
+yarn db:migrate:make NAME  # generate a new migration file
+yarn db:migrate:rollback   # roll back the last migration
 ```
+
+### Migration workflow
+1. Add migration logic to `src/database/schema.ts` as a static function.
+2. `yarn db:migrate:make MIGRATION_NAME` generates a file in `src/migrations/`.
+3. Update the generated file to call that function.
+4. `yarn db:migrate:latest`.
 
 ## Tests
 
-Unit and integration tests can be run locally or via docker. For either, you can set environment variables for the service via a `.env` file:
+```bash
+yarn test:unit                 # unit tests (src/**/*.test.ts)
+yarn test:integration:local    # integration tests against local Postgres
+yarn test:integration:local -g "Router"   # targeted
+yarn test:docker               # full suite in an isolated container
+```
 
-### Unit Tests
+## License
 
-- `yarn test:unit` - runs unit tests locally
-
-### Integration Tests
-
-- `yarn test:integration:local` - runs the integration tests locally against postgres docker container
-- `yarn test:integration:local -g "Router"` - runs targeted integration tests against postgres docker container
-  - `watch -n 30 'yarn test:integration:local -g "Router'` - runs targeted integration tests on an interval (helpful when actively writing tests)
-- `yarn test:docker` - runs integration tests (and unit tests) in an isolated docker container
+GNU Affero General Public License v3.0 — see the repository [LICENSE](../../LICENSE).

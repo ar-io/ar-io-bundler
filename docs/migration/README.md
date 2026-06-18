@@ -80,7 +80,7 @@ The system now runs on the following open-source components:
 - **BullMQ** - Redis-based job queues
 - **PM2** - Process management
 - **Docker Compose** - Infrastructure orchestration
-- **Node.js 18+** - Application runtime
+- **Node.js 22** - Application runtime
 
 All components can be run locally, on VPS, or on dedicated hardware without any cloud dependencies.
 

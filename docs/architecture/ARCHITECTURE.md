@@ -41,7 +41,7 @@ The AR.IO Bundler is a complete ANS-104 data bundling platform for Arweave with 
 
 ### Technology Stack
 
-- **Language**: TypeScript/Node.js (v18+)
+- **Language**: TypeScript 5 / Node.js 22 (required)
 - **Package Manager**: Yarn 3.6.0 (workspaces)
 - **Database**: PostgreSQL 16.1
 - **Cache**: Redis 7.2 (2 instances - cache + queues)
@@ -1733,7 +1733,7 @@ S3_SECRET_ACCESS_KEY=<secret-key>
 ### Tracing
 
 **OpenTelemetry** (optional):
-- Auto-instrumentation for HTTP, PostgreSQL, AWS SDK
+- Auto-instrumentation for HTTP, PostgreSQL, S3 (AWS SDK client, used against MinIO)
 - Configured via environment variables:
   - `OTEL_SAMPLE_RATE`: Sample percentage (default: 200 = 0.5%)
   - `HONEYCOMB_API_KEY`: Honeycomb integration
@@ -1974,7 +1974,7 @@ WORKER_INSTANCES=1
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22 (required; .nvmrc v22.22.0)
 - Yarn 3.6.0+
 - Docker & Docker Compose
 - PostgreSQL client (optional, for migrations)
@@ -1983,7 +1983,7 @@ WORKER_INSTANCES=1
 
 ```bash
 # Clone repository
-git clone https://github.com/vilenarios/ar-io-bundler.git
+git clone https://github.com/ar-io/ar-io-bundler.git
 cd ar-io-bundler
 
 # Install dependencies
@@ -2453,7 +2453,7 @@ multipartDefaultChunkSize = 25 MB
 
 ### Support & Resources
 
-- **GitHub**: https://github.com/vilenarios/ar-io-bundler
+- **GitHub**: https://github.com/ar-io/ar-io-bundler
 - **Arweave Docs**: https://docs.arweave.org
 - **AR.IO Docs**: https://docs.ar.io
 - **ANS-104 Spec**: https://github.com/ArweaveTeam/arweave-standards/blob/master/ans/ANS-104.md

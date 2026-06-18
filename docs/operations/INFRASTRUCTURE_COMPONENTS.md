@@ -102,14 +102,15 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
   - ✅ Runs MinIO initialization (ensures buckets exist)
   - ✅ Restarts PM2 services
 
-### ./scripts/setup.sh
-**Initial setup:**
-- ✅ Checks prerequisites (Node, Yarn, Docker)
-- ✅ Installs dependencies
-- ✅ Builds all packages
-- ✅ Starts Docker infrastructure
-- ✅ Runs MinIO initialization
+### ./scripts/setup-bundler.sh
+**Initial setup (interactive wizard):**
+- ✅ Checks prerequisites (Node 22, Yarn, Docker)
+- ✅ Generates the root `.env` (prompts for all required values)
+- ✅ Installs dependencies and builds all packages
+- ✅ Starts Docker infrastructure + MinIO initialization
 - ✅ Runs database migrations
+
+(Use `./scripts/setup-basic.sh` for a minimal, non-interactive local config.)
 
 ## Yarn Scripts (package.json)
 
@@ -121,7 +122,8 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
 - `yarn pm2:start` - Starts PM2 services
 - `yarn pm2:stop` - Stops PM2 services
 - `yarn pm2:restart` - Restarts PM2 services
-- `yarn setup` - Runs complete setup
+- `yarn setup` - Defined in package.json as `./scripts/setup.sh`, but that file
+  does not exist; run `./scripts/setup-bundler.sh` directly instead.
 
 ## Critical Notes
 
@@ -139,7 +141,7 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
 **How it's handled:**
 - `./scripts/start.sh` - Explicitly runs `docker compose up minio-init`
 - `./scripts/restart.sh --with-docker` - Runs `docker compose up minio-init`
-- `./scripts/setup.sh` - Runs `docker compose up minio-init`
+- `./scripts/setup-bundler.sh` - Runs `docker compose up minio-init`
 - `yarn infra:up` - Includes `&& docker compose up minio-init`
 
 ### Worker Concurrency

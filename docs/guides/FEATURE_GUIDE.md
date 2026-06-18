@@ -1902,8 +1902,8 @@ Permanent Storage on Arweave + AR.IO Gateway
 ### 7.1 Technology Stack
 
 **Programming Language:**
-- TypeScript 5.0
-- Node.js 18+
+- TypeScript 5
+- Node.js 22 (required; `.nvmrc` v22.22.0)
 
 **Web Framework:**
 - Koa 3.0 (lightweight HTTP server)
