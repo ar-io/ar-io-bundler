@@ -57,5 +57,13 @@
   "packageManager": "yarn@3.6.0",
   "dependencies": {
     "bitcoinjs-lib": "^7.0.0"
+  },
+  "resolutions": {
+    "axios": "1.15.2",
+    "elliptic": "6.6.1",
+    "secp256k1": "5.0.1",
+    "jws": "4.0.1",
+    "qs": "6.14.2",
+    "undici": "7.24.0"
   }
 }
