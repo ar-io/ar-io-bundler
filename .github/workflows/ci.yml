@@ -57,25 +57,25 @@ jobs:
         run: yarn build
 
       # Root script: `yarn workspaces foreach -pt run typecheck`.
-      # NON-BLOCKING for now: the repo carries pre-existing type errors in
-      # untouched files. Runs for visibility; re-enable as a required check
-      # once that debt is burned down.
+      # BLOCKING: the type debt has been burned down (both services typecheck
+      # clean, including their test files; the one genuinely-dead integration
+      # spec was quarantined to tests/*.disabled).
       - name: Typecheck
         run: yarn typecheck
-        continue-on-error: true
 
       # Root `lint` maps to each workspace's `lint:check` (eslint).
-      # NON-BLOCKING for now: pre-existing lint errors in untouched files.
+      # BLOCKING: zero lint ERRORS across both services. Warnings remain and do
+      # not fail the build (eslint exits non-zero only on errors).
       - name: Lint
         run: yarn lint
-        continue-on-error: true
 
       # Root script: `yarn workspaces foreach -pt run test:unit`.
-      # Only payment-service and upload-service define test:unit; the rest
-      # are skipped. NON-BLOCKING for now: a few pre-existing unit specs need
-      # env/keys a clean CI runner lacks (e.g. gateway/solana.test.ts constructs
-      # a SolanaGateway requiring SOLANA_ADDRESS). Runs for visibility; re-enable
-      # as a required check once that test debt is fixed. Build is the hard gate.
+      # Only payment-service and upload-service define test:unit. The specs are
+      # green locally (195 + 195) but several are DB-coupled (they need a
+      # migrated Postgres and seeded adjustment catalogs) and run in parallel
+      # against a shared DB. NON-BLOCKING until the CI job provisions Postgres +
+      # runs migrations before this step; tracked as the test:unit CI-infra
+      # follow-up. Build + typecheck + lint are the hard gates.
       - name: Unit tests
         run: yarn test:unit
         continue-on-error: true

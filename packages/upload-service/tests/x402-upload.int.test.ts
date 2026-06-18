@@ -37,9 +37,10 @@ describe("x402 Upload Integration Tests", function () {
   let validPaymentHeader: string;
 
   before(async () => {
-    paymentService = new TurboPaymentService({
-      url: "http://localhost:4001", // Payment service URL
-    });
+    // Constructor takes positional args (shouldAllowArFSData, axios, logger,
+    // paymentServiceURL, ...); the URL defaults from PAYMENT_SERVICE_BASE_URL.
+    // The methods used here are stubbed, so the defaults are sufficient.
+    paymentService = new TurboPaymentService();
 
     server = await createServer({
       getArweaveWallet: () => Promise.resolve(testArweaveJWK),
@@ -86,9 +87,8 @@ describe("x402 Upload Integration Tests", function () {
         "checkBalanceForData"
       ).resolves({
         userHasSufficientBalance: false,
-        bytesCostInWinc: "100000",
-        userBalanceInWinc: "0",
-        userAddress: "test-address",
+        bytesCostInWinc: W("100000"),
+        userBalanceInWinc: W("0"),
       });
 
       // Stub getX402PriceQuote to return payment requirements
@@ -102,12 +102,9 @@ describe("x402 Upload Integration Tests", function () {
             scheme: "exact",
             network: "base-sepolia",
             maxAmountRequired: "1000000",
-            resource: "/v1/tx",
-            description: "Upload data to Arweave via AR.IO Bundler",
-            mimeType: "application/json",
             payTo: "0x123...",
-            maxTimeoutSeconds: 300,
             asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            timeout: { validBefore: Math.floor(Date.now() / 1000) + 300 },
             extra: { name: "USD Coin", version: "2" },
           },
         ],
@@ -135,10 +132,11 @@ describe("x402 Upload Integration Tests", function () {
         expect(error.response.headers["x-payment-required"]).to.equal("x402-1");
         expect(error.response.data).to.have.property("x402Version");
         expect(error.response.data).to.have.property("accepts");
-        expect(error.response.data.accepts[0]).to.have.property("resource");
-        expect(error.response.data.accepts[0]).to.have.property("description");
-        expect(error.response.data.accepts[0]).to.have.property("mimeType");
-        expect(error.response.data.accepts[0]).to.have.property("maxTimeoutSeconds");
+        expect(error.response.data.accepts[0]).to.have.property("scheme");
+        expect(error.response.data.accepts[0]).to.have.property("network");
+        expect(error.response.data.accepts[0]).to.have.property("maxAmountRequired");
+        expect(error.response.data.accepts[0]).to.have.property("payTo");
+        expect(error.response.data.accepts[0]).to.have.property("asset");
       } finally {
         checkBalanceStub.restore();
         priceQuoteStub.restore();
@@ -215,7 +213,7 @@ describe("x402 Upload Integration Tests", function () {
         txHash: "0xabcd1234",
         network: "base-sepolia",
         mode: "hybrid",
-        wincReserved: "1000000",
+        wincReserved: W("1000000"),
       });
 
       const finalizeStub = stub(
@@ -287,9 +285,8 @@ describe("x402 Upload Integration Tests", function () {
         "checkBalanceForData"
       ).resolves({
         userHasSufficientBalance: false, // Will fail but we verify it's called
-        bytesCostInWinc: "100000",
-        userBalanceInWinc: "0",
-        userAddress: "test-address",
+        bytesCostInWinc: W("100000"),
+        userBalanceInWinc: W("0"),
       });
 
       const signer = new ArweaveSigner(testArweaveJWK);

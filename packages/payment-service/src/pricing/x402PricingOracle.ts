@@ -26,7 +26,7 @@ const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
 export class X402PricingOracle {
   private cachedArPrice: number | null = null;
-  private cacheTimestamp: number = 0;
+  private cacheTimestamp = 0;
 
   /**
    * Convert Winston credits to USDC atomic units

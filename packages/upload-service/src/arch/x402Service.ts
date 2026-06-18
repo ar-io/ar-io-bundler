@@ -16,9 +16,9 @@
  */
 import axios from "axios";
 import { ethers } from "ethers";
-// @ts-ignore - @coinbase/x402 doesn't export types
+// @ts-expect-error - @coinbase/x402 doesn't export types
 import { createFacilitatorConfig } from "@coinbase/x402";
-// @ts-ignore - @coinbase/x402 doesn't export types
+// @ts-expect-error - x402/verify doesn't export types
 import { useFacilitator } from "x402/verify";
 
 import logger from "../logger";

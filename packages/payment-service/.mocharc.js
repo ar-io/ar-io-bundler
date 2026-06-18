@@ -2,6 +2,12 @@
 
 process.env.CRYPTO_FUND_EXCLUDED_ADDRESSES = "testExcludedAddress";
 
+// SolanaGateway initializes `new PublicKey(walletAddresses.solana)` in a field
+// initializer at module load, which throws if SOLANA_ADDRESS is unset. Provide a
+// valid base58 pubkey (System Program) so gateway/pricing unit tests can run on a
+// clean CI runner without real secrets. Set before any test module is required.
+process.env.SOLANA_ADDRESS ??= "11111111111111111111111111111111";
+
 // Mocha configuration file
 // Reference for options: https://github.com/mochajs/mocha/blob/master/example/config/.mocharc.js
 module.exports = {

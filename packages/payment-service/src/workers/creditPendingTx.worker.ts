@@ -122,15 +122,13 @@ export function createPendingTxWorker(): Worker {
     });
   });
 
-  process.on("SIGTERM", async () => {
-    globalLogger.info("SIGTERM received, closing worker gracefully");
+  const shutdown = async (signal: string) => {
+    globalLogger.info(`${signal} received, closing worker gracefully`);
     await worker.close();
-  });
+  };
 
-  process.on("SIGINT", async () => {
-    globalLogger.info("SIGINT received, closing worker gracefully");
-    await worker.close();
-  });
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 
   return worker;
 }

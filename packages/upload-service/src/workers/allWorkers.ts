@@ -28,6 +28,8 @@ import { Job } from "bullmq";
 
 import { defaultArchitecture } from "../arch/architecture";
 import { PostgresDatabase } from "../arch/db/postgres";
+import { knex as knexFactory } from "knex";
+
 import { getWriterConfig } from "../arch/db/knexConfig";
 import {
   EnqueuedNewDataItem,
@@ -50,7 +52,7 @@ import logger from "../logger";
 import { createWorker, setupGracefulShutdown } from "./workerUtils";
 import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 
-const knex = require("knex")(getWriterConfig());
+const knex = knexFactory(getWriterConfig());
 const database = new PostgresDatabase();
 
 // Plan Bundle Worker - Runs continuously to plan new data items into bundles

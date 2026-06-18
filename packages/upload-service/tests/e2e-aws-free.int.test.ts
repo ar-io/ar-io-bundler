@@ -18,7 +18,6 @@ import { ArweaveSigner, createData } from "@dha-team/arbundles";
 import Arweave from "arweave";
 import axios from "axios";
 import { expect } from "chai";
-import { readFileSync } from "fs";
 import { Server } from "http";
 import { Queue } from "bullmq";
 import { Knex } from "knex";
@@ -30,7 +29,7 @@ import { getWriterConfig } from "../src/arch/db/knexConfig";
 import { getQueue, QUEUE_NAMES } from "../src/arch/queues/config";
 import { createRedisConnection } from "../src/arch/queues/redis";
 import { getS3ObjectStore } from "../src/utils/objectStoreUtils";
-import { testArweaveJWK, localTestUrl } from "./test_helpers";
+import { testArweaveJWK } from "./test_helpers";
 import logger from "../src/logger";
 
 describe("E2E AWS-Free Integration Tests", function () {

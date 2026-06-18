@@ -80,19 +80,19 @@ export async function waitForJobCompletion(
   return new Promise((resolve, reject) => {
     const queueEvents = new QueueEvents(queueName, { connection: redis });
     const timeout = setTimeout(() => {
-      queueEvents.close();
+      void queueEvents.close();
       resolve(false);
     }, timeoutMs);
 
     queueEvents.on("completed", () => {
       clearTimeout(timeout);
-      queueEvents.close();
+      void queueEvents.close();
       resolve(true);
     });
 
     queueEvents.on("failed", (err) => {
       clearTimeout(timeout);
-      queueEvents.close();
+      void queueEvents.close();
       reject(err);
     });
   });

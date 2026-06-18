@@ -1,4 +1,18 @@
 /**
+ * QUARANTINED (2026-06-18) — this file is renamed to `.disabled` so it is
+ * excluded from typecheck, lint, and the integration runner.
+ *
+ * WHY: it tests the pre-de-AWS "verify bundle via GQL data-item lookup" flow,
+ * which no longer exists. It imports removed exports (`txWellSeededThreshold`,
+ * the `arweave` test helper) and stubs `ArweaveGateway.getDataItemsFromGQL`,
+ * a method that was deleted. The current verify job (`src/jobs/verify.ts`)
+ * hardcodes `isLastDataItemIndexedOnGQL = false` as a TBD placeholder and takes
+ * `arweaveGateway` (not `gateway`) on its arch. There is no stable current
+ * behavior to assert against, so it is parked rather than fake-fixed.
+ *
+ * TODO: rewrite against the finalized verify GQL behavior once that lands, then
+ * restore the `.ts` extension. Tracked by the CI-debt task.
+ *
  * Copyright (C) 2022-2024 Permanent Data Solutions, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
