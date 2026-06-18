@@ -209,19 +209,22 @@ export class X402Service {
         };
       }
 
-      // Validate timeout
-      const maxValidTime = Date.now() / 1000 + requirements.maxTimeoutSeconds;
-      if (authorization.validBefore < maxValidTime) {
+      // Validate timeout: the authorization must remain valid long enough for
+      // settlement to land on-chain. `maxTimeoutSeconds` is the validity WINDOW
+      // we offered the client (e.g. 1h), NOT a minimum-remaining-validity — time
+      // elapses between quoting, signing, and verifying, so requiring the full
+      // window here rejects every real payment ("expires too soon"). Instead,
+      // require a small settlement buffer above now.
+      const settlementBufferSeconds = Number(
+        process.env.X402_SETTLEMENT_BUFFER_SECONDS ?? 6
+      );
+      if (
+        authorization.validBefore <
+        Date.now() / 1000 + settlementBufferSeconds
+      ) {
         return {
           isValid: false,
           invalidReason: "Payment authorization expires too soon",
-        };
-      }
-
-      if (authorization.validBefore * 1000 < Date.now()) {
-        return {
-          isValid: false,
-          invalidReason: "Payment authorization expired",
         };
       }
 

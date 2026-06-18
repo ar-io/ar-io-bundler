@@ -185,30 +185,25 @@ describe("X402Service", () => {
       expect(result.invalidReason).to.include("Incorrect recipient");
     });
 
-    it("rejects payment with expired requirements", async () => {
-      // Create a short-lived authorization that will fail the timeout check
-      const shortValidBefore = Math.floor(Date.now() / 1000) + 1800; // 30 minutes from now
+    it("rejects payment whose authorization is within the settlement buffer", async () => {
+      // Only a couple seconds of remaining validity — not enough to settle
+      // on-chain — must be rejected regardless of maxTimeoutSeconds. (A 30-min or
+      // 2-hour validity is fine: maxTimeoutSeconds is the offered window, not a
+      // minimum-remaining-validity requirement.)
+      const aboutToExpire = Math.floor(Date.now() / 1000) + 2; // < 6s buffer
       const shortPayload = {
         ...validPaymentPayload,
         payload: {
           ...validPaymentPayload.payload,
           authorization: {
             ...validPaymentPayload.payload.authorization,
-            validBefore: shortValidBefore,
+            validBefore: aboutToExpire,
           },
         },
       };
       const shortHeader = Buffer.from(JSON.stringify(shortPayload)).toString("base64");
 
-      const expiredRequirements = {
-        ...requirements,
-        maxTimeoutSeconds: 7200, // Requires 2 hours, but authorization only has 30 minutes
-      };
-
-      const result = await service.verifyPayment(
-        shortHeader,
-        expiredRequirements
-      );
+      const result = await service.verifyPayment(shortHeader, requirements);
 
       expect(result.isValid).to.be.false;
       expect(result.invalidReason).to.include("expires too soon");
