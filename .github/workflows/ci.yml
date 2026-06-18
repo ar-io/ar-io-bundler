@@ -1,0 +1,61 @@
+# Continuous Integration for the AR.IO Bundler monorepo.
+#
+# Runs on every pull request and on pushes to master. Uses the root-level
+# Yarn scripts which fan out across the workspaces via the workspace-tools
+# plugin (yarn workspaces foreach). Workspaces that do not define a given
+# script (e.g. admin-service has no build/lint/typecheck/test:unit) are
+# skipped automatically by `foreach run`.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node version is sourced from .nvmrc (currently v22.22.0).
+      # setup-node provides Yarn cache support keyed off yarn.lock.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: yarn
+
+      # Yarn 3.6.0 is pinned via packageManager; corepack activates it.
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      # Root script: `yarn workspaces foreach -pt run build`.
+      - name: Build
+        run: yarn build
+
+      # Root script: `yarn workspaces foreach -pt run typecheck`.
+      - name: Typecheck
+        run: yarn typecheck
+
+      # Root `lint` maps to each workspace's `lint:check` (eslint).
+      - name: Lint
+        run: yarn lint
+
+      # Root script: `yarn workspaces foreach -pt run test:unit`.
+      # Only payment-service and upload-service define test:unit; the rest
+      # are skipped. These are the dependency-free (no DB/Redis) unit specs.
+      - name: Unit tests
+        run: yarn test:unit
