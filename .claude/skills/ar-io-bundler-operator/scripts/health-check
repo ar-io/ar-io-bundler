@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Quick session-start health snapshot for an AR.IO Bundler deployment.
+#
+# Covers the whole single-node stack: Docker infra (postgres / redis ×2 / minio),
+# the 5 PM2 processes, the two HTTP APIs, the BullMQ bundle pipeline, the required
+# crons, and the wiring to the co-located AR.IO gateway (optical bridge + reads).
+#
+# Read-only. Safe to run any time. Mirrors the ar-io-gateway-operator health-check.
+#
+# Useful env knobs (all optional — defaults match the dev/test box):
+#   BUNDLER_PATH        repo root            (default: dir two levels above this script)
+#   UPLOAD_URL          upload API base      (default: http://localhost:3001)
+#   PAYMENT_URL         payment API base     (default: http://localhost:4001)
+#   ADMIN_URL           admin dashboard      (default: http://localhost:3002)
+#   PG_CONTAINER        postgres container   (default: ar-io-bundler-postgres)
+#   RQ_CONTAINER        redis-queues cont.   (default: ar-io-bundler-redis-queues)
+#   RC_CONTAINER        redis-cache cont.    (default: ar-io-bundler-redis-cache)
+#   MINIO_CONTAINER     minio container      (default: ar-io-bundler-minio)
+#   DB_USER / DB_PASS   pg creds             (default: turbo_admin / postgres)
+#   GATEWAY_ENV         path to gateway .env (default: ../ar-io-node/.env — for admin-key match)
+set -uo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLER_PATH="${BUNDLER_PATH:-$(cd "$SELF/../../../.." && pwd)}"
+UPLOAD_URL="${UPLOAD_URL:-http://localhost:3001}"
+PAYMENT_URL="${PAYMENT_URL:-http://localhost:4001}"
+ADMIN_URL="${ADMIN_URL:-http://localhost:3002}"
+PG_CONTAINER="${PG_CONTAINER:-ar-io-bundler-postgres}"
+RQ_CONTAINER="${RQ_CONTAINER:-ar-io-bundler-redis-queues}"
+RC_CONTAINER="${RC_CONTAINER:-ar-io-bundler-redis-cache}"
+MINIO_CONTAINER="${MINIO_CONTAINER:-ar-io-bundler-minio}"
+DB_USER="${DB_USER:-turbo_admin}"
+DB_PASS="${DB_PASS:-postgres}"
+ENV_FILE="${ENV_FILE:-$BUNDLER_PATH/.env}"
+GATEWAY_ENV="${GATEWAY_ENV:-$(cd "$BUNDLER_PATH/.." 2>/dev/null && pwd)/ar-io-node/.env}"
+
+section() { printf '\n=== %s ===\n' "$1"; }
+
+# --- locate a working pm2 -------------------------------------------------
+# The system `node` is often the wrong version (e.g. v12) while pm2 lives under
+# an nvm Node 22. Find a pm2 whose node actually runs the daemon.
+PM2_BIN="$(command -v pm2 2>/dev/null || true)"
+if [[ -z "$PM2_BIN" ]]; then
+  PM2_BIN="$(ls -t "$HOME"/.nvm/versions/node/*/bin/pm2 2>/dev/null | head -1 || true)"
+fi
+
+section "pm2 processes (want 5 online: payment-service, upload-api, upload-workers, payment-workers, admin-dashboard)"
+if [[ -n "$PM2_BIN" ]]; then
+  "$PM2_BIN" list 2>/dev/null | grep -E 'payment-service|upload-api|upload-workers|payment-workers|admin-dashboard|name' \
+    || echo 'pm2 list returned nothing — daemon may be down or owned by another user'
+else
+  echo 'pm2 not found on PATH or under ~/.nvm — set PM2_BIN or check the deploy user'
+fi
+
+section "docker infra (all 4 should be Up + healthy)"
+docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null \
+  | grep -E "$PG_CONTAINER|$RQ_CONTAINER|$RC_CONTAINER|$MINIO_CONTAINER" | sort \
+  || echo 'docker not accessible'
+
+section "disk"
+df -h "$BUNDLER_PATH" 2>/dev/null | tail -2
+
+section "service health endpoints"
+for pair in "upload  $UPLOAD_URL" "payment $PAYMENT_URL"; do
+  name="${pair%% *}"; url="${pair##* }"
+  body="$(curl -sf -m 5 "$url/v1/info" 2>/dev/null || true)"
+  if [[ -n "$body" ]]; then
+    # pull version + arweave address without requiring jq
+    ver="$(printf '%s' "$body" | grep -oE '"version":"[^"]*"' | head -1)"
+    arw="$(printf '%s' "$body" | grep -oE '"arweave":"[^"]*"' | head -1)"
+    echo "$name :  OK  $ver  $arw"
+  else
+    echo "$name :  UNREACHABLE ($url/v1/info)"
+  fi
+done
+# admin dashboard should answer 401 (auth required = alive)
+code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$ADMIN_URL/admin/queues" 2>/dev/null || echo 000)"
+echo "admin   :  HTTP $code at $ADMIN_URL/admin/queues  (401 = up & auth-protected)"
+
+section "bundle pipeline (upload_service row counts — watch for a stage that only grows)"
+docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d upload_service -t -A -F$'\t' -c "
+  SELECT 'new_data_item',     count(*) FROM new_data_item
+  UNION ALL SELECT 'planned_data_item', count(*) FROM planned_data_item
+  UNION ALL SELECT 'new_bundle',        count(*) FROM new_bundle
+  UNION ALL SELECT 'seeded_bundle',     count(*) FROM seeded_bundle
+  UNION ALL SELECT 'permanent_bundle',  count(*) FROM permanent_bundle
+  UNION ALL SELECT 'permanent_data_items', count(*) FROM permanent_data_items
+  UNION ALL SELECT 'failed_data_item',  count(*) FROM failed_data_item;" 2>/dev/null \
+  || echo 'pg query failed'
+
+section "BullMQ queue depth (redis-queues :6381 — failed>0 or a climbing wait = stuck stage)"
+QUEUES="upload-new-data-item upload-plan-bundle upload-prepare-bundle upload-post-bundle upload-seed-bundle upload-verify-bundle upload-optical-post upload-put-offsets upload-finalize-upload upload-unbundle-bdi upload-cleanup-fs payment-pending-tx"
+printf '%-26s %8s %8s %8s\n' queue wait active failed
+for q in $QUEUES; do
+  w="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 LLEN "bull:$q:wait" 2>/dev/null)"
+  a="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 LLEN "bull:$q:active" 2>/dev/null)"
+  f="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 ZCARD "bull:$q:failed" 2>/dev/null)"
+  printf '%-26s %8s %8s %8s\n' "$q" "${w:-?}" "${a:-?}" "${f:-?}"
+done
+
+section "required crons (plan = MANDATORY; without it nothing bundles)"
+cron="$(crontab -l 2>/dev/null)"
+echo "$cron" | grep -q 'trigger-plan'    && echo 'plan    : registered ✓' || echo 'plan    : MISSING ✗ — bundling will never run'
+echo "$cron" | grep -q 'trigger-cleanup' && echo 'cleanup : registered ✓' || echo 'cleanup : not registered (tiered retention will not run)'
+echo "$cron" | grep -q 'trigger-verify'  && echo 'verify  : registered ✓' || echo 'verify  : not registered (seed→verify still runs via in-pipeline 5-min delay)'
+
+section "gateway wiring (optical bridge + reads)"
+gw_arweave="$(printf '%s' "$(curl -sf -m5 "$UPLOAD_URL/v1/info" 2>/dev/null)" | grep -oE '"arweave":"[^"]*"' | head -1 | cut -d'"' -f4)"
+echo "bundler arweave wallet: ${gw_arweave:-<upload API down>}"
+# optical bridge target(s) from .env
+if [[ -f "$ENV_FILE" ]]; then
+  ob="$(grep -E '^OPTICAL_BRIDGE_URL=' "$ENV_FILE" | cut -d= -f2-)"
+  echo "optical bridge URL   : ${ob:-<unset>}"
+  host="$(printf '%s' "$ob" | sed -E 's#^https?://([^/]+)/.*#\1#')"
+  if [[ -n "$host" ]]; then
+    base="$(printf '%s' "$ob" | sed -E 's#(https?://[^/]+).*#\1#')"
+    curl -sf -m4 "$base/ar-io/healthcheck" >/dev/null 2>&1 && echo "optical bridge reach : OK ($base)" || echo "optical bridge reach : UNREACHABLE ($base)"
+  fi
+  # admin-key match against the gateway's own .env, if we can see it
+  if [[ -f "$GATEWAY_ENV" ]]; then
+    bk="$(grep -E '^AR_IO_ADMIN_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+    gk="$(grep -E '^ADMIN_API_KEY=' "$GATEWAY_ENV" | cut -d= -f2-)"
+    [[ -n "$bk" && "$bk" == "$gk" ]] && echo 'admin key match      : ✓' || echo 'admin key match      : ✗ MISMATCH — optical posts will 401'
+    owner="$(grep -E '^ANS104_UNBUNDLE_FILTER=' "$GATEWAY_ENV" | grep -oE '"owner_address": *"[^"]*"' | grep -oE '[A-Za-z0-9_-]{43}')"
+    if [[ -n "$owner" ]]; then
+      [[ "$owner" == "$gw_arweave" ]] && echo "unbundle filter owner: ✓ matches bundler wallet" \
+        || echo "unbundle filter owner: ⚠ $owner (gateway will NOT unbundle this bundler's bundles unless this == the wallet above, or the filter is {always:true})"
+    fi
+  else
+    echo "gateway .env         : not found at $GATEWAY_ENV (set GATEWAY_ENV to verify admin-key / unbundle-filter match)"
+  fi
+else
+  echo ".env not found at $ENV_FILE"
+fi
+
+section "recent upload-workers errors (last 200 log lines)"
+if [[ -n "$PM2_BIN" ]]; then
+  "$PM2_BIN" logs upload-workers --lines 200 --nostream 2>/dev/null \
+    | grep -iE '"level":"error"|: error:' \
+    | grep -ivE 'Job completed|workers started|Worker for queue' \
+    | sed -E 's/\{.*//' | sort | uniq -c | sort -rn | head -8
+  echo '(empty above = no recent worker errors)'
+else
+  echo 'pm2 not located — skipping'
+fi
