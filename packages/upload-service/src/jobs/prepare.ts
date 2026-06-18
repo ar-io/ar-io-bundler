@@ -291,6 +291,9 @@ export async function prepareBundleHandler(
               rawContentLength: attributes.rawDataItemSize,
               payloadContentType: attributes.payloadContentType,
               payloadDataStart: attributes.payloadDataStartOffset,
+              parentDataItemId: attributes.parentDataItemId,
+              startOffsetInParentDataItemPayload:
+                attributes.startOffsetInParentDataItemPayload,
             })
           ),
         });
