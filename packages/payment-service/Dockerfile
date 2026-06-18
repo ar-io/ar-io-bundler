@@ -1,15 +1,36 @@
-ARG NODE_VERSION=18.17.0
-ARG NODE_VERSION_SHORT=18
+# The codebase requires Node 22 (.nvmrc v22.22.0, root engines >=22.12,
+# @ar.io/sdk v4 is ESM-only). Default to Node 22; CI passes the same value
+# via build-args. NODE_VERSION_SHORT must match the major used by the
+# distroless runtime image below.
+ARG NODE_VERSION=22.14.0
+ARG NODE_VERSION_SHORT=22
 
-FROM node:${NODE_VERSION}-bullseye-slim AS builder
+FROM node:${NODE_VERSION}-bookworm-slim AS builder
 
-# Build
+# This image is built with the package directory as the build context
+# (see .github/workflows/docker.yml and docker-compose.yml). That context
+# does NOT contain the monorepo-root .yarnrc.yml / yarn.lock / Yarn plugins,
+# so we configure a self-contained, node-modules install here rather than
+# relying on the workspace-tools plugin (`yarn workspaces focus`).
 WORKDIR /usr/src/app
-COPY . .
-RUN yarn && yarn build
 
-# Clear cache and install production dependencies
-RUN rm -rf node_modules && yarn workspaces focus --production
+# Activate the Yarn version pinned in package.json via Corepack.
+RUN corepack enable
+
+COPY . .
+
+# Use the node-modules linker (not PnP) so the distroless runtime, which
+# expects a real node_modules tree, works. No lockfile is present in this
+# context, so the install cannot be immutable.
+RUN yarn config set nodeLinker node-modules \
+  && yarn config set enableGlobalCache false \
+  && yarn install --no-immutable \
+  && yarn build
+
+# Produce a production-only dependency tree. `npm prune` operates on the
+# node-modules layout Yarn just created and removes devDependencies without
+# needing the Yarn workspace-tools plugin.
+RUN npm prune --omit=dev
 
 # Extract dist
 FROM gcr.io/distroless/nodejs${NODE_VERSION_SHORT}-debian12

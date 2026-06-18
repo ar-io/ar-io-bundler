@@ -1,7 +1,9 @@
+# Payment-service database migration image.
+#
 # The codebase requires Node 22 (.nvmrc v22.22.0, root engines >=22.12).
-# Default to Node 22; CI passes the same value via build-args.
+# Default to Node 22; CI / compose pass the same value via build-args.
 # NODE_VERSION_SHORT is accepted (and ignored) so this Dockerfile shares the
-# same build-args as the service Dockerfiles in docker.yml / docker-compose.
+# same build-args as the service Dockerfile.
 ARG NODE_VERSION=22.14.0
 ARG NODE_VERSION_SHORT=22
 
@@ -11,13 +13,6 @@ FROM node:${NODE_VERSION}-bookworm-slim
 # monorepo-root .yarnrc.yml / yarn.lock / plugins. Configure a self-contained
 # node-modules install via Corepack (uses the Yarn version from package.json).
 WORKDIR /usr/src/app
-
-# git (+ CA certs) is required to resolve a git-hosted transitive
-# devDependency (avsc -> https://github.com/Irys-xyz/avsc, pulled in by
-# arlocal/turbo-sdk). ca-certificates lets git verify the GitHub TLS cert.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
 
