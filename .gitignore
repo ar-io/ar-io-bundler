@@ -61,3 +61,9 @@ wallet.json
 
 # PM2
 .pm2/
+
+# Operational test wallets (private keys — never commit)
+ops-test-wallet*.json
+
+# Backup output (contains wallets, .env, and user data — never commit)
+backups/
