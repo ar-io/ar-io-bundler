@@ -338,7 +338,8 @@ export class PostgresDatabase implements Database {
       content_type: payloadContentType,
       premium_feature_type: premiumFeatureType,
       signature,
-      deadline_height: deadlineHeight?.toString(),
+      // Default far future deadline height if none provided
+      deadline_height: (deadlineHeight ?? defaultDeadlineHeight).toString(),
     };
   }
 
