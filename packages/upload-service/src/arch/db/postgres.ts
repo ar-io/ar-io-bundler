@@ -338,8 +338,16 @@ export class PostgresDatabase implements Database {
       content_type: payloadContentType,
       premium_feature_type: premiumFeatureType,
       signature,
-      // Default far future deadline height if none provided
-      deadline_height: (deadlineHeight ?? defaultDeadlineHeight).toString(),
+      // Default far-future deadline height if missing, NaN, or non-positive.
+      // Guards against a poisoned "NaN" string re-entering the verify pipeline
+      // (matches upstream: undefined/null/NaN/<=0 all fall back to the default).
+      deadline_height: (deadlineHeight !== undefined &&
+      deadlineHeight !== null &&
+      !isNaN(deadlineHeight) &&
+      deadlineHeight > 0
+        ? deadlineHeight
+        : defaultDeadlineHeight
+      ).toString(),
     };
   }
 

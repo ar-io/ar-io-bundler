@@ -181,6 +181,14 @@ export class SolanaARIOGateway extends Gateway {
     this.wsRpcUrl = toWebsocketUrl(endpoint);
     this.logger = logger;
     this.signerSecretKey = signerSecretKey;
+    if (!recipientOwnerAddress) {
+      // Fail closed with a clear message rather than an opaque `new
+      // PublicKey(undefined)` crash. Recipient comes from ARIO_ADDRESS, falling
+      // back to SOLANA_ADDRESS — one of them MUST be set.
+      throw new Error(
+        "ARIO payment recipient address is not configured. Set ARIO_ADDRESS (or SOLANA_ADDRESS)."
+      );
+    }
     this.recipientOwnerAddress = new PublicKey(recipientOwnerAddress);
     this.mintAddress = new PublicKey(mintAddress);
     this.arioReadable = new SolanaARIOReadable({
@@ -217,8 +225,21 @@ export class SolanaARIOGateway extends Gateway {
       );
     }
 
-    this.arioWriteablePromise = (async () => {
-      const signerBytes = bs58.decode(signerSecretKey);
+    const writeablePromise = (async () => {
+      let signerBytes: Uint8Array;
+      try {
+        signerBytes = bs58.decode(signerSecretKey);
+      } catch (error) {
+        throw new Error(
+          "Failed to decode ARIO_SOLANA_SIGNER_SECRET_KEY as bs58: " +
+            (error instanceof Error ? error.message : String(error))
+        );
+      }
+      if (signerBytes.length !== 64) {
+        throw new Error(
+          `ARIO_SOLANA_SIGNER_SECRET_KEY must decode to a 64-byte Solana secret key, got ${signerBytes.length} bytes.`
+        );
+      }
       const signer = await createKeyPairSignerFromBytes(signerBytes);
       this.signerAddress = signer.address;
 
@@ -229,7 +250,16 @@ export class SolanaARIOGateway extends Gateway {
       });
     })();
 
-    return this.arioWriteablePromise;
+    // Do NOT memoize a failed parse/init: clear the cache on rejection so a
+    // corrected key (or a transient RPC failure) can recover without a restart.
+    writeablePromise.catch(() => {
+      if (this.arioWriteablePromise === writeablePromise) {
+        this.arioWriteablePromise = undefined;
+      }
+    });
+    this.arioWriteablePromise = writeablePromise;
+
+    return writeablePromise;
   }
 
   async getTokenCost({

@@ -151,7 +151,9 @@ export class ArweaveGateway extends Gateway {
     const transaction = response?.data?.data?.transaction;
 
     if (!transaction) {
-      return undefined;
+      // Reject (don't resolve undefined) so Promise.any waits for the /tx
+      // endpoint instead of "winning" the race with a not-yet-indexed result.
+      throw new Error(`Transaction ${transactionId} not found via GQL`);
     }
 
     const turboCreditDestinationAddressTag = transaction.tags?.find(

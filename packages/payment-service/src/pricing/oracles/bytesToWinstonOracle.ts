@@ -41,7 +41,10 @@ export class ArweaveBytesToWinstonOracle implements BytesToWinstonOracle {
   }
 
   async getWinstonForBytes(bytes: ByteCount): Promise<Winston> {
-    const url = `${priceOracleGatewayUrl}/${bytes}`;
+    // Strip any trailing slash so a configured base like ".../price/" does not
+    // produce a double-slash path (".../price//1000") that some gateways 404.
+    const base = `${priceOracleGatewayUrl}`.replace(/\/+$/, "");
+    const url = `${base}/${bytes}`;
 
     globalLogger.debug(`Getting AR price URL: ${url}`);
     try {

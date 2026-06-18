@@ -262,9 +262,20 @@ not currently guarantee this — validate it explicitly on Hetzner.
 | Tiered cleanup (FS 7d / MinIO 90d) | `packages/upload-service/cron-trigger-cleanup.sh` | `0 2 * * *` |
 | Bundle verify (mark permanent) | `scripts/trigger-verify.sh` | periodic (e.g. hourly) |
 
-⚠️ ACTION: these scripts hardcode the deploy path and an nvm `node v22.17.0` binary. Parameterize the
-Node path and repo root for the Hetzner box. Confirm the cleanup vars (§7) are set, and pick **one**
-cleanup mechanism (worker-based `cron-trigger-cleanup.sh` is preferred over the bash `cleanup-bundler-files.sh`).
+🛑 **CRON `node` PATH (will bite silently).** Lane 6 made the scripts portable (`NODE_BIN:-node` + dir
+resolution), but **cron runs with a stripped PATH that does not contain an nvm-installed Node 22**. Because
+the scripts use `set -e` and redirect to a log, a missing `node` makes the planner/cleanup **fail silently**
+— bundling just stops. Always pass an absolute Node binary in the crontab entry:
+
+```bash
+# find it once: command -v node   (e.g. /usr/local/bin/node or ~/.nvm/.../v22.22.0/bin/node)
+*/5 * * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh    >> /var/log/bundler/plan.log 2>&1
+0 2  * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh >> /var/log/bundler/cleanup.log 2>&1
+```
+
+Prefer a **system Node 22** (e.g. nodesource) on Hetzner so `node` is on the default PATH and this footgun
+disappears. Confirm the cleanup vars (§7) are set, and pick **one** cleanup mechanism (worker-based
+`cron-trigger-cleanup.sh` over the bash `cleanup-bundler-files.sh`).
 
 ---
 
