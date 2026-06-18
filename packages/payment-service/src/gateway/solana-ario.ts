@@ -189,7 +189,18 @@ export class SolanaARIOGateway extends Gateway {
         "ARIO payment recipient address is not configured. Set ARIO_ADDRESS (or SOLANA_ADDRESS)."
       );
     }
-    this.recipientOwnerAddress = new PublicKey(recipientOwnerAddress);
+    try {
+      this.recipientOwnerAddress = new PublicKey(recipientOwnerAddress);
+    } catch {
+      // ARIO migrated from Arweave to Solana, so the recipient must be a base58
+      // Solana address. A stale Arweave address (base64url) throws an opaque
+      // "Non-base58 character" here — surface a clear, actionable message.
+      throw new Error(
+        `ARIO payment recipient must be a base58 Solana address (ARIO is a Solana token now). ` +
+          `The configured value is not a valid Solana address — if it is an Arweave address, ` +
+          `set ARIO_ADDRESS (or SOLANA_ADDRESS) to your Solana wallet instead.`
+      );
+    }
     this.mintAddress = new PublicKey(mintAddress);
     this.arioReadable = new SolanaARIOReadable({
       rpc: createSolanaRpc(this.rpcUrl),

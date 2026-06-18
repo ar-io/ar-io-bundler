@@ -164,8 +164,12 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 - **Wallets:** `TURBO_JWK_FILE=/opt/ar-io-bundler/wallet.json`, `RAW_DATA_ITEM_JWK_FILE=/opt/ar-io-bundler/rawWallet.json`.
 - **Auth:** `PRIVATE_ROUTE_SECRET`, `JWT_SECRET` (both set, matching across services).
 - **Inter-service:** `PAYMENT_SERVICE_BASE_URL=localhost:4001` (NO protocol), `PAYMENT_SERVICE_PROTOCOL=http`.
-- **Gateway/optical:** `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY` → the AR.IO gateway; `ARWEAVE_UPLOAD_NODE=https://arweave.net:443`
-  (AR.IO gateways don't serve `/chunk`); `OPTICAL_BRIDGING_ENABLED=true`,
+- **Gateway/optical:** `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY` → your own gateway (NOT arweave.net).
+  `ARWEAVE_UPLOAD_NODE` is the node that posts bundles/chunks to the Arweave network — point it at your own
+  gateway (e.g. `https://vilenarios.com`), which distributes chunks to Arweave tip nodes. (AR.IO gateways
+  don't serve `/chunk` directly, so this is the one path that ultimately reaches the network.) Goal: **no
+  arweave.net anywhere** — reads/pricing/tx via the local gateway, posting via your gateway.
+  `OPTICAL_BRIDGING_ENABLED=true`,
   `OPTICAL_BRIDGE_URL=http://<gateway>:4000/ar-io/admin/queue-data-item`, `AR_IO_ADMIN_KEY`,
   `OPTIONAL_OPTICAL_BRIDGE_URLS` (second gateway). ⚠️ replace the dev LAN IP `192.168.2.235` with the
   prod gateway's private address.
@@ -175,12 +179,19 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
   `API_INSTANCES`/`WORKER_INSTANCES`, `RATE_LIMIT_*`, `OTEL_*`, `PROMETHEUS_PORT=9090`.
 - **Vertical-integration + pricing vars (from backport lanes — defaults preserve old behavior):**
   - `PRICE_ORACLE_GATEWAY_URL` — Arweave byte-price oracle gateway (Lane 3; default `https://arweave.net/price`).
-    Point at the self-hosted gateway, e.g. `https://turbo-gateway.com/price` (byte count appended as a path segment).
+    **Set this to your own gateway** (e.g. `http://localhost:3000/price` / `https://turbo-gateway.com/price`).
+    🔴 Validated on dev: leaving the default makes byte pricing hit `arweave.net`, which **429s under load**
+    → "Pricing Oracle Unavailable" on every priced upload. The local gateway returns 200.
   - `USD_PRICE_PER_DATA_ITEM` — flat per-data-item surcharge in USD (Lane 3; default `0.00002`).
 - **Solana-ARIO vars (Lane 4 — required for ARIO/ArNS payments & writes):**
-  - `ARIO_GATEWAY_URL` — ARIO gateway Solana RPC endpoint (default: SDK network RPC — devnet in dev, else mainnet).
-  - `ARIO_ADDRESS` — ARIO payment **recipient** (Solana). Falls back to `SOLANA_ADDRESS`. **Fail-closed:** boot
-    throws if neither is set — by design, so payments can never silently credit a wrong/default wallet. **Set this.**
+  - `ARIO_ADDRESS` — ARIO payment **recipient**. 🔴 **MUST be a base58 *Solana* address** now (ARIO migrated
+    Arweave→Solana). A stale **Arweave** `ARIO_ADDRESS` crashes payment-service boot (`new PublicKey()` →
+    "Non-base58 character"). Falls back to `SOLANA_ADDRESS` (also Solana). Fail-closed: boot throws if neither
+    is set, so payments can't credit a wrong wallet. Can reuse your `SOLANA_ADDRESS` wallet.
+  - `ARIO_GATEWAY_URL` — ARIO Solana RPC endpoint. Unset → public Solana RPC, which **429s**. 🔴 Also note a
+    **paid RPC can still 403** ARIO reads (`getProgramAccounts` etc.) if that method isn't enabled on the plan —
+    SOL *payments* work on a cheaper plan but ArNS/ARIO *reads* need the heavier methods. Use an RPC that
+    permits them (reuse your `SOLANA_GATEWAY` QuickNode endpoint *if* the plan allows the methods).
   - `ARIO_MINT_ADDRESS` — ARIO SPL mint (default: DEVNET/MAINNET ARIO mint from the SDK).
   - `ARIO_SOLANA_SIGNER_SECRET_KEY` — bs58 Solana key authorizing **ArNS writes**. Unset ⇒ ArNS is **read-only**.
   - ⚠️ **ArNS signer changed:** writes now use `ARIO_SOLANA_SIGNER_SECRET_KEY` (Solana bs58), **not** the old
