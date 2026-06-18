@@ -4,267 +4,237 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the Turbo Payment Service - a Node.js payment processing service that handles cryptocurrency payments (Arweave, Ethereum, Solana, Matic/POL, KYVE, Base-ETH), Stripe payments, and credit management for ArDrive's Turbo infrastructure. The service manages user balances, payment receipts, promotional codes, and ArNS (Arweave Name System) purchases.
+This is the **AR.IO Bundler Payment Service** — a Node.js service that handles
+cryptocurrency payments (Arweave, Ethereum, Solana, Matic/POL, KYVE, Base-ETH),
+x402 USDC payments, Stripe card payments, and credit management for the AR.IO
+Bundler platform. It manages user balances (Winston credits), payment receipts,
+delegated payment approvals, and ArNS (Arweave Name System) purchases.
+
+> This is a de-AWS fork of ArDrive's Turbo Payment Service. The original ran on
+> AWS (SQS consumers, Secrets Manager/SSM). **That is no longer the case.**
+> Background work runs on **BullMQ** (the `payment-workers` PM2 process) and all
+> configuration loads from the repo-root `.env` — `loadSecretsToEnv()` is now just
+> a dotenv loader (the AWS Secrets Manager/SSM integration was removed).
 
 ## Key Commands
 
-### Development Setup
+Run from `packages/payment-service/` (or via `yarn workspace @ar-io-bundler/payment-service <script>`).
+
 ```bash
-cp .env.sample .env  # Create environment file (update with actual values)
-yarn                 # Install dependencies
+# Setup
+yarn                 # Install dependencies (Node 22 required)
 yarn build           # Clean and compile TypeScript to lib/
 yarn db:up           # Start PostgreSQL in Docker and run migrations
-yarn start           # Start the compiled service
-yarn start:watch     # Development mode with hot reloading via nodemon
+yarn start           # Run the compiled service (lib/index.js)
+yarn start:watch     # Hot reload via nodemon (loads .env)
+
+# Testing (Mocha + nyc)
+yarn test:unit                          # Unit tests (src/**/*.test.ts)
+yarn test:integration:local             # Integration tests against local docker postgres
+yarn test:integration:local -g "Router" # Targeted integration tests
+yarn test                               # All unit + integration tests
+yarn test:docker                        # Full suite in an isolated container
+
+# Code Quality
+yarn lint:check / yarn lint:fix
+yarn format:check / yarn format:fix
+yarn typecheck
+
+# Database migrations (Knex)
+yarn db:migrate:latest                  # Apply pending migrations
+yarn db:migrate:rollback                # Roll back the last migration
+yarn db:migrate:list                    # List applied migrations
+yarn db:migrate:make MIGRATION_NAME     # Create a new migration file
 ```
 
-### Testing
-```bash
-# Unit tests only (tests in src/**/*.test.ts)
-yarn test:unit
+> Migration creation here is `yarn db:migrate:make` (the upload-service uses
+> `db:migrate:new`). There is no `db:migrate:new` script in this package.
 
-# Integration tests only (tests in tests/**/*.test.ts)
-yarn test:integration:local          # Runs against local docker postgres
-yarn test:integration:local -g "Router"  # Run specific integration tests
-
-# All tests
-yarn test            # Run all unit and integration tests
-yarn test:docker     # Run all tests in isolated Docker container
-
-# Continuous testing during development
-watch -n 30 'yarn test:integration:local -g "Router"'  # Re-run tests every 30s
-```
-
-### Code Quality
-```bash
-yarn lint:check      # Check for ESLint errors
-yarn lint:fix        # Auto-fix ESLint errors
-yarn format:check    # Check Prettier formatting
-yarn format:fix      # Auto-fix Prettier formatting
-yarn typecheck       # Run TypeScript type checking without emitting files
-```
-
-### Database Migrations
-```bash
-yarn db:migrate:latest                    # Run all pending migrations
-yarn db:migrate:rollback                  # Rollback last migration
-yarn db:migrate:rollback --all            # Rollback all migrations
-yarn db:migrate:list                      # List all applied migrations
-yarn db:migrate:make MIGRATION_NAME       # Create new migration file
-
-# Manual migration commands
-yarn knex migrate:up MIGRATION_NAME.ts --knexfile src/database/knexfile.ts
-yarn knex migrate:down MIGRATION_NAME.ts --knexfile src/database/knexfile.ts
-```
-
-#### Creating Migrations
-1. Add migration logic to `src/database/schema.ts` as a static function
-2. Run `yarn db:migrate:make MIGRATION_NAME` to generate migration file in `src/migrations/`
-3. Update the generated migration to call the function from step 1
-4. Run `yarn db:migrate:latest` to apply the migration
-
-### Docker
-```bash
-yarn start:docker    # Run service + postgres in docker
-yarn db:up           # Start only postgres container
-yarn db:down         # Stop and remove postgres container with volume
-```
+### Creating migrations
+1. Add migration logic to `src/database/schema.ts` as a static function.
+2. `yarn db:migrate:make MIGRATION_NAME` generates a file in `src/migrations/`.
+3. Update the generated file to call your function from step 1.
+4. `yarn db:migrate:latest` to apply it.
 
 ## Architecture Overview
 
-### Core Architecture Pattern
-The service uses a dependency injection pattern centered around the `Architecture` interface (src/architecture.ts:24):
+### Core dependency-injection pattern
+
+The service centers on an `Architecture` interface (`src/architecture.ts`)
+injected into the Koa middleware context. The concrete object is built inline in
+`src/server.ts` and injected via `src/middleware/architecture.ts` (there is no
+`defaultArchitecture` export here).
+
 ```typescript
 interface Architecture {
   paymentDatabase: Database;
   pricingService: PricingService;
   stripe: Stripe;
-  emailProvider?: EmailProvider;
+  emailProvider?: EmailProvider;   // optional (gifting/notifications)
   gatewayMap: GatewayMap;
+  x402Service: X402Service;
 }
 ```
 
-This architecture object is injected into the Koa middleware context, making these dependencies available to all route handlers.
+### Application structure
 
-### Application Structure
+**Entry point (`src/index.ts`)** — starts the HTTP server via `createServer()`.
 
-**Entry Point (src/index.ts)**
-- Starts HTTP server via `createServer()`
-- Starts SQS consumers via `startConsumers()`
+**HTTP server (`src/server.ts`)** — Koa REST API on port 4001 by default
+(`PAYMENT_SERVICE_PORT`, see `defaultPort` in `src/constants.ts`). JWT middleware
+runs in passthrough mode; routes enforce auth themselves. Calls
+`loadSecretsToEnv()` (dotenv) at boot.
 
-**HTTP Server (src/server.ts)**
-- Koa-based REST API on port 4000 (configurable)
-- JWT authentication middleware (passthrough mode - routes handle auth checks)
-- Architecture dependencies injected via middleware
-- Routes defined in src/router.ts
+**Background workers (`src/workers/index.ts`)** — a separate process (PM2's
+`payment-workers`, fork mode, single instance) running two **BullMQ** workers:
+1. **Pending payment TX worker** (`creditPendingTx.worker.ts`) — credits accounts
+   once blockchain transactions confirm. A recurring producer schedules the check.
+2. **Admin credit tool worker** (`adminCreditTool.worker.ts`) — bulk credit
+   operations for administration.
 
-**SQS Consumers (src/consumer.ts)**
-Two background job processors:
-1. **Pending Payment TX Queue**: Credits user accounts when blockchain transactions are confirmed
-2. **Admin Credit Tool Queue**: Bulk credit operations for administrative tasks
+The worker process self-loads the repo-root `.env` before importing modules that
+validate config at import time (e.g. `X402_PAYMENT_ADDRESS`).
 
-### Key Components
+### Key components
 
-**Database Layer (src/database/)**
-- `Database` interface defines all data operations
-- `PostgresDatabase` is the primary implementation using Knex.js
-- Schema migrations in src/migrations/
-- Database types and mappings in dbTypes.ts and dbMaps.ts
+**Database layer (`src/database/`)** — the `Database` interface with
+`PostgresDatabase` (Knex) as the implementation. Migrations in `src/migrations/`;
+types/mappings in `dbTypes.ts` / `dbMaps.ts`. Database name comes from
+`PAYMENT_DB_DATABASE` (default `payment_service`).
 
-**Gateway Layer (src/gateway/)**
-- Abstract `Gateway` class defines blockchain interaction interface
-- Implementations: ArweaveGateway, EthereumGateway, SolanaGateway, MaticGateway, KyveGateway, BaseEthGateway, ARIOGateway
-- Gateways handle: transaction verification, balance checks, address validation
-- Each gateway knows how to poll for transaction confirmations on its blockchain
+**Gateway layer (`src/gateway/`)** — an abstract `Gateway` and per-chain
+implementations: `arweave.ts`, `ethereum.ts`, `solana.ts`, `matic.ts`, `kyve.ts`,
+`base-eth.ts`, plus `x402.ts` and the ArNS gateways `ario.ts` / `solana-ario.ts`
+(see below). Gateways handle transaction verification, balance checks, and address
+validation, polling each chain for confirmations.
 
-**Pricing Service (src/pricing/)**
-- `PricingService` interface with `TurboPricingService` implementation
-- Oracles for rate conversions:
-  - `BytesToWinstonOracle`: Storage bytes → Arweave Winston
-  - `TokenToFiatOracle`: Cryptocurrency → Fiat currency
-- Handles promotional codes, discounts, and payment adjustments
+**Pricing service (`src/pricing/`)** — `PricingService` / `TurboPricingService`
+with oracles: `BytesToWinstonOracle` (bytes → Winston) and `TokenToFiatOracle`
+(crypto → fiat). `src/pricing/pricing.ts` also applies a **flat per-data-item USD
+surcharge** (`USD_PRICE_PER_DATA_ITEM`, default `0.00002`) on top of the byte
+price across price/reserve/check. The bytes→Winston oracle can be pointed at a
+self-hosted gateway via `PRICE_ORACLE_GATEWAY_URL` (vertical integration; avoids
+arweave.net rate limits).
 
-**Routes (src/routes/)**
-Key route categories:
-- **x402 Payment Protocol (Primary)**: `/v1/x402/*` - HTTP 402 standard with USDC
-  - `GET /v1/x402/price/:signatureType/:address?bytes=N` - Returns 402 with payment requirements
-  - `POST /v1/x402/payment/:signatureType/:address` - Verify and settle x402 payment
-  - `POST /v1/x402/finalize` - Finalize payment with fraud detection
-- Price calculation: `/v1/price/*`, `/v1/arns/price/*`
-- Balance operations: `/v1/balance`, `/v1/reserve-balance`, `/v1/refund-balance`
-- Payments: `/v1/top-up`, `/v1/redeem`, `/v1/stripe-webhook`
-- ArNS purchases: `/v1/arns/purchase`, `/v1/arns/quote`
-- Delegated payment approvals: `/v1/account/approvals/*`
+**Routes (`src/routes/`)** — see "Routes" below.
 
-**Middleware (src/middleware/)**
-- `verifySignature`: Validates cryptographic signatures on requests
-- `architectureMiddleware`: Injects Architecture dependencies into context
-- `loggerMiddleware`: Request/response logging
+**Middleware (`src/middleware/`)** — `verifySignature` (validates request
+signatures), `architecture` (injects DI context), and request/response logging.
 
-### Data Flow Examples
+### Routes
 
-**Payment Processing (Stripe)**
-1. User initiates payment → Stripe checkout session created
-2. Stripe webhook → `/v1/stripe-webhook` → `stripeRoute`
-3. Event handlers process payment → Create payment receipt
-4. Credits added to user balance in database
+- **x402 (primary)** — `GET /v1/x402/price/:signatureType/:address`,
+  `POST /v1/x402/payment/:signatureType/:address`, `POST /v1/x402/finalize`,
+  `POST /v1/x402/top-up/:signatureType/:address`
+  (handlers: `x402Price.ts`, `x402Payment.ts`, `x402Finalize.ts`, `x402TopUp.ts`,
+  `x402PaywallHtml.ts`)
+- **Pricing** — `/v1/price/*` (`priceBytes.ts`, `priceFiat.ts`, `priceCrypto.ts`),
+  `/v1/rates`, `arweaveCompatiblePrice.ts`
+- **Balance** — `GET /v1/balance`, `GET /v1/account/balance[/:token]`,
+  `/v1/reserve-balance`, `/v1/refund-balance`, `/v1/check-balance`
+- **Top-up / redeem** — `GET /v1/top-up/:method/:address/:currency/:amount`,
+  `/v1/redeem`
+- **Crypto funding (pending tx)** — `POST /v1/account/balance/:token` →
+  `addPendingPaymentTx.ts`
+- **Stripe** — `POST /v1/stripe-webhook` → `stripe/stripeRoute.ts`
+- **ArNS** — `GET /v1/arns/price/:intent/:name`,
+  `POST /v1/arns/purchase/:intent/:name`, `GET /v1/arns/purchase/:nonce`,
+  `GET /v1/arns/quote/...`
+- **Delegated payment approvals** — create / get / get-all / revoke
 
-**Crypto Payment Processing**
-1. User submits transaction ID → `/v1/account/balance/:token` → `addPendingPaymentTx`
-2. Transaction stored as "pending" in database
-3. SQS message triggers `creditPendingTx` job
-4. Gateway polls blockchain for confirmation
-5. When confirmed: credits applied, receipt created, transaction marked as "credited"
+### ArNS purchases (Solana-ARIO, @ar.io/sdk v4)
 
-**ArNS Purchase Flow**
-1. Price quote: `GET /v1/arns/price/:intent/:name`
-2. Purchase initiation: `POST /v1/arns/purchase/:intent/:name`
-3. Status check: `GET /v1/arns/purchase/:nonce`
-4. Stripe payment flow or crypto payment flow
-5. On success: interact with ARIOGateway to complete ArNS registration
+ArNS purchases settle on **Solana** with the SPL ARIO token, using
+**`@ar.io/sdk` v4** (ESM-only — this is the main reason **Node 22 is required**).
 
-### x402 Payment Protocol (Primary Flow)
+- `src/gateway/solana-ario.ts` — `SolanaARIOGateway`, built on `@ar.io/sdk`
+  (`SolanaARIOReadable`/`SolanaARIOWriteable`, ARIO mints, RPC URLs) plus
+  `@solana/kit` / `@solana/web3.js`. Reads `ARIO_SOLANA_SIGNER_SECRET_KEY` (bs58
+  Solana secret key) to authorize writes; if unset, ArNS is **read-only** (price/
+  quote work, purchases disabled). Mint/RPC default to devnet in dev/test and
+  mainnet otherwise (override via `ARIO_MINT_ADDRESS` / `ARIO_GATEWAY_URL`).
+- `src/gateway/ario.ts` — `ARIOGateway extends SolanaARIOGateway`, wired into
+  `gatewayMap.ario` and used by `initiateArNSPurchase.ts`.
+- The ARIO payment recipient is `ARIO_ADDRESS` (falls back to `SOLANA_ADDRESS`);
+  the service **fails closed at boot** if neither is set, so ARIO payments can
+  never silently credit the wrong wallet.
 
-The service implements Coinbase's x402 standard as the primary payment method:
+> This replaces the old Arweave-based `ARIO_SIGNING_JWK` write path for ARIO.
 
-**Three-Phase Flow:**
+### Data flow examples
 
-**Phase 1: Price Quote (GET /v1/x402/price/:signatureType/:address?bytes=N)**
-- Returns 402 Payment Required (NOT 200!)
-- Headers: `X-Payment-Required: x402-1`
-- Response includes PaymentRequirements with all required fields:
-  - `scheme`: "exact" (EIP-3009 payment scheme)
-  - `network`: "base-sepolia", "base-mainnet", etc.
-  - `maxAmountRequired`: USDC amount in smallest unit (6 decimals)
-  - `resource`: "/v1/tx" (the upload endpoint)
-  - `description`: Human-readable payment description
-  - `mimeType`: "application/json"
-  - `payTo`: Recipient Ethereum address
-  - `maxTimeoutSeconds`: Payment authorization timeout
-  - `asset`: USDC contract address
-  - `extra`: { name: "USD Coin", version: "2" }
+**Stripe payment** — checkout session → `POST /v1/stripe-webhook` →
+`stripeRoute` event handlers → payment receipt → credits added.
 
-**Phase 2: Verify and Settle (POST /v1/x402/payment/:signatureType/:address)**
-- Validates X-PAYMENT header (base64 JSON with EIP-712 signature)
-- Verifies EIP-3009 authorization signature
-- Calls USDC contract's `receiveWithAuthorization()` or simulates transfer
-- Returns payment result with paymentId, txHash, network, mode
+**Crypto payment** — `POST /v1/account/balance/:token` → `addPendingPaymentTx`
+stores it "pending" → the **BullMQ** pending-tx worker polls the chain → on
+confirmation, credits applied, receipt created, tx marked "credited".
 
-**Phase 3: Finalize (POST /v1/x402/finalize)**
-- Fraud detection: compares declared byteCount vs actual data item size
-- Refunds or penalizes based on discrepancy
-- Returns finalization status
+**ArNS purchase** — `GET /v1/arns/price/:intent/:name` → quote →
+`POST /v1/arns/purchase/:intent/:name` → `initiateArNSPurchase` computes the ARIO
+cost, creates a receipt, and calls `ario.initiateArNSPurchase(...)` (Solana).
 
-**Implementation Files:**
-- `src/routes/x402Price.ts` - 402 responses with payment requirements
-- `src/routes/x402Payment.ts` - Payment verification and settlement
-- `src/routes/x402Finalize.ts` - Fraud detection and finalization
-- `src/x402/x402Service.ts` - Type definitions and interfaces
-- `src/pricing/x402PricingOracle.ts` - AR → USD → USDC conversion
+### x402 payment protocol (primary flow)
 
-**Payment Modes:**
-- `payg`: Pay-as-you-go (payment covers only this upload)
-- `topup`: Credit account balance (payment adds to user credits)
-- `hybrid`: Pay for upload + excess tops up balance (DEFAULT)
+Coinbase's x402 (HTTP 402 + USDC) is the primary payment method.
 
-**Standards:**
-- x402 Protocol: https://github.com/coinbase/x402
-- EIP-3009: TransferWithAuthorization (gasless USDC transfers)
-- EIP-712: Typed structured data signing
+1. **Price quote** — `GET /v1/x402/price/:signatureType/:address` returns
+   **402 Payment Required** with `X-Payment-Required: x402-1` and a
+   `PaymentRequirements` object (scheme `exact`, network, `maxAmountRequired` in
+   USDC's 6-decimal unit, `payTo`, `asset` USDC contract, timeout, etc.).
+2. **Verify & settle** — `POST /v1/x402/payment/:signatureType/:address` validates
+   the base64 `X-PAYMENT` header (EIP-712 signature over an EIP-3009
+   authorization) and settles the USDC transfer.
+3. **Finalize** — `POST /v1/x402/finalize` runs fraud detection comparing the
+   declared byte count vs. the actual data-item size, refunding/penalizing on
+   discrepancy.
+
+**Implementation:** `src/routes/x402Price.ts`, `x402Payment.ts`, `x402Finalize.ts`;
+`src/gateway/x402.ts`; x402 pricing oracle in `src/pricing/`.
+
+**Payment modes:** `payg` (this upload only), `topup` (credit balance), `hybrid`
+(pay for upload + top up the remainder — default, `X402_DEFAULT_MODE`).
+
+**Smart-contract wallets:** ERC-1271 signature verification is supported.
+
+**Standards:** x402 (https://github.com/coinbase/x402), EIP-3009
+(TransferWithAuthorization), EIP-712 (typed-data signing).
 
 ## Important Implementation Notes
 
-### Environment Configuration
-- Set `NODE_ENV=test` to avoid AWS credential lookups during local development
-- Secrets loaded from AWS Secrets Manager in production via `loadSecretsToEnv()`
-- Required env vars: `STRIPE_SECRET_KEY`, `PRIVATE_ROUTE_SECRET`
+### Configuration
+- All config loads from the repo-root `.env` (via dotenv). No AWS Secrets
+  Manager/SSM. Set `NODE_ENV=test` for local test runs.
+- Notable required vars: `PRIVATE_ROUTE_SECRET`, `X402_PAYMENT_ADDRESS` (when x402
+  enabled), `STRIPE_SECRET_KEY` (when Stripe enabled).
 
-### Cryptographic Address Types
-The service supports multiple address types (DestinationAddressType):
-- `arweave`: Base64URL Arweave addresses
-- `ethereum`: Ethereum addresses
-- `solana` / `ed25519`: Solana addresses
-- `kyve`: KYVE addresses
-- `email`: Email-based gifting
-- `matic` / `pol`: Polygon addresses
-- `base-eth`: Base chain addresses
+### Address types
+Supports multiple `DestinationAddressType`s: `arweave`, `ethereum`, `solana` /
+`ed25519`, `kyve`, `matic` / `pol`, `base-eth`, and `email` (gifting). Validation
+lives in `src/utils/`. Ethereum-family addresses are normalized to their EIP-55
+checksum form via `src/utils/normalizeEthereumAddress.ts` so the same wallet maps
+to one canonical balance regardless of input casing.
 
-Each has validation in `src/utils/base64.ts` via `isValidUserAddress()`
+### Balance reservations
+`reserveBalance` locks credits for a pending upload; `refundBalance` releases them.
+This prevents double-spending across multi-step operations.
 
-### Balance Reservations
-The service implements a reservation system for balance holds:
-- `reserveBalance`: Temporarily lock credits for a pending operation
-- `refundBalance`: Release reserved credits back to available balance
-- Used to prevent double-spending during multi-step operations
+### Type system
+Domain types in `src/types/`: `Winston`/`W` (10⁻¹² AR), `ByteCount`,
+`PositiveFiniteInteger` — strong typing prevents bytes/Winston/fiat confusion.
 
-### Testing Patterns
-- **Unit tests**: Co-located with source files (*.test.ts in src/)
-- **Integration tests**: Separate tests/ directory
-- Integration tests require postgres - use `yarn test:integration:local` which handles DB lifecycle
-- Test helpers in tests/dbTestHelper.ts for database setup/teardown
-- Use `dbTestHelper.ts` functions for integration test database management
+### Testing patterns
+- Unit tests co-located in `src/` (`*.test.ts`); integration tests in `tests/`.
+- `yarn test:integration:local` manages the postgres lifecycle; helpers in
+  `tests/dbTestHelper.ts`.
 
-### Type System
-Custom types in src/types/ provide domain modeling:
-- `Winston`, `W`: Arweave's smallest unit (10^-12 AR)
-- `ByteCount`: Validated byte quantities
-- `PositiveFiniteInteger`: Ensures positive integers
-- Strong typing prevents unit confusion (bytes vs winston vs fiat)
-
-### Husky Git Hooks
-Pre-commit hooks run linting and formatting - configured via husky and lint-staged in package.json
-
-### API Compatibility
-Maintains backward compatibility with older ArDrive/Arweave ecosystem tools:
-- `/account/balance/:token` routes (legacy format)
-- `/price/:token/:amount` routes (Arconnect compatibility)
-- Stubbed balance routes return large dummy values for compatibility
+### Backward compatibility
+Maintains legacy ArDrive/Arweave-ecosystem routes (`/account/balance/:token`,
+Arconnect-compatible price routes) for older clients.
 
 ## Development Workflow
-
-1. Make code changes
-2. Run `yarn typecheck` to catch type errors
-3. Run `yarn lint:fix` and `yarn format:fix` before committing
-4. Run relevant tests: `yarn test:unit` or `yarn test:integration:local`
-5. Commit (husky will run pre-commit hooks)
-6. Migrations: Follow the migration creation process if database changes are needed
+1. Make changes.
+2. `yarn typecheck`.
+3. `yarn lint:fix` and `yarn format:fix`.
+4. Run tests (`yarn test:unit` / `yarn test:integration:local`).
+5. For schema changes, follow the migration steps above.
