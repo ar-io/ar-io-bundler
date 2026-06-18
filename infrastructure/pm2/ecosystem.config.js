@@ -129,8 +129,11 @@ module.exports = {
       name: "payment-workers",
       script: "./lib/workers/index.js",
       cwd: pkg("payment-service"),
-      instances: process.env.WORKER_INSTANCES || 1,
-      exec_mode: "fork", // Single instance to avoid duplicate job processing
+      // Hardcoded to 1 (NOT WORKER_INSTANCES): this worker finalizes pending
+      // crypto-payment credits, so it must never be scaled into duplicate
+      // financial processing, independent of the upload-worker scale knob.
+      instances: 1,
+      exec_mode: "fork",
       env_file: envFile,
       env: {
         NODE_ENV: process.env.NODE_ENV || "development",
