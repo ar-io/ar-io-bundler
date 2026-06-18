@@ -46,6 +46,12 @@ import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import knex, { Knex } from "knex";
 import { resolve } from "path";
+import { config as loadEnvFile } from "dotenv";
+
+// Load the repo-root .env so the opt-in full-pipeline block can enqueue a plan
+// job via the bundler's own queue (needs REDIS_QUEUE_* config). Harmless for the
+// fast suite, which only talks HTTP to the already-running services.
+loadEnvFile({ path: resolve(__dirname, "../../../.env") });
 
 // ---------------------------------------------------------------------------
 // Config — all reads pointed at LOCAL services. Never arweave.net.
@@ -124,7 +130,48 @@ async function waitFor(
   return false;
 }
 
+/**
+ * GET that never throws on a transient network error (ECONNRESET / socket hang
+ * up) — returns status 0 so pollers treat it as "not ready yet" and retry,
+ * instead of failing the test. Clustered API instances occasionally reset a
+ * keep-alive socket; polling should be resilient to that.
+ */
+async function getJson(
+  url: string,
+  opts: Record<string, unknown> = {}
+): Promise<{ status: number; data: any }> {
+  try {
+    const r = await axios.get(url, {
+      validateStatus: () => true,
+      timeout: 10_000,
+      ...opts,
+    });
+    return { status: r.status, data: r.data };
+  } catch {
+    return { status: 0, data: undefined };
+  }
+}
+
+/** Run a minimal Arweave-GraphQL query against a gateway; returns data.data. */
+async function gatewayGraphql(gateway: string, query: string): Promise<any> {
+  const { data } = await axios.post(
+    `${gateway}/graphql`,
+    { query },
+    {
+      headers: { "Content-Type": "application/json" },
+      validateStatus: () => true,
+      timeout: 15_000,
+    }
+  );
+  return data?.data;
+}
+
 const testAddress = jwkToArweaveAddress(testArweaveJWK);
+
+// Shared across describe blocks: the item uploaded in block 3 is re-used by the
+// gateway-integration (6) and full-pipeline (7) blocks below.
+let uploadedDataItemId: string | undefined;
+let uploadedPayload: Buffer | undefined;
 
 // SDK config shared across authenticated/unauthenticated clients.
 const sharedConfig = {
@@ -315,6 +362,8 @@ describe("E2E — AR.IO Bundler via @ardrive/turbo-sdk (live localhost)", functi
       expect(BigInt(result.winc) > 0n, "upload should cost winc").to.be.true;
 
       const dataItemId = result.id;
+      uploadedDataItemId = dataItemId;
+      uploadedPayload = payload;
 
       // Poll the upload-service status endpoint until the item is ingested.
       // Internal status sequence: new -> pending(planned/bundled) -> permanent.
@@ -323,21 +372,22 @@ describe("E2E — AR.IO Bundler via @ardrive/turbo-sdk (live localhost)", functi
       // permanence (that needs a real Arweave post, which is out of scope).
       const statusUrl = `${UPLOAD_SERVICE_URL}/v1/tx/${dataItemId}/status`;
 
+      let statusBody: { status?: string; info?: string } | undefined;
       const reachedNew = await waitFor(
         async () => {
-          const { status, data } = await axios.get(statusUrl, {
-            validateStatus: () => true,
-          });
-          return status === 200 && typeof data?.info === "string";
+          const { status, data } = await getJson(statusUrl);
+          if (status === 200 && typeof data?.info === "string") {
+            statusBody = data;
+            return true;
+          }
+          return false;
         },
         { timeoutMs: 30_000, intervalMs: 1_000 }
       );
       expect(reachedNew, "data item should appear in upload-service status DB")
         .to.be.true;
+      statusBody = statusBody as { status?: string; info?: string };
 
-      const { data: statusBody } = await axios.get(statusUrl, {
-        validateStatus: () => true,
-      });
       // Public status is one of CONFIRMED | FINALIZED | FAILED; internal info
       // is one of new | pending | permanent | failed.
       expect(statusBody.status, "public status").to.be.oneOf([
@@ -383,9 +433,7 @@ describe("E2E — AR.IO Bundler via @ardrive/turbo-sdk (live localhost)", functi
       // within the test window; we log but do not fail the test on it.
       const advanced = await waitFor(
         async () => {
-          const { data } = await axios.get(statusUrl, {
-            validateStatus: () => true,
-          });
+          const { data } = await getJson(statusUrl);
           return data?.info === "pending" || data?.info === "permanent";
         },
         { timeoutMs: 20_000, intervalMs: 2_000 }
@@ -453,5 +501,171 @@ describe("E2E — AR.IO Bundler via @ardrive/turbo-sdk (live localhost)", functi
     it.skip(
       "prices an ArNS name (BLOCKED: Solana RPC returns 403 for ARIO methods)"
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. GATEWAY INTEGRATION — the optical-post job pushes the data item to the
+  //    AR.IO gateway, which indexes it (GraphQL) and serves its bytes (/raw)
+  //    BEFORE the bundle is posted. Proves the vertical-integration read path
+  //    end-to-end on the downstream gateway.
+  // -------------------------------------------------------------------------
+  describe("6) Gateway integration (optical index + retrieval)", function () {
+    before(function () {
+      if (!servicesUp || !uploadedDataItemId) this.skip();
+    });
+
+    it("data item is GraphQL-indexed on the gateway (owner, size, tags)", async () => {
+      const id = uploadedDataItemId as string;
+      let tx:
+        | {
+            owner?: { address?: string };
+            data?: { size?: string };
+            tags?: { name: string }[];
+          }
+        | undefined;
+      const found = await waitFor(
+        async () => {
+          const d = await gatewayGraphql(
+            LOCAL_GATEWAY_URL,
+            `{ transaction(id:"${id}"){ id owner{address} data{size} tags{name value} } }`
+          );
+          tx = d?.transaction;
+          return Boolean(tx?.owner?.address);
+        },
+        { timeoutMs: 45_000, intervalMs: 2_500 }
+      );
+      expect(found, "data item should be GraphQL-indexed on the gateway").to.be
+        .true;
+      expect(tx?.owner?.address, "indexed owner").to.equal(testAddress);
+      expect(Number(tx?.data?.size), "indexed size").to.equal(
+        (uploadedPayload as Buffer).length
+      );
+      expect(
+        (tx?.tags ?? []).map((t) => t.name),
+        "indexed tags"
+      ).to.include("App-Name");
+    });
+
+    it("data item bytes are retrievable via the gateway /raw/:id", async () => {
+      const id = uploadedDataItemId as string;
+      let body: Buffer | undefined;
+      const ok = await waitFor(
+        async () => {
+          const r = await axios.get(`${LOCAL_GATEWAY_URL}/raw/${id}`, {
+            responseType: "arraybuffer",
+            validateStatus: () => true,
+            timeout: 12_000,
+          });
+          if (r.status === 200) {
+            body = Buffer.from(r.data);
+            return true;
+          }
+          return false;
+        },
+        { timeoutMs: 45_000, intervalMs: 2_500 }
+      );
+      expect(ok, "gateway should serve the raw data item bytes").to.be.true;
+      expect(
+        (body as Buffer).equals(uploadedPayload as Buffer),
+        "raw bytes from the gateway must match the uploaded payload"
+      ).to.be.true;
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. FULL PIPELINE → ARWEAVE (opt-in: E2E_FULL_PIPELINE=1). Triggers bundle
+  //    planning directly (so it need not wait for the 5-min cron), then asserts
+  //    the bundle is POSTED to Arweave (mempool/mined) AND the gateway records
+  //    bundledIn = bundleId (driven by the bundler's queue-bundle admin call in
+  //    jobs/post.ts). This is the complete vertical loop. Long-running → opt-in.
+  // -------------------------------------------------------------------------
+  describe("7) Full pipeline → Arweave (opt-in: E2E_FULL_PIPELINE=1)", function () {
+    this.timeout(8 * 60_000);
+
+    before(function () {
+      if (!process.env.E2E_FULL_PIPELINE) this.skip();
+      if (!servicesUp || !uploadedDataItemId) this.skip();
+    });
+
+    it("bundles the item, posts the bundle to Arweave, and the gateway records bundledIn", async () => {
+      const id = uploadedDataItemId as string;
+
+      // Trigger planning directly via the bundler's own queue (skip the cron).
+      // Lazy import so the fast suite never needs redis/bundler internals.
+      try {
+        const { enqueue } = await import("../src/arch/queues");
+        const { jobLabels } = await import("../src/constants");
+        await enqueue(jobLabels.planBundle, { planId: `e2e-${Date.now()}` });
+        // eslint-disable-next-line no-console
+        console.log("[e2e] enqueued plan-bundle job to drive the pipeline.");
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[e2e] could not enqueue plan job (${
+            (err as Error).message
+          }); falling back to the cron (slower).`
+        );
+      }
+
+      const statusUrl = `${UPLOAD_SERVICE_URL}/v1/tx/${id}/status`;
+
+      // 1) Item gets bundled — status exposes bundleId once planned/posted.
+      let bundleId: string | undefined;
+      const bundled = await waitFor(
+        async () => {
+          const { data } = await axios.get(statusUrl, {
+            validateStatus: () => true,
+          });
+          if (data?.bundleId) {
+            bundleId = data.bundleId;
+            return true;
+          }
+          return false;
+        },
+        { timeoutMs: 6 * 60_000, intervalMs: 5_000 }
+      );
+      expect(bundled, "data item should be assigned to a bundle").to.be.true;
+      expect(bundleId, "bundleId").to.be.a("string").with.length.gt(0);
+
+      // 2) The bundle tx is posted to Arweave (mempool → eventually a block).
+      const posted = await waitFor(
+        async () => {
+          const r = await axios.get(
+            `${LOCAL_GATEWAY_URL}/tx/${bundleId}/status`,
+            { validateStatus: () => true, timeout: 12_000 }
+          );
+          // 200 w/ block = mined; 202 / "Pending" = mempool. Either = posted.
+          return (
+            r.status === 200 ||
+            r.status === 202 ||
+            /pending/i.test(JSON.stringify(r.data))
+          );
+        },
+        { timeoutMs: 4 * 60_000, intervalMs: 5_000 }
+      );
+      expect(
+        posted,
+        `bundle ${bundleId} should be posted to Arweave (mempool or mined)`
+      ).to.be.true;
+
+      // 3) The gateway unbundles it (via the bundler's queue-bundle call) and
+      //    records bundledIn = bundleId on the child data item.
+      let bundledInId: string | undefined;
+      const linked = await waitFor(
+        async () => {
+          const d = await gatewayGraphql(
+            LOCAL_GATEWAY_URL,
+            `{ transaction(id:"${id}"){ bundledIn{id} } }`
+          );
+          bundledInId = d?.transaction?.bundledIn?.id;
+          return bundledInId === bundleId;
+        },
+        { timeoutMs: 4 * 60_000, intervalMs: 5_000 }
+      );
+      expect(
+        linked,
+        `gateway should record bundledIn=${bundleId} for data item ${id} (got ${bundledInId})`
+      ).to.be.true;
+    });
   });
 });
