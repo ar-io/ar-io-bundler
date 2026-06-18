@@ -51,6 +51,10 @@ export type TransactionInfo = {
 export const turboCreditDestinationAddressRegex =
   /\bturboCreditDestinationAddress=([A-Za-z0-9_-]+)/i;
 
+// Arweave transaction tag name carrying an alternate Turbo credit destination.
+export const turboCreditDestinationAddressGqlTagName =
+  "Turbo-Credit-Destination-Address";
+
 export abstract class Gateway {
   public abstract endpoint: URL;
   public abstract getTransaction(
