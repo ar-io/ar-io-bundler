@@ -25,7 +25,7 @@ import {
   CreateAxiosInstanceParams,
   createAxiosInstance,
 } from "../../axiosClient";
-import { msPerMinute } from "../../constants";
+import { msPerMinute, priceOracleGatewayUrl } from "../../constants";
 import globalLogger from "../../logger";
 import { ByteCount, Winston } from "../../types";
 
@@ -41,7 +41,7 @@ export class ArweaveBytesToWinstonOracle implements BytesToWinstonOracle {
   }
 
   async getWinstonForBytes(bytes: ByteCount): Promise<Winston> {
-    const url = `https://arweave.net/price/${bytes}`;
+    const url = `${priceOracleGatewayUrl}/${bytes}`;
 
     globalLogger.debug(`Getting AR price URL: ${url}`);
     try {
