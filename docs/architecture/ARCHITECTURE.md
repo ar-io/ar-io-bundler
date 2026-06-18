@@ -53,6 +53,33 @@ The AR.IO Bundler is a complete ANS-104 data bundling platform for Arweave with 
 - **Observability**: Winston (logging), OpenTelemetry (optional), Prometheus (metrics)
 - **Containerization**: Docker Compose
 
+### Relationship to upstream (intentional divergences)
+
+This is a fork of ArDrive's Turbo (`ardriveapp/upload-service` + `payment-service`).
+We track upstream for correctness / security / ANS-104 fixes but **deliberately
+diverge** — these are recorded choices, not gaps:
+
+- **De-AWS:** SQS→BullMQ, Lambda/ECS→PM2, DynamoDB→PostgreSQL, S3→MinIO, AWS
+  Secrets Manager/SSM→dotenv. (Source comments mentioning SQS/Lambda/DynamoDB are
+  legacy markers, not live behavior.)
+- **Payments:** our own x402 design (byte-count quote + USDC settlement +
+  ERC-1271), *different* from upstream's x402 promo/USD-amount path. ARIO/ArNS
+  stays **enabled** — we did the Solana-ARIO migration (`@ar.io/sdk` v4); upstream
+  temporarily disabled ARIO (PE-9069), which we did **not** inherit.
+- **Vertical integration (additive):** reads/pricing/optical-posting target the
+  local AR.IO gateway; after posting a bundle the bundler calls the gateway
+  `queue-bundle` admin API so it unbundles + indexes (`bundledIn`).
+  `PRICE_ORACLE_GATEWAY_URL` / `ARIO_GATEWAY_URL` point byte/ARIO pricing at our
+  own gateway to avoid public-endpoint rate limits.
+- **Not adopted (intentional — x402-primary, fewer-chains posture):** cross-chain
+  signed-request funding (PE-6013), USDC-on-EVM funding gateways (PE-7482),
+  base-bridged $ARIO (PE-8763), broadcast-chunks (PE-8879/8967, AWS node-fleet),
+  turbo-gateway.com host-swap + SSM optical keys, `$U` mint tags, DynamoDB RCU
+  autoscaling.
+- **Platform:** Node 22+ (required — `@ar.io/sdk` v4 is ESM-only), TypeScript 5.
+- **Open decision:** `usd_equiv` is *computed* on crypto funding but not persisted
+  (PE-8705) — adopt only if USD-denominated crypto-funding accounting is needed.
+
 ---
 
 ## Architecture Principles
@@ -235,6 +262,57 @@ pm2 monit
 | Redis Queues | 6381 | BullMQ job queues |
 | MinIO S3 API | 9000 | Object storage API |
 | MinIO Console | 9001 | Web UI for MinIO |
+
+### Deployment topologies: single-node & HA
+
+The platform runs in two topologies. **Start single-node; the architecture is
+HA-ready** (stateless APIs, reader/writer DB split, BullMQ-distributed workers,
+externalizable infra), so going HA is configuration + infrastructure, not a
+rewrite. Step-by-step deploy lives in the Hetzner runbook (`docs/operations/`).
+
+**Single-node (start here).** Everything on one host: PM2 runs all 5 processes
+(payment-api ×2 + upload-api ×2 in cluster mode; upload-workers + payment-workers
+in fork mode; admin-dashboard); Docker runs the infra (PostgreSQL, Redis cache,
+Redis queues, single-drive MinIO); cron triggers (plan/cleanup/verify) run on the
+box. Simple — and a single point of failure on every tier.
+
+**High availability (the target).** What scales, what stays singleton, and the
+infra to externalize:
+
+- **Stateless API tier → scale horizontally behind a load balancer.** payment-api
+  and upload-api hold no local state (it's all in Postgres/Redis/MinIO), so run N
+  instances across nodes behind a LB (TLS termination, health-check `/health`).
+- **Workers → distribute via BullMQ, but two things MUST stay singleton.** BullMQ
+  atomically claims jobs from the shared Redis queues, so multiple
+  upload-workers/payment-workers instances across nodes consume the same queues
+  safely. The singletons:
+  1. **The recurring producers / cron** — bundle planning (`plan-bundle`),
+     the pending-tx check scheduler, cleanup, verify. Running these on every node
+     creates duplicate/competing plans + credit checks. Run them on **one
+     designated node** or behind a **distributed lock / leader election** (e.g. a
+     Redis lock around each trigger).
+  2. **`payment-workers` crypto-credit finalization** is pinned `instances: 1`
+     for this reason — confirm idempotency (dedupe by tx hash) before scaling it;
+     otherwise keep it on a single node.
+- **Stateful infra → externalize to HA clusters:**
+  - **PostgreSQL** → primary + replica(s) with automatic failover (Patroni/repmgr
+    or managed). We already split reader/writer (`DB_READER_ENDPOINT` /
+    `DB_WRITER_ENDPOINT`) — point readers at replicas, writer at the primary.
+  - **Redis** (cache + queues) → Redis Sentinel or Cluster for failover; BullMQ
+    needs a stable, HA Redis.
+  - **MinIO** → distributed mode (≥4 drives/nodes, erasure coding) or a managed
+    S3-compatible store. The AR.IO gateway retrieves data items from here, so it
+    must stay highly available.
+- **Shared config:** the signing wallets (`TURBO_JWK_FILE`,
+  `RAW_DATA_ITEM_JWK_FILE`) and shared secrets (`PRIVATE_ROUTE_SECRET`,
+  `JWT_SECRET`) must be identical on every node (config management / secret store).
+- **Gateway layer:** the two baremetal AR.IO gateways already give gateway-layer
+  HA — optical-post to both via `OPTIONAL_OPTICAL_BRIDGE_URLS`.
+
+**Migration single→HA:** externalize Postgres/Redis/MinIO to HA clusters → put a
+LB in front of the API nodes → designate/lock the singleton cron + scheduler →
+scale API and worker instances. No application rewrite required. (DR/backup detail:
+Hetzner runbook §16–17 + `docs/archive/HIGH_AVAILABILITY_DISASTER_RECOVERY.md`.)
 
 ---
 
