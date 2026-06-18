@@ -360,6 +360,17 @@ export const gatewayUrls = {
   ),
 };
 
+/**
+ * Gateway used by the bytes->winston price oracle. Defaults to the historical
+ * arweave.net price endpoint so behavior is unchanged when unset; override with
+ * PRICE_ORACLE_GATEWAY_URL to point at our self-hosted gateway (e.g.
+ * https://turbo-gateway.com/price). The byte count is appended as a path
+ * segment (e.g. `${priceOracleGatewayUrl}/${bytes}`).
+ */
+export const priceOracleGatewayUrl = new URL(
+  process.env.PRICE_ORACLE_GATEWAY_URL || "https://arweave.net/price"
+);
+
 const thirtyMinutesMs = 1000 * 60 * 30;
 export const stripePaymentQuoteExpirationMs = +(
   process.env.TOP_UP_QUOTE_EXPIRATION_MS ?? thirtyMinutesMs
