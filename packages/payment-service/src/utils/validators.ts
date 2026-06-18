@@ -658,6 +658,22 @@ export function getValidatedArNSPriceParams(
     }
   }
 
+  // Buying a name requires lease-vs-permabuy (and years for a lease) — otherwise
+  // the ARIO SDK's getTokenCost throws on undefined type and the route returns
+  // an opaque 503. Fail fast with a clear 400 instead.
+  if (intent === "Buy-Name" || intent === "Buy-Record") {
+    if (type === undefined) {
+      throw new BadRequest(
+        "Missing required parameter: type. Must be either 'permabuy' or 'lease'"
+      );
+    }
+    if (type === "lease" && years === undefined) {
+      throw new BadRequest(
+        "Missing required parameter: years (required when type is 'lease')"
+      );
+    }
+  }
+
   return {
     name: name.toLowerCase(),
     intent,

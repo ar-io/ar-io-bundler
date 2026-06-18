@@ -40,7 +40,7 @@
     "db:migrate:down": "yarn knex migrate:down $* --cwd ./src/arch/db --knexfile knexfile.ts",
     "db:migrate:latest": "yarn knex migrate:latest --cwd ./src/arch/db --knexfile knexfile.ts",
     "db:migrate:rollback": "yarn knex migrate:rollback $* --cwd ./src/arch/db --knexfile knexfile.ts",
-    "db:migrate:new": "yarn knex migrate:make $* -x ts --cwd ./src/arch/db --knexfile knexfile.ts && yarn lint:fix && yarn prettier:fix",
+    "db:migrate:new": "yarn knex migrate:make $* -x ts --cwd ./src/arch/db --knexfile knexfile.ts && yarn lint:fix && yarn format:fix",
     "db:migrate:list": "yarn knex migrate:list --cwd ./src/arch/db --knexfile knexfile.ts"
   },
   "devDependencies": {
