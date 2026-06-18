@@ -164,8 +164,8 @@ export class SolanaARIOGateway extends Gateway {
   });
 
   constructor({
-    endpoint = process.env.ARIO_SOLANA_GATEWAY
-      ? new URL(process.env.ARIO_SOLANA_GATEWAY)
+    endpoint = process.env.ARIO_GATEWAY_URL
+      ? new URL(process.env.ARIO_GATEWAY_URL)
       : defaultArioSolanaGatewayUrl,
     recipientOwnerAddress = walletAddresses.ario,
     mintAddress = process.env.ARIO_MINT_ADDRESS ?? defaultArioMintAddress,
