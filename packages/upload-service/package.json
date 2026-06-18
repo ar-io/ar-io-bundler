@@ -85,7 +85,7 @@
     "rimraf": "^5.0.1",
     "sinon": "^14.0.0",
     "ts-node": "^10.7.0",
-    "typescript": "^4.7.4"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@ardrive/ardrive-promise-cache": "1.2.0-alpha.6",
@@ -138,13 +138,5 @@
     "prom-client": "^14.1.0",
     "winston": "^3.8.2",
     "yaml": "^2.3.2"
-  },
-  "resolutions": {
-    "elliptic": "6.6.1",
-    "cross-spawn": "7.0.5",
-    "ip": "2.0.1",
-    "tar": "6.2.1",
-    "ws": "8.17.1",
-    "@babel/runtime": "7.26.10"
   }
 }
