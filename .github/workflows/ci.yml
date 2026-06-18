@@ -28,16 +28,26 @@ jobs:
         uses: actions/checkout@v4
 
       # Node version is sourced from .nvmrc (currently v22.22.0).
-      # setup-node provides Yarn cache support keyed off yarn.lock.
+      # NOTE: do NOT use setup-node's `cache: yarn` — it shells out to the
+      # runner's global Yarn 1.x before Corepack is enabled, which errors on the
+      # `packageManager: yarn@3.6.0` field. We enable Corepack first, then cache
+      # Yarn's global folder manually.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: yarn
 
       # Yarn 3.6.0 is pinned via packageManager; corepack activates it.
       - name: Enable Corepack
         run: corepack enable
+
+      - name: Cache Yarn
+        uses: actions/cache@v4
+        with:
+          path: .yarn/cache
+          key: yarn-${{ runner.os }}-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            yarn-${{ runner.os }}-
 
       - name: Install dependencies
         run: yarn install --immutable
