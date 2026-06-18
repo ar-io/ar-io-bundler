@@ -20,6 +20,7 @@ import { oneMinuteInSeconds } from "../constants";
 import { PaymentValidationError, PromoCodeError } from "../database/errors";
 import { KoaContext } from "../server";
 import { Payment } from "../types/payment";
+import { normalizeEthereumAddress } from "../utils/normalizeEthereumAddress";
 import { parseQueryParams } from "../utils/parseQueryParams";
 
 export async function priceFiatHandler(ctx: KoaContext, next: Next) {
@@ -28,7 +29,17 @@ export async function priceFiatHandler(ctx: KoaContext, next: Next) {
   const { destinationAddress: rawDestinationAddress, promoCode } = ctx.query;
 
   const promoCodes = parseQueryParams(promoCode);
-  const [destinationAddress] = parseQueryParams(rawDestinationAddress);
+  let [destinationAddress] = parseQueryParams(rawDestinationAddress);
+  if (destinationAddress) {
+    try {
+      // Normalize and validate address format if necessary
+      destinationAddress = normalizeEthereumAddress(destinationAddress);
+    } catch (error) {
+      ctx.response.status = 400;
+      ctx.body = "Invalid destinationAddress format";
+      return next();
+    }
+  }
 
   const walletAddress = destinationAddress || ctx.state.walletAddress;
 

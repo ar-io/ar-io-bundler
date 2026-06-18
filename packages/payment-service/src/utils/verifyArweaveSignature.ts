@@ -27,6 +27,7 @@ import crypto from "node:crypto";
 import { PublicKeyString } from "../types";
 import { fromB64UrlToBuffer, toB64Url } from "./base64";
 import { arweaveRSAModulusToAddress } from "./jwkUtils";
+import { normalizeEthereumAddress } from "./normalizeEthereumAddress";
 
 export interface VerifySignatureParams {
   publicKey: PublicKeyString;
@@ -55,8 +56,12 @@ export async function verifySigAndGetNativeAddress({
         ? arweaveRSAModulusToAddress(publicKey)
         : false;
     case SignatureConfig.ETHEREUM:
+      // Normalize the derived address to EIP-55 checksum format so it keys
+      // balances identically to the normalized write/read paths. computeAddress
+      // already returns checksummed output, so this is idempotent; it does not
+      // alter signature verification.
       return verifyEthereumSignature(publicKey, signature, data)
-        ? computeAddress(publicKey)
+        ? normalizeEthereumAddress(computeAddress(publicKey))
         : false;
     default:
       return false;

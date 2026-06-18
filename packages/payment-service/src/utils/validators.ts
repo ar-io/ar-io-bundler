@@ -49,6 +49,7 @@ import {
   isValidUserAddress,
 } from "./base64";
 import { formatRawIntent } from "./common";
+import { normalizeEthereumAddress } from "./normalizeEthereumAddress";
 
 /** Returns true if these given query parameters are strings */
 export function validateQueryParameters(
@@ -384,15 +385,17 @@ export function getValidatedApprovalParams(ctx: KoaContext): {
     );
   }
 
+  const approvedAddress = normalizeEthereumAddress(rawApprovedAddress);
+
   if (!isAnyValidUserAddress(rawPayingAddress)) {
     throw new BadRequest("Invalid paying address");
-  } else if (!isAnyValidUserAddress(rawApprovedAddress)) {
+  } else if (!isAnyValidUserAddress(approvedAddress)) {
     throw new BadRequest("Invalid approved address");
   }
 
   return {
     payingAddress: rawPayingAddress,
-    approvedAddress: rawApprovedAddress,
+    approvedAddress,
   };
 }
 
@@ -493,7 +496,7 @@ function validatedPaidBy(ctx: KoaContext): UserAddress[] {
       paidBy = splitPaidBys.filter(isAnyValidUserAddress);
     }
   }
-  return paidBy;
+  return paidBy.map((address) => normalizeEthereumAddress(address));
 }
 
 function validatedByteCount(ctx: KoaContext): ByteCount {
@@ -627,14 +630,13 @@ export function getValidatedArNSPriceParams(
 
   let userAddress: UserAddress | undefined = undefined;
   if (rawUserAddress !== undefined) {
-    const u = Array.isArray(rawUserAddress)
-      ? rawUserAddress[0]
-      : rawUserAddress;
+    userAddress = normalizeEthereumAddress(
+      Array.isArray(rawUserAddress) ? rawUserAddress[0] : rawUserAddress
+    );
 
-    if (!isAnyValidUserAddress(u)) {
+    if (!isAnyValidUserAddress(userAddress)) {
       throw new BadRequest("Invalid user address");
     }
-    userAddress = u;
   }
 
   return {
@@ -745,7 +747,8 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
     );
   }
 
-  if (!isAnyValidUserAddress(address)) {
+  const userAddress = normalizeEthereumAddress(address);
+  if (!isAnyValidUserAddress(userAddress)) {
     throw new BadRequest("Invalid destination address");
   }
 
@@ -767,6 +770,6 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
     ...uiModeParams,
     method: method as StripePaymentMethod,
     currency: currency as SupportedFiatPaymentCurrencyType,
-    destinationAddress: address,
+    destinationAddress: userAddress,
   };
 }
