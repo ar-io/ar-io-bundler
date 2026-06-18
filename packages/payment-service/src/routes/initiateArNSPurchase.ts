@@ -25,7 +25,10 @@ import {
 } from "../database/errors";
 import { KoaContext } from "../server";
 import { W } from "../types";
-import { getValidatedArNSPurchaseParams } from "../utils/validators";
+import {
+  getSanitizedReferer,
+  getValidatedArNSPurchaseParams,
+} from "../utils/validators";
 
 export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
   const { paymentDatabase, logger, gatewayMap, pricingService } = ctx.state;
@@ -77,6 +80,7 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       usdArRate,
       usdArioRate,
       paidBy,
+      referer: getSanitizedReferer(ctx),
     });
 
     const arioWriteResult = await ario.initiateArNSPurchase(purchaseReceipt);

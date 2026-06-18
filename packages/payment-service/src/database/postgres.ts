@@ -66,6 +66,7 @@ import {
   CreatePaymentReceiptParams,
   CreatePendingTransactionParams,
   CreateTopUpQuoteParams,
+  CreateX402PaymentParams,
   CreditedPaymentTransaction,
   CreditedPaymentTransactionDBInsert,
   CreditedPaymentTransactionDBResult,
@@ -79,6 +80,7 @@ import {
   FailedPaymentTransactionDBInsert,
   FailedPaymentTransactionDBResult,
   FailedTopUpQuoteDBResult,
+  FinalizeX402PaymentParams,
   GetBalanceResult,
   InactiveDelegatedPaymentApproval,
   InactiveDelegatedPaymentApprovalDBInsert,
@@ -118,16 +120,14 @@ import {
   UserAddressType,
   UserDBInsert,
   UserDBResult,
-  isCreditedPaymentTransactionDBResult,
-  isFailedPaymentTransactionDBResult,
-  X402PaymentTransaction,
-  X402PaymentTransactionDBInsert,
-  X402PaymentTransactionDBResult,
   X402PaymentReservation,
   X402PaymentReservationDBInsert,
   X402PaymentReservationDBResult,
-  CreateX402PaymentParams,
-  FinalizeX402PaymentParams,
+  X402PaymentTransaction,
+  X402PaymentTransactionDBInsert,
+  X402PaymentTransactionDBResult,
+  isCreditedPaymentTransactionDBResult,
+  isFailedPaymentTransactionDBResult,
 } from "./dbTypes";
 import {
   ArNSPurchaseAlreadyExists,
@@ -200,6 +200,7 @@ export class PostgresDatabase implements Database {
       topUpQuoteId,
       winstonCreditAmount,
       giftMessage,
+      referer,
     } = topUpQuote;
 
     const topUpQuoteDbInsert: TopUpQuoteDBInsert = {
@@ -213,6 +214,7 @@ export class PostgresDatabase implements Database {
       top_up_quote_id: topUpQuoteId,
       winston_credit_amount: winstonCreditAmount.toString(),
       gift_message: giftMessage,
+      referer,
     };
 
     await this.writer.transaction(async (knexTransaction) => {
@@ -1967,6 +1969,7 @@ export class PostgresDatabase implements Database {
     usdArRate,
     usdArioRate,
     paidBy,
+    referer,
   }: ArNSPurchaseParams): Promise<ArNSPurchase> {
     return this.writer.transaction(async (knexTransaction) => {
       const overflow_spend = await this.useBalanceAndApprovals({
@@ -1993,6 +1996,7 @@ export class PostgresDatabase implements Database {
         usd_ario_rate: usdArioRate,
         overflow_spend: JSON.stringify(overflow_spend),
         paid_by: paidBy.length > 0 ? paidBy.join(",") : undefined,
+        referer,
       };
       let receipt: ArNSPurchaseDBResult[];
       try {
@@ -2970,7 +2974,13 @@ export class PostgresDatabase implements Database {
     changeReason: AuditChangeReason;
     changeId: string;
   }): Promise<void> {
-    const { userAddress, userAddressType, winstonAmount, changeReason, changeId } = params;
+    const {
+      userAddress,
+      userAddressType,
+      winstonAmount,
+      changeReason,
+      changeId,
+    } = params;
 
     await this.writer.transaction(async (knexTransaction) => {
       // Try to get existing user
@@ -2992,7 +3002,9 @@ export class PostgresDatabase implements Database {
           user_address_type: userAddressType,
           winston_credit_balance: winstonAmount.toString(),
         };
-        await knexTransaction<UserDBResult>(tableNames.user).insert(userDbInsert);
+        await knexTransaction<UserDBResult>(tableNames.user).insert(
+          userDbInsert
+        );
 
         const auditLogInsert: AuditLogInsert = {
           user_address: userAddress,

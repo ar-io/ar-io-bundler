@@ -33,6 +33,7 @@ import {
 import { KoaContext } from "../server";
 import { W, isSupportedPaymentToken } from "../types";
 import { sendCryptoFundSlackMessage } from "../utils/slack";
+import { getSanitizedReferer } from "../utils/validators";
 import { walletAddresses } from "./info";
 
 export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
@@ -133,6 +134,7 @@ export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
       winstonCreditAmount: finalPrice.winc,
       transactionSenderAddress: pendingTx.transactionSenderAddress,
       usdEquivalent,
+      referer: getSanitizedReferer(ctx),
     };
 
     const newPendingWithoutCatalogIds = {

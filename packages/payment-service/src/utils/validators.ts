@@ -808,3 +808,38 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
     destinationAddress: userAddress,
   };
 }
+
+/**
+ * Returns the request's HTTP Referer header, normalized to a canonical
+ * http/https URL string, or undefined if absent/invalid. Used to attribute
+ * quotes and payments to their originating site.
+ */
+export const getSanitizedReferer = (ctx: KoaContext): string | undefined => {
+  if (ctx.headers.referer === undefined) {
+    return undefined;
+  }
+
+  let referer: string;
+  if (Array.isArray(ctx.headers.referer)) {
+    referer = ctx.headers.referer[0];
+  } else {
+    referer = ctx.headers.referer;
+  }
+
+  const cleaned = validator.trim(referer);
+
+  if (
+    !validator.isURL(cleaned, {
+      protocols: ["http", "https"],
+      require_protocol: true,
+      require_host: true,
+      allow_fragments: true,
+      allow_underscores: true,
+    })
+  ) {
+    return undefined;
+  }
+
+  // Normalize via the URL constructor (collapses redundant slashes, decodes).
+  return new URL(cleaned).toString();
+};

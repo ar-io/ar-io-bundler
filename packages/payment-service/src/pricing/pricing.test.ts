@@ -260,15 +260,16 @@ describe("TurboPricingService class", () => {
 
       await paymentDatabase["writer"]<SingleUseCodePaymentCatalogDBResult>(
         tableNames.singleUseCodePaymentAdjustmentCatalog
-      ).insert({
-        code_value: pricingTestPromoCode,
-        adjustment_exclusivity: "exclusive",
-        adjustment_name: "Pricing Test Promo Code",
-        catalog_id: pricingTestPromoCodeCatalogId,
-        operator: "multiply",
-        operator_magnitude: "0.8",
-        adjustment_start_date: "2021-01-01T00:00:00.000Z", // some time in the past
-      })
+      )
+        .insert({
+          code_value: pricingTestPromoCode,
+          adjustment_exclusivity: "exclusive",
+          adjustment_name: "Pricing Test Promo Code",
+          catalog_id: pricingTestPromoCodeCatalogId,
+          operator: "multiply",
+          operator_magnitude: "0.8",
+          adjustment_start_date: "2021-01-01T00:00:00.000Z", // some time in the past
+        })
         .onConflict("catalog_id")
         .merge();
 
@@ -504,18 +505,19 @@ describe("TurboPricingService class", () => {
       before(async () => {
         await paymentDatabase["writer"]<SingleUseCodePaymentCatalogDBResult>(
           tableNames.singleUseCodePaymentAdjustmentCatalog
-        ).insert({
-          code_value: pricingPilotReferralPromoCode,
-          adjustment_exclusivity: "exclusive",
-          adjustment_name: "Pricing Pilot Referral Promo Code",
-          catalog_id: pricingPilotReferralPromoCodeCatalogId,
-          target_user_group: "new",
-          max_uses: 10,
-          minimum_payment_amount: 1000,
-          operator: "add",
-          operator_magnitude: "-500",
-          adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
-        })
+        )
+          .insert({
+            code_value: pricingPilotReferralPromoCode,
+            adjustment_exclusivity: "exclusive",
+            adjustment_name: "Pricing Pilot Referral Promo Code",
+            catalog_id: pricingPilotReferralPromoCodeCatalogId,
+            target_user_group: "new",
+            max_uses: 10,
+            minimum_payment_amount: 1000,
+            operator: "add",
+            operator_magnitude: "-500",
+            adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
+          })
           .onConflict("catalog_id")
           .merge();
       });
@@ -597,16 +599,17 @@ describe("TurboPricingService class", () => {
       before(async () => {
         await paymentDatabase["writer"]<SingleUseCodePaymentCatalogDBResult>(
           tableNames.singleUseCodePaymentAdjustmentCatalog
-        ).insert({
-          code_value: pricingMaxDiscountPromoCode,
-          adjustment_exclusivity: "exclusive",
-          adjustment_name: "Pricing Max Discount Promo Code",
-          catalog_id: pricingMaxDiscountPromoCodeCatalogId,
-          maximum_discount_amount: 10_00,
-          operator: "multiply",
-          operator_magnitude: "0.50",
-          adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
-        })
+        )
+          .insert({
+            code_value: pricingMaxDiscountPromoCode,
+            adjustment_exclusivity: "exclusive",
+            adjustment_name: "Pricing Max Discount Promo Code",
+            catalog_id: pricingMaxDiscountPromoCodeCatalogId,
+            maximum_discount_amount: 10_00,
+            operator: "multiply",
+            operator_magnitude: "0.50",
+            adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
+          })
           .onConflict("catalog_id")
           .merge();
       });
@@ -773,17 +776,18 @@ describe("TurboPricingService class", () => {
 
       await paymentDatabase["writer"]<PaymentAdjustmentCatalogDBResult>(
         tableNames.paymentAdjustmentCatalog
-      ).insert({
-        adjustment_name: "Turbo 1 Dollar-ino off",
-        adjustment_exclusivity: "inclusive",
-        catalog_id: "best_stub_id_ever ITS REALLY UNIQUE!",
-        operator: "add",
-        operator_magnitude: "-100", // 1 dollar
-        adjustment_priority: 1,
-        // Use a specific date range to ensure the event is active only for this test
-        adjustment_start_date: farInThePast.toISOString(),
-        adjustment_end_date: twoDaysLater.toISOString(),
-      })
+      )
+        .insert({
+          adjustment_name: "Turbo 1 Dollar-ino off",
+          adjustment_exclusivity: "inclusive",
+          catalog_id: "best_stub_id_ever ITS REALLY UNIQUE!",
+          operator: "add",
+          operator_magnitude: "-100", // 1 dollar
+          adjustment_priority: 1,
+          // Use a specific date range to ensure the event is active only for this test
+          adjustment_start_date: farInThePast.toISOString(),
+          adjustment_end_date: twoDaysLater.toISOString(),
+        })
         .onConflict("catalog_id")
         .merge();
 
