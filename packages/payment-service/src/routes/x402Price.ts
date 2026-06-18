@@ -108,10 +108,18 @@ export async function x402PriceRoute(ctx: KoaContext, next: Next) {
       usdcAmount = minimumUsdcAtomicUnits.toString();
     }
 
-    // Generate payment requirements for all enabled networks
-    const enabledNetworks = Object.entries(x402Networks).filter(
-      ([, config]) => config.enabled
-    );
+    // Generate payment requirements for all enabled networks, deduped by
+    // chainId. x402Networks carries legacy aliases that duplicate a chain under
+    // a non-x402-standard key (e.g. "base-mainnet" alongside the canonical
+    // "base"). Advertising both puts an invalid network name in `accepts`, which
+    // standard x402 clients (x402-fetch) reject with an enum error. Keep the
+    // first-listed (canonical) entry per chainId.
+    const seenChainIds = new Set<number>();
+    const enabledNetworks = Object.entries(x402Networks).filter(([, config]) => {
+      if (!config.enabled || seenChainIds.has(config.chainId)) return false;
+      seenChainIds.add(config.chainId);
+      return true;
+    });
 
     if (enabledNetworks.length === 0) {
       ctx.status = 503;
