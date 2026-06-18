@@ -517,3 +517,5 @@ export const DataItemOffsets = {
         1
       : undefined,
 } as const;
+
+export const defaultDeadlineHeight = 3_000_000; // far future height

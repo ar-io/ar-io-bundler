@@ -49,6 +49,20 @@ import {
   isValidUserAddress,
 } from "./base64";
 import { formatRawIntent } from "./common";
+import { normalizeEthereumAddress } from "./normalizeEthereumAddress";
+
+/**
+ * Normalize an EVM address to EIP-55 checksum, mapping a bad-checksum throw to a
+ * 400 BadRequest instead of letting it bubble to a 5xx. Non-EVM addresses pass
+ * through unchanged (normalizeEthereumAddress only acts on 0x+40-hex input).
+ */
+function normalizeEthOrBadRequest(address: string, label: string): string {
+  try {
+    return normalizeEthereumAddress(address);
+  } catch {
+    throw new BadRequest(`Invalid ${label}: ${address}`);
+  }
+}
 
 /** Returns true if these given query parameters are strings */
 export function validateQueryParameters(
@@ -384,15 +398,20 @@ export function getValidatedApprovalParams(ctx: KoaContext): {
     );
   }
 
+  const approvedAddress = normalizeEthOrBadRequest(
+    rawApprovedAddress,
+    "approved address"
+  );
+
   if (!isAnyValidUserAddress(rawPayingAddress)) {
     throw new BadRequest("Invalid paying address");
-  } else if (!isAnyValidUserAddress(rawApprovedAddress)) {
+  } else if (!isAnyValidUserAddress(approvedAddress)) {
     throw new BadRequest("Invalid approved address");
   }
 
   return {
     payingAddress: rawPayingAddress,
-    approvedAddress: rawApprovedAddress,
+    approvedAddress,
   };
 }
 
@@ -493,7 +512,9 @@ function validatedPaidBy(ctx: KoaContext): UserAddress[] {
       paidBy = splitPaidBys.filter(isAnyValidUserAddress);
     }
   }
-  return paidBy;
+  return paidBy.map((address) =>
+    normalizeEthOrBadRequest(address, "paid by address")
+  );
 }
 
 function validatedByteCount(ctx: KoaContext): ByteCount {
@@ -627,14 +648,14 @@ export function getValidatedArNSPriceParams(
 
   let userAddress: UserAddress | undefined = undefined;
   if (rawUserAddress !== undefined) {
-    const u = Array.isArray(rawUserAddress)
-      ? rawUserAddress[0]
-      : rawUserAddress;
+    userAddress = normalizeEthOrBadRequest(
+      Array.isArray(rawUserAddress) ? rawUserAddress[0] : rawUserAddress,
+      "user address"
+    );
 
-    if (!isAnyValidUserAddress(u)) {
+    if (!isAnyValidUserAddress(userAddress)) {
       throw new BadRequest("Invalid user address");
     }
-    userAddress = u;
   }
 
   return {
@@ -745,7 +766,8 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
     );
   }
 
-  if (!isAnyValidUserAddress(address)) {
+  const userAddress = normalizeEthOrBadRequest(address, "destination address");
+  if (!isAnyValidUserAddress(userAddress)) {
     throw new BadRequest("Invalid destination address");
   }
 
@@ -767,6 +789,6 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
     ...uiModeParams,
     method: method as StripePaymentMethod,
     currency: currency as SupportedFiatPaymentCurrencyType,
-    destinationAddress: address,
+    destinationAddress: userAddress,
   };
 }

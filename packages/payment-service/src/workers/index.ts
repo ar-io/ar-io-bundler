@@ -14,6 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+// Load .env from the repository root BEFORE importing anything that reads
+// process.env at module-eval time. constants.ts throws at import if
+// X402_PAYMENT_ADDRESS is unset, and the worker imports below pull it in
+// transitively. The API entry (src/index.ts) loads dotenv the same way;
+// PM2's env_file injection is not reliable enough to satisfy import-time
+// config validation, so the worker process must self-load its env first.
+import { config as loadEnvFile } from "dotenv";
+import * as path from "path";
+loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
+
 import globalLogger from "../logger";
 import { loadSecretsToEnv } from "../utils/loadSecretsToEnv";
 import { schedulePendingTxCheck } from "../queues/producers";

@@ -25,7 +25,6 @@ function buildWalletAddresses(): Record<string, string> {
 
   if (process.env.ARWEAVE_ADDRESS) {
     addresses.arweave = process.env.ARWEAVE_ADDRESS;
-    addresses.ario = process.env.ARWEAVE_ADDRESS; // ARIO uses Arweave addresses
   }
   if (process.env.ETHEREUM_ADDRESS) {
     addresses.ethereum = process.env.ETHEREUM_ADDRESS;
@@ -33,6 +32,14 @@ function buildWalletAddresses(): Record<string, string> {
   if (process.env.SOLANA_ADDRESS) {
     addresses.solana = process.env.SOLANA_ADDRESS;
     addresses.ed25519 = process.env.SOLANA_ADDRESS; // Alias for Solana
+  }
+  // As of PE-9070, ARIO is a Solana-native SPL token. Its payment recipient is
+  // the bundler's own Solana address (override with ARIO_ADDRESS). We do NOT
+  // fall back to a hardcoded default: an unset recipient fails closed so we
+  // never validate ARIO payments against a wallet the operator doesn't control.
+  const arioAddress = process.env.ARIO_ADDRESS ?? process.env.SOLANA_ADDRESS;
+  if (arioAddress) {
+    addresses.ario = arioAddress;
   }
   if (process.env.MATIC_ADDRESS) {
     addresses.matic = process.env.MATIC_ADDRESS;

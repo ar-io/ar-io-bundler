@@ -37,7 +37,7 @@ export async function reserveBalance(ctx: KoaContext, next: Next) {
       signerAddress,
       signerAddressType,
     } = getValidatedReserveBalanceParams(ctx);
-    const priceWithAdjustments = await pricingService.getWCForBytes(
+    const priceWithAdjustments = await pricingService.getWCForDataItem(
       byteCount,
       // If paidBy is not provided, use the signer address as the payer
       paidBy.length > 0 ? paidBy[0] : signerAddress

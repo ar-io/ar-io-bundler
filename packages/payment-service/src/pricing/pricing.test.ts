@@ -176,6 +176,49 @@ describe("TurboPricingService class", () => {
     });
   });
 
+  describe("getWCForDataItem", () => {
+    beforeEach(() => {
+      // Return the given byte count (rounded as chunks) as the stubbed byte price
+      stub(bytesToWinstonOracle, "getWinstonForBytes").callsFake((b) =>
+        Promise.resolve(new Winston(b.toString()))
+      );
+    });
+
+    it("adds a per-data-item surcharge on top of the byte price", async () => {
+      // 1 AR = $4 => wincPerUsd = 1e12 / 4 = 2.5e11
+      // surcharge = ceil(0.00002 * 2.5e11) = 5_000_000 winc
+      stub(tokenToFiatOracle, "getUsdPriceForOneToken").resolves(4);
+
+      const { finalPrice } = await pricing.getWCForDataItem(ByteCount(100));
+
+      // 100 (byte price) + 5_000_000 (per-data-item surcharge)
+      expect(finalPrice.winc.toString()).to.equal("5000100");
+    });
+
+    it("rounds the surcharge up to the nearest winston", async () => {
+      // 1 AR = $3 => wincPerUsd = 1e12 / 3 = 333_333_333_333.33...
+      // surcharge = ceil(0.00002 * wincPerUsd) = ceil(6_666_666.66...) = 6_666_667
+      stub(tokenToFiatOracle, "getUsdPriceForOneToken").resolves(3);
+
+      const { finalPrice } = await pricing.getWCForDataItem(ByteCount(100));
+
+      // 100 (byte price) + 6_666_667 (rounded-up surcharge)
+      expect(finalPrice.winc.toString()).to.equal("6666767");
+    });
+
+    it("preserves the underlying byte price fields (network price, adjustments)", async () => {
+      stub(tokenToFiatOracle, "getUsdPriceForOneToken").resolves(4);
+
+      const { networkPrice, adjustments } = await pricing.getWCForDataItem(
+        ByteCount(100)
+      );
+
+      // Surcharge is applied only to finalPrice; networkPrice is untouched
+      expect(networkPrice.winc.toString()).to.equal("100");
+      expect(adjustments).to.deep.equal([]);
+    });
+  });
+
   describe("getWCForPayment", () => {
     beforeEach(() => {
       stub(oracle, "getFiatPricesForOneToken").resolves(expectedTokenPrices);

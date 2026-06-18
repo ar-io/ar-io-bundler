@@ -43,7 +43,7 @@ export async function checkBalance(ctx: KoaContext, next: Next) {
       paidBy.length > 0 ? [...paidBy, signerAddress] : [signerAddress];
     const firstPayer = paidBy[0];
 
-    const priceResponse = await pricingService.getWCForBytes(
+    const priceResponse = await pricingService.getWCForDataItem(
       byteCount,
       firstPayer
     );

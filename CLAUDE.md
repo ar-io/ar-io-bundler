@@ -15,6 +15,7 @@ This is the **AR.IO Bundler** - a complete ANS-104 data bundling platform for Ar
 **Service-specific CLAUDE.md files** contain detailed implementation guidance:
 - `packages/payment-service/CLAUDE.md` - Payment service architecture, x402, Stripe, crypto payments
 - `packages/upload-service/CLAUDE.md` - Upload service architecture, bundling, jobs, multipart
+  - ⚠️ **Stale section**: its job-pipeline description still references the old SQS + Lambda/ECS design with offsets in DynamoDB. The current implementation is **BullMQ workers** with offsets in **PostgreSQL** (see "Asynchronous Job Processing" and "Database Architecture" below). Trust this root file over that section.
 
 ## ⚠️ CRITICAL: Service Restart Protocol
 
@@ -57,6 +58,12 @@ yarn workspace @ar-io-bundler/payment-service test:integration:local    # Integr
 yarn workspace @ar-io-bundler/payment-service test:integration:local -g "Router"  # Specific tests
 ```
 
+Both services use Mocha + nyc + ts-node (config in each package's `.mocharc.js`). Run a single test by name with Mocha's `-g <regex>` on any test script:
+- Unit: `yarn workspace @ar-io-bundler/upload-service test:unit -g "pattern"`
+- Integration (`:local` variants bring up infra/DB and tear it down; upload runs under `.env.test`): `yarn workspace @ar-io-bundler/upload-service test:integration:local -g "pattern"`
+
+Note: upload integration is serial (`parallel: false`, 20s timeout); payment integration runs parallel (7s timeout).
+
 ### Database
 ```bash
 yarn db:migrate                 # Migrate both databases
@@ -74,7 +81,11 @@ yarn typecheck                  # Type check
 
 ### Infrastructure
 ```bash
-docker compose up -d            # Start PostgreSQL, Redis, MinIO
+yarn infra:up                   # Start infra via compose + run minio-init (preferred)
+yarn infra:down                 # Stop infra
+yarn db:up / yarn db:down       # Start/stop just postgres + redis + minio
+yarn pm2:start                  # Start PM2 from infrastructure/pm2/ecosystem.config.js
+docker compose up -d            # Start PostgreSQL, Redis, MinIO (raw)
 docker compose logs -f          # View logs
 curl http://localhost:3001/v1/info  # Upload service health
 curl http://localhost:4001/v1/info  # Payment service health
@@ -112,31 +123,39 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 - AR.IO Gateway optimistic caching (optical posting)
 
 **Admin Service** (`packages/admin-service/`):
-- Bull Board queue monitoring at port 3002
-- System statistics and bundler metrics
+- Plain-JS (CommonJS) Koa app — more than Bull Board: a custom admin dashboard (`admin/`) with a stats collector and query modules (`bundleStats.js`, `x402Stats.js`, `uploadStats.js`, `systemHealth.js`) plus an HTML/CSS/JS frontend under `admin/public/`, behind auth + rate-limit middleware
+- Embeds Bull Board (`@bull-board/koa`) for queue monitoring at port 3002
 
 ### Dependency Injection Pattern
 
 Both services use a centralized `Architecture` interface injected into Koa middleware context:
 
 ```typescript
-// Payment Service (src/architecture.ts)
+// Payment Service (src/architecture.ts) - interface only; the concrete object
+// is built inline in src/server.ts (~line 196) and injected via
+// src/middleware/architecture.ts. There is NO defaultArchitecture export here.
 interface Architecture {
   paymentDatabase: Database;
   pricingService: PricingService;
   stripe: Stripe;
+  emailProvider?: EmailProvider;
   gatewayMap: GatewayMap;
   x402Service: X402Service;
 }
 
-// Upload Service (src/arch/architecture.ts)
+// Upload Service (src/arch/architecture.ts) - defaultArchitecture at lines 53-70
 interface Architecture {
   objectStore: ObjectStore;
   database: Database;
+  dataItemOffsetsDB: DataItemOffsetsDB;  // offsets live in PostgreSQL (writer conn)
+  cacheService: CacheService;            // Redis via getElasticacheService()
   paymentService: PaymentService;
   x402Service: X402Service;
+  logger: winston.Logger;
   arweaveGateway: ArweaveGateway;
   getArweaveWallet: () => Promise<JWKInterface>;
+  getRawDataItemWallet: () => Promise<JWKInterface>;  // signs unsigned/raw uploads
+  tracer?: Tracer;
 }
 ```
 
@@ -146,14 +165,25 @@ interface Architecture {
 - Authentication via JWT tokens with `PRIVATE_ROUTE_SECRET`
 - Circuit breaker pattern (opossum) for resilience
 
+### Unsigned x402 Uploads (recent feature)
+
+Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST **raw, un-ANS-104 data** to `/v1/x402/upload/unsigned`; the bundler returns an HTTP 402 USDC quote, the client pays via an EIP-712 `transferWithAuthorization` signature in the `X-PAYMENT` header, then the bundler **signs the ANS-104 data item with its own server wallet** (`getRawDataItemWallet()` / `RAW_DATA_ITEM_JWK_FILE`), stores it at S3 key `raw-data-item/{id}`, optical-bridges it, and returns a signed receipt.
+- Key files: `src/routes/rawDataPost.ts`, `src/routes/x402Pricing.ts`, `src/utils/createDataItem.ts`. Pricing uses per-byte cost + `X402_FEE_PERCENT` with a minimum floor; payments tracked in the `x402_payments` table.
+- ERC-1271 smart-contract wallet signatures are supported for verification.
+- Full write-up: `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` (repo root).
+
 ### Asynchronous Job Processing
 
-BullMQ with 11 queues for bundle fulfillment:
+BullMQ with 11 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "11 queues"):
 
-**Job Flow**: `upload → newDataItem → planBundle → prepareBundle → postBundle → verifyBundle`
-**Parallel jobs**: `opticalPost`, `putOffsets`, `cleanupFs`
+**Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`
 
-**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance)
+**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
+- `PLAN_WORKER_CONCURRENCY` (default 5), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
+- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1
+
+**Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
 
 **CRITICAL: Bundle planning requires cron job**:
 ```bash
@@ -186,6 +216,10 @@ Data Age      Filesystem    MinIO      Storage
 ```
 
 Configure via `FILESYSTEM_CLEANUP_DAYS=7` and `MINIO_CLEANUP_DAYS=90`.
+
+**Cleanup requires its own cron** (separate from bundle planning): `packages/upload-service/cron-trigger-cleanup.sh` runs `trigger-cleanup.js`, which enqueues the `cleanup-fs` work. Like `cron-trigger-plan.sh`, it must be registered in crontab or cleanup never runs.
+
+**Object storage abstraction**: `src/arch/objectStore.ts` defines the `ObjectStore` interface (put/get/head/move/delete + multipart). Two impls exist — `S3ObjectStore` and `FileSystemObjectStore` — but `defaultArchitecture.objectStore` always wires `getS3ObjectStore()` (singleton). Local/dev still uses the S3 path against **MinIO**, NOT `FileSystemObjectStore`. The `deleteObject` method (used by the cleanup system) is implemented for S3 but is an unimplemented stub in `FileSystemObjectStore`.
 
 ## Port Allocation
 
@@ -232,11 +266,13 @@ CDP_API_KEY_SECRET=<required-for-mainnet>
 
 ## PM2 Process Management
 
-Configuration in `infrastructure/pm2/ecosystem.config.js`:
-- `payment-service`: 2 instances, cluster mode
-- `upload-api`: 2 instances, cluster mode
-- `upload-workers`: 1 instance, fork mode (avoid duplicate processing)
+Configuration in `infrastructure/pm2/ecosystem.config.js` (the one `yarn pm2:start` uses):
+- `payment-service`: 2 instances, cluster mode (`API_INSTANCES`)
+- `upload-api`: 2 instances, cluster mode (`API_INSTANCES`)
+- `upload-workers`: 1 instance, fork mode (avoid duplicate processing; `WORKER_INSTANCES`)
 - `admin-dashboard`: 1 instance, fork mode
+
+⚠️ A **second, divergent** `ecosystem.config.js` exists at the repo root with different processes (`payment-workers`, `bull-board` instead of `admin-dashboard`). It is NOT the one `pm2:start` uses — prefer the `infrastructure/pm2/` file and avoid `pm2 start ecosystem.config.js` from root unless intentional.
 
 ## Troubleshooting
 
@@ -264,11 +300,13 @@ Use absolute path: `TURBO_JWK_FILE=/full/path/to/wallet.json`
 
 ## Technology Stack
 
-TypeScript/Node.js 18+ • Yarn 3.6.0 workspaces • Koa 3.0 • PostgreSQL 16.1/Knex.js • Redis 7.2 • MinIO • BullMQ • PM2 • Mocha/Chai • Winston/OpenTelemetry
+TypeScript 5 / Node.js 22+ (required by @ar.io/sdk v4, ESM-only) • Yarn 3.6.0 workspaces • Koa 3.0 • PostgreSQL 16.1/Knex.js • Redis 7.2 • MinIO • BullMQ • PM2 • Mocha/Chai • Winston/OpenTelemetry
 
 ## Documentation
 
 - **README.md**: Administrator setup guide, vertical integration, troubleshooting
 - **CLAUDE.md**: Development guidance and architecture overview
 - **packages/*/CLAUDE.md**: Service-specific implementation details
-- **packages/payment-service/X402_IMPLEMENTATION.md**: x402 protocol details
+- **docs/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details
+- **UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md** (repo root): end-to-end design of the unsigned/raw x402 upload flow
+- **DOCKER_IMPLEMENTATION_PLAN.md** (repo root): proposed 5-phase PM2→Docker migration — **a plan, not yet implemented** (no compose/Dockerfile artifacts exist in the tree yet)

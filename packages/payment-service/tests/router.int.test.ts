@@ -189,7 +189,7 @@ describe("Router tests", () => {
 
   it("GET /price/bytes", async () => {
     const wincTotal = new Winston("1234567890");
-    stub(pricingService, "getWCForBytes").resolves({
+    stub(pricingService, "getWCForDataItem").resolves({
       finalPrice: new FinalPrice(wincTotal),
       networkPrice: new NetworkPrice(wincTotal),
       deprecatedChunkBasedNetworkPrice: new NetworkPrice(wincTotal),
@@ -207,7 +207,7 @@ describe("Router tests", () => {
 
   it("GET /price/arweave/:bytes", async () => {
     const wincTotal = new Winston("1234567890");
-    stub(pricingService, "getWCForBytes").resolves({
+    stub(pricingService, "getWCForDataItem").resolves({
       finalPrice: new FinalPrice(wincTotal),
       networkPrice: new NetworkPrice(wincTotal),
       deprecatedChunkBasedNetworkPrice: new NetworkPrice(wincTotal),
@@ -231,7 +231,7 @@ describe("Router tests", () => {
   });
 
   it("GET /price/arweave/:bytes returns 503 if bytes pricing oracle fails to get a price", async () => {
-    stub(pricingService, "getWCForBytes").throws(Error("Serious failure"));
+    stub(pricingService, "getWCForDataItem").throws(Error("Serious failure"));
     const { status, statusText, data } = await axios.get(
       `/price/arweave/1321321`
     );
@@ -259,7 +259,7 @@ describe("Router tests", () => {
   });
 
   it("GET /price/bytes returns 503 if bytes pricing oracle fails to get a price", async () => {
-    stub(pricingService, "getWCForBytes").throws(Error("Serious failure"));
+    stub(pricingService, "getWCForDataItem").throws(Error("Serious failure"));
     const { status, statusText, data } = await axios.get(
       `/v1/price/bytes/1321321`
     );
@@ -1278,7 +1278,7 @@ describe("Router tests", () => {
       const byteCount = 1;
 
       const adjustedWincTotal = new Winston("100");
-      stub(pricingService, "getWCForBytes").resolves({
+      stub(pricingService, "getWCForDataItem").resolves({
         finalPrice: new FinalPrice(adjustedWincTotal),
         networkPrice: new NetworkPrice(adjustedWincTotal),
         deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),
@@ -1421,7 +1421,7 @@ describe("Router tests", () => {
     const byteCount = 1;
 
     const adjustedWincTotal = new Winston("100");
-    stub(pricingService, "getWCForBytes").resolves({
+    stub(pricingService, "getWCForDataItem").resolves({
       finalPrice: new FinalPrice(adjustedWincTotal),
       networkPrice: new NetworkPrice(adjustedWincTotal),
       deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),
@@ -1453,7 +1453,7 @@ describe("Router tests", () => {
     const byteCount = 100000;
 
     const adjustedWincTotal = new Winston("100");
-    stub(pricingService, "getWCForBytes").resolves({
+    stub(pricingService, "getWCForDataItem").resolves({
       finalPrice: new FinalPrice(adjustedWincTotal),
       networkPrice: new NetworkPrice(adjustedWincTotal),
       deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),
@@ -1530,7 +1530,7 @@ describe("Router tests", () => {
     const byteCount = 1024 * 1024; // 1 MiB
 
     const adjustedWincTotal = new Winston("100");
-    stub(pricingService, "getWCForBytes").resolves({
+    stub(pricingService, "getWCForDataItem").resolves({
       finalPrice: new FinalPrice(adjustedWincTotal),
       networkPrice: new NetworkPrice(adjustedWincTotal),
       deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),
@@ -1618,7 +1618,7 @@ describe("Router tests", () => {
 
     it("returns 200 for an affordable winc amounts", async () => {
       const adjustedWincTotal = new Winston("100");
-      stub(pricingService, "getWCForBytes").resolves({
+      stub(pricingService, "getWCForDataItem").resolves({
         finalPrice: new FinalPrice(adjustedWincTotal),
         networkPrice: new NetworkPrice(adjustedWincTotal),
         deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),
@@ -1642,7 +1642,7 @@ describe("Router tests", () => {
 
     it("returns 402 when neither the provided payers nor the signer can satisfy the entire winc amount", async () => {
       const adjustedWincTotal = new Winston("1000");
-      stub(pricingService, "getWCForBytes").resolves({
+      stub(pricingService, "getWCForDataItem").resolves({
         finalPrice: new FinalPrice(adjustedWincTotal),
         networkPrice: new NetworkPrice(adjustedWincTotal),
         deprecatedChunkBasedNetworkPrice: new NetworkPrice(adjustedWincTotal),

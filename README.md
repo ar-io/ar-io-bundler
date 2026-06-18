@@ -236,8 +236,11 @@ The bundling pipeline requires periodic triggering to group uploaded data items 
 cd /home/vilenarios/ar-io-bundler/packages/upload-service
 
 # The cron trigger script is already created
-# Add to crontab (runs every 5 minutes)
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
+# Add to crontab (runs every 5 minutes).
+# IMPORTANT: cron runs with a minimal PATH that usually has no `node` (especially
+# with nvm). Pass NODE_BIN=/abs/path/to/node (find it with `command -v node`) so
+# the job can run — otherwise it fails silently and bundle planning stops.
+(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * NODE_BIN=$(command -v node) /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
 
 # Verify cron job
 crontab -l | grep trigger-plan

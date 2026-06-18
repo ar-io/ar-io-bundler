@@ -330,7 +330,9 @@ export const promoCodeBackfills = {
   welcomeTwentyPercentOff: "TOKEN2049",
 };
 
-export const maxGiftMessageLength = process.env.MAX_GIFT_MESSAGE_LENGTH ?? 250;
+export const maxGiftMessageLength = +(
+  process.env.MAX_GIFT_MESSAGE_LENGTH ?? 250
+);
 
 export const giftingEmailAddress =
   process.env.GIFTING_EMAIL_ADDRESS ?? "gift@ardrive.io";
@@ -359,6 +361,17 @@ export const gatewayUrls = {
     process.env.BASE_ETH_GATEWAY || "https://mainnet.base.org"
   ),
 };
+
+/**
+ * Gateway used by the bytes->winston price oracle. Defaults to the historical
+ * arweave.net price endpoint so behavior is unchanged when unset; override with
+ * PRICE_ORACLE_GATEWAY_URL to point at our self-hosted gateway (e.g.
+ * https://turbo-gateway.com/price). The byte count is appended as a path
+ * segment (e.g. `${priceOracleGatewayUrl}/${bytes}`).
+ */
+export const priceOracleGatewayUrl = new URL(
+  process.env.PRICE_ORACLE_GATEWAY_URL || "https://arweave.net/price"
+);
 
 const thirtyMinutesMs = 1000 * 60 * 30;
 export const stripePaymentQuoteExpirationMs = +(

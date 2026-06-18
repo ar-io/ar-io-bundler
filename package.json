@@ -42,7 +42,7 @@
     "clean": "yarn workspaces foreach -pt run clean && rm -rf node_modules"
   },
   "devDependencies": {
-    "@types/node": "^18.0.0",
+    "@types/node": "^22.0.0",
     "eslint": "^8.0.0",
     "husky": "^8.0.0",
     "lint-staged": "^14.0.0",
@@ -51,11 +51,26 @@
     "typescript": "^5.0.0"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.12.0",
     "yarn": ">=3.0.0"
   },
   "packageManager": "yarn@3.6.0",
   "dependencies": {
     "bitcoinjs-lib": "^7.0.0"
+  },
+  "resolutions": {
+    "axios": "1.15.2",
+    "elliptic": "6.6.1",
+    "secp256k1": "5.0.1",
+    "jws": "4.0.1",
+    "qs": "6.14.2",
+    "undici": "7.24.0",
+    "ws": "8.17.1",
+    "cross-spawn": "7.0.5",
+    "@babel/runtime": "7.26.10",
+    "base-x": "4.0.1",
+    "form-data": "^4.0.4",
+    "ip": "2.0.1",
+    "tar": "6.2.1"
   }
 }

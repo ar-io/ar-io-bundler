@@ -48,7 +48,9 @@ cd /home/vilenarios/ar-io-bundler/packages/upload-service
 node trigger-cleanup.js
 
 # Add to crontab for automated daily cleanup at 2 AM
-(crontab -l 2>/dev/null | grep -v "cron-trigger-cleanup" ; echo "0 2 * * * /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh >> /tmp/cleanup-fs-cron.log 2>&1") | crontab -
+# NOTE: cron's PATH usually lacks `node` (esp. with nvm). Pass NODE_BIN so the job runs;
+# without it the cleanup fails silently. Find the path with `command -v node`.
+(crontab -l 2>/dev/null | grep -v "cron-trigger-cleanup" ; echo "0 2 * * * NODE_BIN=$(command -v node) /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh >> /tmp/cleanup-fs-cron.log 2>&1") | crontab -
 ```
 
 ## Configuration

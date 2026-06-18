@@ -440,6 +440,10 @@ export interface DataItemAttributes {
   payloadDataStartOffset: number;
   payloadContentType: string;
   rawDataItemOffsetInBundle: number;
+  // Absence of parentDataItemId and startOffsetInParentDataItemPayload
+  // indicates a top-level item in the bundle (i.e. not nested inside a BDI).
+  parentDataItemId?: TransactionId;
+  startOffsetInParentDataItemPayload?: number;
 }
 
 export interface BundlePayloadResult {

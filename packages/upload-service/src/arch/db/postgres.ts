@@ -20,6 +20,7 @@ import winston from "winston";
 
 import {
   batchingSize,
+  defaultDeadlineHeight,
   failedReasons,
   maxDataItemsPerBundle,
   retryLimitForFailedDataItems,
@@ -337,7 +338,16 @@ export class PostgresDatabase implements Database {
       content_type: payloadContentType,
       premium_feature_type: premiumFeatureType,
       signature,
-      deadline_height: deadlineHeight?.toString(),
+      // Default far-future deadline height if missing, NaN, or non-positive.
+      // Guards against a poisoned "NaN" string re-entering the verify pipeline
+      // (matches upstream: undefined/null/NaN/<=0 all fall back to the default).
+      deadline_height: (deadlineHeight !== undefined &&
+      deadlineHeight !== null &&
+      !isNaN(deadlineHeight) &&
+      deadlineHeight > 0
+        ? deadlineHeight
+        : defaultDeadlineHeight
+      ).toString(),
     };
   }
 
@@ -349,7 +359,9 @@ export class PostgresDatabase implements Database {
       const fetchStartTimestamp = Date.now();
       const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
         (
-          (await this.reader.raw(
+          // Read from the writer to avoid stale reader/replica rows when the
+          // plan job loops repeatedly (PE-8989).
+          (await this.writer.raw(
             `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
               FROM ${tableNames.newDataItem}
               ORDER BY uploaded_date
@@ -654,7 +666,7 @@ export class PostgresDatabase implements Database {
       // append USD/AR conversion rate for accounting purposes
       await tx(tableNames.postedBundle).insert({
         ...newBundleDbResult,
-        usd_to_ar_rate: usdToArRate,
+        usd_to_ar_rate: usdToArRate ?? null,
       });
     });
   }
@@ -1448,6 +1460,22 @@ export class PostgresDatabase implements Database {
       createdAt: row.created_at,
       settledAt: row.settled_at,
     }));
+  }
+
+  public async updatePlannedDataItemsToDefaultDeadlineHeight(
+    dataItemIds: DataItemId[]
+  ): Promise<void> {
+    this.log.info("Updating planned data items to default deadline height...", {
+      dataItemIds,
+    });
+
+    await this.writer.transaction(async (knexTransaction) => {
+      await knexTransaction(tableNames.plannedDataItem)
+        .whereIn(columnNames.dataItemId, dataItemIds)
+        .update({
+          deadline_height: defaultDeadlineHeight,
+        });
+    });
   }
 }
 

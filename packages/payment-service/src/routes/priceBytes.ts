@@ -47,7 +47,7 @@ export async function priceBytesHandler(ctx: KoaContext, next: Next) {
   }
   try {
     // TODO: Optionally accept a wallet address to include user specific adjustments
-    const priceWithAdjustments = await pricingService.getWCForBytes(
+    const priceWithAdjustments = await pricingService.getWCForDataItem(
       bytes /* , userAddress */
     );
     const { adjustments, finalPrice } = priceWithAdjustments;

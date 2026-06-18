@@ -116,8 +116,9 @@ export async function prepareBundleHandler(
   }
 
   if (dbDataItems.length === 0) {
-    logger.warn("No planned data items for plan.");
-    return;
+    throw Error(
+      `No planned data items or for plan id ${planId}!\nReader may be out of sync or this could be an empty bundle plan.`
+    );
   }
   const dataItemCount = dbDataItems.length;
   const totalDataItemsSize = dbDataItems.reduce(
@@ -290,6 +291,9 @@ export async function prepareBundleHandler(
               rawContentLength: attributes.rawDataItemSize,
               payloadContentType: attributes.payloadContentType,
               payloadDataStart: attributes.payloadDataStartOffset,
+              parentDataItemId: attributes.parentDataItemId,
+              startOffsetInParentDataItemPayload:
+                attributes.startOffsetInParentDataItemPayload,
             })
           ),
         });

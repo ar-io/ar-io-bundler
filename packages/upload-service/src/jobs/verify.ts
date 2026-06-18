@@ -163,7 +163,7 @@ export async function verifyBundleHandler({
                 logger,
                 planId,
                 cacheService
-              ).catch((error) => {
+              ).catch(async (error) => {
                 if (error instanceof DataItemsStillPendingWarning) {
                   dataItemsStillPending = true;
                   return;
@@ -176,6 +176,26 @@ export async function verifyBundleHandler({
                   error,
                   dataItemIds: batch.map(({ dataItemId }) => dataItemId),
                 });
+
+                if (error.code === "22P02") {
+                  const dataItemIdsWithNaNDeadlineHeight = batch
+                    .filter(
+                      ({ deadlineHeight }) =>
+                        !deadlineHeight || isNaN(Number(deadlineHeight))
+                    )
+                    .map(({ dataItemId }) => dataItemId);
+                  logger.error(
+                    "Batch failed due to NaN deadlineHeight, updating these data items to default deadline height so they can be reprocessed",
+                    {
+                      bundleId,
+                      planId,
+                      dataItemIds: dataItemIdsWithNaNDeadlineHeight,
+                    }
+                  );
+                  await database.updatePlannedDataItemsToDefaultDeadlineHeight(
+                    dataItemIdsWithNaNDeadlineHeight
+                  );
+                }
               })
             )
           );
