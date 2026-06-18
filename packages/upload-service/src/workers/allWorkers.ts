@@ -14,6 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+// Load .env from the repository root BEFORE importing anything that reads
+// process.env at module-eval time (arch/db config reads DB_USER/DB_PASSWORD;
+// the wallet utils read TURBO_JWK_FILE). The API entry (src/index.ts) loads
+// dotenv the same way; PM2's env_file injection is not reliable enough, so the
+// worker process must self-load its env first — otherwise the DB connection
+// falls back to user "postgres" (auth failure) and TURBO_JWK_FILE is missing.
+import { config as loadEnvFile } from "dotenv";
+import * as path from "path";
+loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
+
 import { Job } from "bullmq";
 
 import { defaultArchitecture } from "../arch/architecture";
