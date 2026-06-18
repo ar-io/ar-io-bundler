@@ -104,8 +104,7 @@ Knex.js handles migrations and queries, with separate reader/writer connections
 **Migration workflow:**
 1. Add migration logic to `src/arch/db/migrator.ts` (NOT in the generated file).
 2. Generate the migration file: `yarn db:migrate:new MIGRATION_NAME`.
-3. Update the generated file in `src/arch/db/migrations/` to call your migrator
-   function.
+3. Update the generated file in `src/migrations/` to call your migrator function.
 4. Apply it: `yarn db:migrate:latest`.
 
 Never write SQL directly in the generated migration files.

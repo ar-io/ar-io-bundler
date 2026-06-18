@@ -77,7 +77,7 @@ yarn db:migrate:rollback   # roll back the last migration
 
 ### Migration workflow
 1. Add migration logic to `src/arch/db/migrator.ts` (not the generated file).
-2. `yarn db:migrate:new MIGRATION_NAME` generates a file in `src/arch/db/migrations/`.
+2. `yarn db:migrate:new MIGRATION_NAME` generates a file in `src/migrations/`.
 3. Update the generated file to call your migrator function.
 4. `yarn db:migrate:latest`.
 
