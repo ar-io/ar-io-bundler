@@ -19,6 +19,7 @@ import jwt from "jsonwebtoken";
 import { Context, Next } from "koa";
 import winston from "winston";
 
+import { normalizeEthereumAddress } from "../utils/normalizeEthereumAddress";
 import { verifySigAndGetNativeAddress } from "../utils/verifyArweaveSignature";
 
 // You should use a secure and secret key for JWT token generation
@@ -72,6 +73,7 @@ export async function verifySignature(ctx: Context, next: Next): Promise<void> {
       return next();
     }
 
+    // NOTE: EVM addresses are normalized inside verifySigAndGetNativeAddress
     const maybeWalletAddress = await verifySigAndGetNativeAddress({
       signatureType,
       publicKey,
@@ -122,6 +124,17 @@ export async function addressFromQuery(
     return;
   }
 
-  ctx.state.walletAddress = address;
+  try {
+    // Normalize Ethereum addresses to EIP-55 checksum format
+    // This will throw if the address has an invalid checksum
+    ctx.state.walletAddress = normalizeEthereumAddress(address);
+  } catch (error) {
+    ctx.status = 400;
+    ctx.body = `Invalid address format: ${
+      error instanceof Error ? error.message : "Unknown error"
+    }`;
+    return;
+  }
+
   return next();
 }
