@@ -2048,6 +2048,6 @@ const usdcAmount = atomicUnits / 1e6;  // 2.5
 **END OF GUIDE**
 
 For questions or support:
-- GitHub Issues: https://github.com/vilenarios/ar-io-bundler/issues
-- Documentation: /docs/AR-IO-BUNDLER-FEATURE-GUIDE.md
+- GitHub Issues: https://github.com/ar-io/ar-io-bundler/issues
+- Documentation: /docs/guides/FEATURE_GUIDE.md
 - Architecture: /docs/architecture/ARCHITECTURE.md

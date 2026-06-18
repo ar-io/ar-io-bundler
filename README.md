@@ -38,8 +38,8 @@ AR.IO Bundler is a comprehensive platform that packages [ANS-104](https://github
 
 ### Prerequisites
 
-- Node.js 18+ (recommended via [nvm](https://github.com/nvm-sh/nvm))
-- Yarn 3+
+- **Node.js 22** (required — `@ar.io/sdk` v4 is ESM-only; `.nvmrc` pins v22.22.0). Install via [nvm](https://github.com/nvm-sh/nvm).
+- Yarn 3+ (the repo pins `yarn@3.6.0`)
 - Docker & Docker Compose
 - PM2 (`npm install -g pm2`)
 - (Optional) Running AR.IO Gateway for vertical integration
@@ -48,30 +48,37 @@ AR.IO Bundler is a comprehensive platform that packages [ANS-104](https://github
 
 ```bash
 # Clone repository
-git clone https://github.com/vilenarios/ar-io-bundler.git
+git clone https://github.com/ar-io/ar-io-bundler.git
 cd ar-io-bundler
+
+# Use the pinned Node version
+nvm install && nvm use   # reads .nvmrc (v22.22.0)
 
 # Install dependencies
 yarn install
 ```
 
-### Step 2: Configure Environment Files
+### Step 2: Configure Environment
 
-**IMPORTANT**: Both services share the same `.env` file configuration.
+**IMPORTANT**: There is a **single, shared `.env` at the repo root**. Both
+services and all workers load it (via dotenv / the PM2 `env_file`); there are no
+per-package `.env` files.
 
 ```bash
-# Copy environment template for both services
-cp packages/upload-service/.env.sample packages/upload-service/.env
-cp packages/payment-service/.env.sample packages/payment-service/.env
+# Copy the single environment template at the repo root
+cp .env.sample .env
 
 # Edit configuration (see Configuration section below)
-nano packages/upload-service/.env
-nano packages/payment-service/.env
+nano .env
 ```
+
+> Prefer the guided setup instead of editing by hand: `./scripts/setup-bundler.sh`
+> walks through all required values, or `./scripts/setup-basic.sh` for a minimal
+> local config. (See `docs/setup/SETUP_GUIDE.md`.)
 
 #### Required Configuration
 
-At minimum, configure these values in **both** `.env` files:
+At minimum, configure these values in the root `.env`:
 
 ```bash
 # Environment
@@ -92,11 +99,13 @@ RAW_DATA_ITEM_JWK_FILE=/full/path/to/ar-io-bundler/wallet.json
 ARWEAVE_ADDRESS=<your-arweave-address>
 ARIO_ADDRESS=<your-arweave-address>
 
-# Database Configuration
+# Database Configuration (one PostgreSQL server hosts both databases)
 DB_HOST=localhost
 DB_PORT=5432
 DB_USER=turbo_admin
 DB_PASSWORD=postgres
+PAYMENT_DB_DATABASE=payment_service   # payment service database name
+UPLOAD_DB_DATABASE=upload_service     # upload service database name
 
 # Redis Configuration
 REDIS_CACHE_HOST=localhost
@@ -124,20 +133,23 @@ X402_PAYMENT_ADDRESS=<your-ethereum-address>
 ```
 
 **CRITICAL**:
-- Use **ABSOLUTE PATHS** for `TURBO_JWK_FILE` (e.g., `/home/user/ar-io-bundler/wallet.json`)
-- `PRIVATE_ROUTE_SECRET` and `JWT_SECRET` must be **identical** in both services
-- Set correct database name: `DB_DATABASE=payment_service` in payment-service, `DB_DATABASE=upload_service` in upload-service
-- `PAYMENT_SERVICE_BASE_URL` should NOT include protocol (protocol is prepended automatically)
+- Use **ABSOLUTE PATHS** for `TURBO_JWK_FILE` / `RAW_DATA_ITEM_JWK_FILE` (e.g., `/home/user/ar-io-bundler/wallet.json`)
+- `PRIVATE_ROUTE_SECRET` and `JWT_SECRET` are read by both services from the one root `.env`, so they are inherently consistent
+- Database names are set per service via `PAYMENT_DB_DATABASE=payment_service` and `UPLOAD_DB_DATABASE=upload_service` (there is no `DB_DATABASE` variable)
+- `PAYMENT_SERVICE_BASE_URL` should NOT include a protocol prefix (protocol is prepended automatically)
 
 ### Step 3: Add Your Arweave Wallet
 
 ```bash
 # Copy your Arweave JWK wallet to the bundler root directory
-cp /path/to/your/wallet.json /home/vilenarios/ar-io-bundler/wallet.json
+cp /path/to/your/wallet.json ./wallet.json
 
 # Verify wallet permissions
 chmod 600 wallet.json
 ```
+
+Then point `TURBO_JWK_FILE` (and `RAW_DATA_ITEM_JWK_FILE`) in `.env` at the
+**absolute** path of this file.
 
 ### Step 4: Start Infrastructure
 
@@ -152,19 +164,18 @@ docker compose ps
 ### Step 5: Run Database Migrations
 
 ```bash
-# Run migrations for both services
-cd packages/upload-service
-DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres DB_DATABASE=upload_service yarn db:migrate:latest
+# Run migrations for both databases from the repo root
+yarn db:migrate
 
-cd ../payment-service
-DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres DB_DATABASE=payment_service yarn db:migrate:latest
+# (equivalently, per service)
+yarn db:migrate:upload    # creates/migrates upload_service
+yarn db:migrate:payment   # creates/migrates payment_service
 ```
 
 ### Step 6: Build Services
 
 ```bash
-# Build both services from root directory
-cd /home/vilenarios/ar-io-bundler
+# Build all packages from the repo root
 yarn build
 ```
 
@@ -187,63 +198,55 @@ This script will:
 - ✅ Save PM2 state
 - ✅ Display service status and URLs
 
-**Option B: Manual Start**
+**Option B: PM2 Ecosystem File**
 
-Start services manually from their respective directories:
+Start all processes from the canonical ecosystem config (resolves its own paths
+and loads the root `.env`):
 
 ```bash
-# Start Payment Service (Port 4001)
-cd /home/vilenarios/ar-io-bundler/packages/payment-service
-PORT=4001 NODE_ENV=production pm2 start lib/index.js --name payment-service -i 2
+yarn pm2:start          # pm2 start infrastructure/pm2/ecosystem.config.js
 
-# Start Upload Service (Port 3001)
-cd /home/vilenarios/ar-io-bundler/packages/upload-service
-PORT=3001 NODE_ENV=production pm2 start lib/server.js --name upload-api -i 2
-
-# Start Upload Workers (Background job processing)
-NODE_ENV=production pm2 start lib/workers/allWorkers.js \
-  --name upload-workers \
-  --interpreter-args "-r dotenv/config"
-
-# Save PM2 configuration for automatic restart
+# Save PM2 state and (optionally) enable boot startup
 pm2 save
-
-# Configure PM2 to start on system boot (optional)
 pm2 startup
 ```
-
-**IMPORTANT**: Services must be started with **explicit PORT environment variables** to prevent port conflicts with AR.IO Gateway.
 
 **Port Allocation**:
 - **3000, 4000, 5050**: Reserved for AR.IO Gateway (if co-located)
 - **3001**: Upload Service API
+- **3002**: Admin dashboard / Bull Board
 - **4001**: Payment Service API
 - **5432**: PostgreSQL
 - **6379**: Redis Cache
 - **6381**: Redis Queues
 - **9000-9001**: MinIO
 
-**PM2 Processes**:
-- **payment-service** (2 instances): Payment processing API
-- **upload-api** (2 instances): Upload handling API
-- **upload-workers** (1 instance): Background job processing (plan, prepare, post, verify bundles)
+**PM2 Processes** (five, defined in `infrastructure/pm2/ecosystem.config.js`):
+- **payment-service** (cluster, 2 instances): Payment processing API
+- **upload-api** (cluster, 2 instances): Upload handling API
+- **upload-workers** (fork, 1 instance): BullMQ bundle pipeline (plan → prepare → post → seed → verify, plus optical-post, offsets, cleanup, finalize, unbundle)
+- **payment-workers** (fork, 1 instance): Finalizes pending crypto-payment credits
+- **admin-dashboard** (fork, 1 instance): Bull Board + admin stats (port 3002)
 
 ### Step 8: Setup Bundle Planning Cron Job
 
 The bundling pipeline requires periodic triggering to group uploaded data items into bundles. Set up a cron job to run bundle planning every 5 minutes:
 
 ```bash
-cd /home/vilenarios/ar-io-bundler/packages/upload-service
+# Use the absolute path to YOUR checkout's upload-service directory:
+BUNDLER_DIR=$(pwd)/packages/upload-service   # run from the repo root
 
-# The cron trigger script is already created
 # Add to crontab (runs every 5 minutes).
 # IMPORTANT: cron runs with a minimal PATH that usually has no `node` (especially
-# with nvm). Pass NODE_BIN=/abs/path/to/node (find it with `command -v node`) so
-# the job can run — otherwise it fails silently and bundle planning stops.
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * NODE_BIN=$(command -v node) /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
+# with nvm). Pass NODE_BIN=$(command -v node) so the job can run — otherwise it
+# fails silently and bundle planning stops.
+(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * NODE_BIN=$(command -v node) $BUNDLER_DIR/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
 
-# Verify cron job
-crontab -l | grep trigger-plan
+# (Optional but recommended) tiered-retention cleanup, e.g. daily at 02:00:
+(crontab -l 2>/dev/null | grep -v "trigger-cleanup" ; echo "0 2 * * * NODE_BIN=$(command -v node) $BUNDLER_DIR/cron-trigger-cleanup.sh >> /tmp/bundle-cleanup-cron.log 2>&1") | crontab -
+
+# Verify cron jobs
+crontab -l | grep trigger-
 ```
 
 **What this does**: Every 5 minutes, the cron job triggers the plan worker to:
@@ -527,14 +530,18 @@ ping -c 1 raw-data-items.ar-io-bundler-minio
 
 #### Technical Details
 
+> These settings are for the **AR.IO Gateway's** S3 client reading data from
+> MinIO. The bundler's own S3 client uses path-style addressing
+> (`S3_FORCE_PATH_STYLE=true`) and does not need them.
+
 **Why Both MINIO_DOMAIN and Network Aliases?**
 - `MINIO_DOMAIN`: Tells MinIO to respond to virtual-hosted-style bucket requests
 - Network Aliases: Tells Docker DNS how to resolve bucket subdomain names
-- Both are required for the AWS SDK's virtual-hosted-style S3 addressing
+- Both are required when the gateway's S3 client uses virtual-hosted-style addressing
 
 **Virtual-Hosted-Style vs Path-Style**:
-- Virtual-hosted: `http://bucket.endpoint/key` (required by aws-lite)
-- Path-style: `http://endpoint/bucket/key` (legacy, not supported by aws-lite)
+- Virtual-hosted: `http://bucket.endpoint/key`
+- Path-style: `http://endpoint/bucket/key`
 
 **Security Note**:
 - MinIO port 9000 must be accessible from gateway server
@@ -612,11 +619,13 @@ Handles payment processing, credit management, and blockchain payment gateway in
 
 **Key Endpoints:**
 - `GET /health` - Health check
-- `GET /v1/price/bytes/:bytes` - Get Winston price for byte count
-- `GET /v1/x402/price/:version/:address?bytes=:bytes` - Get x402 payment requirements
-- `POST /v1/x402/payment` - Process x402 payment
-- `POST /v1/top-up` - Add credits to user balance
+- `GET /v1/price/bytes/:bytes` - Get Winston price for a byte count
+- `GET /v1/x402/price/:signatureType/:address` - Get x402 payment requirements (returns 402)
+- `POST /v1/x402/payment/:signatureType/:address` - Verify and settle an x402 payment
+- `POST /v1/x402/finalize` - Finalize an x402 payment (fraud detection)
+- `GET /v1/top-up/:method/:address/:currency/:amount` - Top up account credits
 - `GET /v1/balance` - Check user balance
+- `GET /v1/arns/price/:intent/:name` - ArNS price quote
 
 ### Upload Service (`packages/upload-service`)
 
@@ -635,33 +644,35 @@ Accepts data item uploads and manages asynchronous fulfillment of data delivery 
 
 **Port:** 3001
 
-**Key Endpoints:**
+**Key Endpoints** (also served under a `/v1` prefix):
 - `GET /health` - Health check
-- `GET /v1/info` - Service information
-- `POST /v1/tx` - Upload single data item
-- `POST /v1/multipart/upload/create` - Create multipart upload
-- `PUT /v1/multipart/upload/:uploadId/chunk/:chunkIndex` - Upload chunk
-- `POST /v1/multipart/upload/:uploadId/finalize` - Finalize upload
+- `GET /info` - Service information
+- `POST /tx` (or `POST /tx/:token`) - Upload a single ANS-104 data item
+- `POST /x402/upload/unsigned` - Unsigned/raw upload paid via x402 (bundler signs)
+- `GET /chunks/:token/-1/-1` - Create a multipart upload
+- `POST /chunks/:token/:uploadId/:chunkOffset` - Upload a chunk
+- `POST /chunks/:token/:uploadId/-1` (or `.../finalize`) - Finalize the upload
+- `GET /tx/:id/status` - Data item status
 
 ## Project Structure
 
 ```
 ar-io-bundler/
-├── packages/              # Service packages
-│   ├── payment-service/   # Payment processing service
-│   │   ├── src/          # TypeScript source
-│   │   ├── lib/          # Compiled JavaScript
-│   │   ├── .env          # Configuration (DO NOT COMMIT)
-│   │   └── package.json
-│   └── upload-service/    # Upload and bundling service
-│       ├── src/          # TypeScript source
-│       ├── lib/          # Compiled JavaScript
-│       ├── .env          # Configuration (DO NOT COMMIT)
-│       └── package.json
-├── wallet.json            # Arweave JWK wallet (DO NOT COMMIT)
-├── docker-compose.yml     # Infrastructure definition
-├── package.json           # Root workspace configuration
-└── README.md              # This file
+├── packages/                  # Yarn workspaces
+│   ├── payment-service/       # Payment processing + credit management
+│   ├── upload-service/        # Upload handling + ANS-104 bundling (BullMQ workers)
+│   ├── admin-service/         # Bull Board + admin dashboard (port 3002)
+│   └── shared/                # Shared types/utilities (@ar-io-bundler/shared)
+├── infrastructure/pm2/        # Canonical PM2 ecosystem config
+├── scripts/                   # Setup / start / stop / verify / cleanup scripts
+├── docs/                      # Architecture, operations, api, guides (see docs/README.md)
+├── .env                       # Single shared configuration (DO NOT COMMIT)
+├── .env.sample                # Configuration template
+├── wallet.json                # Arweave JWK wallet (DO NOT COMMIT)
+├── docker-compose.yml         # Infrastructure (PostgreSQL, Redis x2, MinIO)
+├── ecosystem.config.js        # Re-export shim → infrastructure/pm2/ecosystem.config.js
+├── package.json               # Root workspace configuration
+└── README.md                  # This file
 ```
 
 ## Common Commands
@@ -749,7 +760,7 @@ const knex = require('knex')(require('./lib/arch/db/knexConfig').getReaderConfig
 
 3. **Wait for external indexers**: If posting to public Arweave, indexers like arweave.net may take hours/days to index your bundles
 
-4. **Use Turbo's infrastructure**: Production deployments typically use Turbo's indexing infrastructure for immediate data item availability
+4. **Use an indexing AR.IO Gateway**: For immediate data-item availability, run a co-located AR.IO Gateway with ANS-104 indexing enabled and optical posting configured (see Vertical Integration above)
 
 ### Workers Not Processing Uploads
 
@@ -817,9 +828,9 @@ ss -tlnp | grep -E ":3000|:3001|:4000|:4001"
 
 **Problem**: `ENOENT: no such file or directory, open './wallet.json'`
 
-**Solution**: Use absolute path in `.env`:
+**Solution**: Use an absolute path in `.env`:
 ```bash
-TURBO_JWK_FILE=/home/vilenarios/ar-io-bundler/wallet.json
+TURBO_JWK_FILE=/absolute/path/to/ar-io-bundler/wallet.json
 ```
 
 ### Service Communication Errors
@@ -896,7 +907,7 @@ pm2 reload all
 
 ## Technology Stack
 
-- **Runtime**: Node.js 18+, TypeScript
+- **Runtime**: Node.js 22 (required; `.nvmrc` v22.22.0), TypeScript 5
 - **Package Manager**: Yarn 3.6.0 (workspaces)
 - **Web Framework**: Koa 3.0
 - **Database**: PostgreSQL 16.1
@@ -914,15 +925,17 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 
 ## Support
 
-- **GitHub**: https://github.com/vilenarios/ar-io-bundler
-- **Issues**: https://github.com/vilenarios/ar-io-bundler/issues
+- **GitHub**: https://github.com/ar-io/ar-io-bundler
+- **Issues**: https://github.com/ar-io/ar-io-bundler/issues
 - **Arweave**: https://docs.arweave.org
 - **AR.IO**: https://docs.ar.io
 - **x402 Protocol**: https://x402.org
 
 ## Additional Resources
 
-- [VERTICALLY_INTEGRATED_STATUS.md](./VERTICALLY_INTEGRATED_STATUS.md) - Vertical integration status report
+- [docs/README.md](./docs/README.md) - Documentation index
+- [docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md](./docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md) - Production deployment runbook
+- [docs/architecture/ARCHITECTURE.md](./docs/architecture/ARCHITECTURE.md) - System architecture
 - [CLAUDE.md](./CLAUDE.md) - Repository guidance for AI assistants
 
 ---

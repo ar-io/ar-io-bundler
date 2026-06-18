@@ -28,7 +28,7 @@ This guide covers everything beyond the [README.md](README.md) quick start, prov
 
 Before installation, ensure you have:
 
-- **Node.js 18+** - [Install via nvm](https://github.com/nvm-sh/nvm) (recommended) or [nodejs.org](https://nodejs.org/)
+- **Node.js 22** - [Install via nvm](https://github.com/nvm-sh/nvm) (recommended) or [nodejs.org](https://nodejs.org/)
 - **Yarn 3.6+** - Enable with `corepack enable` or `npm install -g yarn`
 - **Docker & Docker Compose V2** - [docs.docker.com/get-docker](https://docs.docker.com/get-docker/)
 - **PM2** - Install with `npm install -g pm2` or `yarn global add pm2`
@@ -37,7 +37,7 @@ Before installation, ensure you have:
 
 **Verify prerequisites:**
 ```bash
-node --version         # Should be v18.0.0 or higher
+node --version         # Should be v22.12.0 or higher
 yarn --version         # Should be 3.6.0 or higher
 docker --version       # Should be 20.10.0 or higher
 docker compose version # Should be v2.0.0 or higher
@@ -51,7 +51,7 @@ The automated setup script guides you through the entire process:
 
 ```bash
 # Clone repository
-git clone https://github.com/vilenarios/ar-io-bundler.git
+git clone https://github.com/ar-io/ar-io-bundler.git
 cd ar-io-bundler
 
 # Run comprehensive setup wizard
@@ -84,7 +84,7 @@ If you need granular control or the automated setup fails:
 #### 1. Clone and Install Dependencies
 
 ```bash
-git clone https://github.com/vilenarios/ar-io-bundler.git
+git clone https://github.com/ar-io/ar-io-bundler.git
 cd ar-io-bundler
 yarn install
 ```
@@ -1257,7 +1257,7 @@ cat .env | grep -v -E "(SECRET|PASSWORD|KEY)"
 git log --oneline -5
 ```
 
-**Submit issue:** https://github.com/vilenarios/ar-io-bundler/issues
+**Submit issue:** https://github.com/ar-io/ar-io-bundler/issues
 
 ---
 
@@ -1344,13 +1344,14 @@ curl -X POST http://localhost:3001/v1/tx/ario \
 docker logs <gateway-core-container> | grep -i s3
 ```
 
-**See also:** `VERTICALLY_INTEGRATED_STATUS.md` for complete integration details.
+**See also:** the root `README.md` (Vertical Integration with AR.IO Gateway) for
+complete integration details.
 
 ### High Availability & Disaster Recovery
 
 For production deployments requiring HA/DR:
 
-**See:** `docs/operations/HIGH_AVAILABILITY_DISASTER_RECOVERY.md`
+**See:** `docs/archive/HIGH_AVAILABILITY_DISASTER_RECOVERY.md` (historical/aspirational design; the live system is single-node)
 
 **Key strategies:**
 - Multi-region deployment
@@ -2122,8 +2123,8 @@ tail -f /tmp/bundle-plan-cron.log  # Cron job logs
 
 ### Support & Resources
 
-- **GitHub Repository:** https://github.com/vilenarios/ar-io-bundler
-- **Issue Tracker:** https://github.com/vilenarios/ar-io-bundler/issues
+- **GitHub Repository:** https://github.com/ar-io/ar-io-bundler
+- **Issue Tracker:** https://github.com/ar-io/ar-io-bundler/issues
 - **Arweave Documentation:** https://docs.arweave.org
 - **AR.IO Gateway:** https://docs.ar.io
 - **x402 Protocol:** https://x402.org
@@ -2131,12 +2132,13 @@ tail -f /tmp/bundle-plan-cron.log  # Cron job logs
 
 ### Additional Documentation
 
-- **High Availability:** `docs/operations/HIGH_AVAILABILITY_DISASTER_RECOVERY.md`
+- **Production Deployment:** `docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md`
 - **Fee Configuration:** `docs/operations/FEE_CONFIGURATION_GUIDE.md`
 - **Infrastructure Components:** `docs/operations/INFRASTRUCTURE_COMPONENTS.md`
-- **x402 Integration:** `docs/X402_INTEGRATION_GUIDE.md`
+- **x402 Integration:** `docs/guides/X402_INTEGRATION_GUIDE.md`
 - **Architecture Deep Dive:** `docs/architecture/ARCHITECTURE.md`
 - **API Reference:** `docs/api/README.md`
+- **High Availability (historical):** `docs/archive/HIGH_AVAILABILITY_DISASTER_RECOVERY.md`
 
 ---
 

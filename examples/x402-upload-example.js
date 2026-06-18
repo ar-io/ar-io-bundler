@@ -19,7 +19,7 @@
  * 4. Authorize payment with one click
  *
  * Requirements:
- * - Node.js v18+
+ * - Node.js v22+
  * - ethers v6
  * - axios
  * - arweave

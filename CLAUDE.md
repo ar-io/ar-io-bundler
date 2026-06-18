@@ -13,9 +13,13 @@ This is the **AR.IO Bundler** - a complete ANS-104 data bundling platform for Ar
 - `packages/shared/` - Shared types and utilities (minimal)
 
 **Service-specific CLAUDE.md files** contain detailed implementation guidance:
-- `packages/payment-service/CLAUDE.md` - Payment service architecture, x402, Stripe, crypto payments
-- `packages/upload-service/CLAUDE.md` - Upload service architecture, bundling, jobs, multipart
-  - ⚠️ **Stale section**: its job-pipeline description still references the old SQS + Lambda/ECS design with offsets in DynamoDB. The current implementation is **BullMQ workers** with offsets in **PostgreSQL** (see "Asynchronous Job Processing" and "Database Architecture" below). Trust this root file over that section.
+- `packages/payment-service/CLAUDE.md` - Payment service architecture, x402, Stripe, crypto payments, Solana-ARIO/ArNS
+- `packages/upload-service/CLAUDE.md` - Upload service architecture, bundling, BullMQ jobs, multipart, x402 uploads
+
+**De-AWS note:** This is a fork of ArDrive's Turbo that has replaced its AWS
+foundations — SQS→BullMQ, Lambda/ECS→PM2, DynamoDB→PostgreSQL, S3→MinIO. Any
+doc, comment, or env var that still implies SQS/Lambda/DynamoDB/Secrets-Manager
+as the live architecture is legacy framing, not current behavior.
 
 ## ⚠️ CRITICAL: Service Restart Protocol
 
@@ -69,7 +73,10 @@ Note: upload integration is serial (`parallel: false`, 20s timeout); payment int
 yarn db:migrate                 # Migrate both databases
 yarn db:migrate:payment         # Payment service only
 yarn db:migrate:upload          # Upload service only
-yarn workspace @ar-io-bundler/payment-service db:migrate:new MIGRATION_NAME
+
+# Create a new migration file (script name differs per service):
+yarn workspace @ar-io-bundler/upload-service  db:migrate:new  MIGRATION_NAME
+yarn workspace @ar-io-bundler/payment-service db:migrate:make MIGRATION_NAME
 ```
 
 ### Code Quality
@@ -165,12 +172,12 @@ interface Architecture {
 - Authentication via JWT tokens with `PRIVATE_ROUTE_SECRET`
 - Circuit breaker pattern (opossum) for resilience
 
-### Unsigned x402 Uploads (recent feature)
+### Unsigned x402 Uploads
 
-Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST **raw, un-ANS-104 data** to `/v1/x402/upload/unsigned`; the bundler returns an HTTP 402 USDC quote, the client pays via an EIP-712 `transferWithAuthorization` signature in the `X-PAYMENT` header, then the bundler **signs the ANS-104 data item with its own server wallet** (`getRawDataItemWallet()` / `RAW_DATA_ITEM_JWK_FILE`), stores it at S3 key `raw-data-item/{id}`, optical-bridges it, and returns a signed receipt.
-- Key files: `src/routes/rawDataPost.ts`, `src/routes/x402Pricing.ts`, `src/utils/createDataItem.ts`. Pricing uses per-byte cost + `X402_FEE_PERCENT` with a minimum floor; payments tracked in the `x402_payments` table.
+Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST **raw, un-ANS-104 data** to `/x402/upload/unsigned`; the bundler returns an HTTP 402 USDC quote, the client pays via an EIP-712 `transferWithAuthorization` signature in the `X-PAYMENT` header, then the bundler **signs the ANS-104 data item with its own server wallet** (`getRawDataItemWallet()` / `RAW_DATA_ITEM_JWK_FILE`), stores it at S3 key `raw-data-item/{id}`, optical-bridges it, and returns a signed receipt.
+- Key files: `src/routes/rawDataPost.ts`, `src/routes/x402Pricing.ts`. Pricing uses per-byte cost + `X402_FEE_PERCENT` with a minimum floor; payments tracked in the `x402_payments` table.
 - ERC-1271 smart-contract wallet signatures are supported for verification.
-- Full write-up: `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` (repo root).
+- Full write-up: `docs/guides/X402_INTEGRATION_GUIDE.md` and `docs/architecture/X402_END_TO_END_DEEP_DIVE.md`.
 
 ### Asynchronous Job Processing
 
@@ -199,8 +206,8 @@ BullMQ with 11 queues for bundle fulfillment. Queue names (`jobLabels` in `src/c
 
 **Migration pattern** (IMPORTANT):
 1. Add migration logic to `src/database/schema.ts` (payment) or `src/arch/db/migrator.ts` (upload)
-2. Generate migration: `yarn db:migrate:new MIGRATION_NAME`
-3. Update generated file to call your function
+2. Generate the migration file: `yarn db:migrate:new MIGRATION_NAME` (upload) or `yarn db:migrate:make MIGRATION_NAME` (payment)
+3. Update the generated file to call your function
 4. Run: `yarn db:migrate:latest`
 
 **Never write SQL directly in generated migration files.**
@@ -245,8 +252,9 @@ PRIVATE_ROUTE_SECRET=<openssl rand -hex 32>
 # Arweave wallet (MUST be absolute path)
 TURBO_JWK_FILE=/full/path/to/wallet.json
 
-# Database
-DB_DATABASE=payment_service  # or upload_service
+# Database (each service uses its OWN database-name var; there is no DB_DATABASE)
+PAYMENT_DB_DATABASE=payment_service   # payment service
+UPLOAD_DB_DATABASE=upload_service     # upload service
 DB_HOST=localhost DB_PORT=5432 DB_USER=turbo_admin DB_PASSWORD=postgres
 
 # Payment service URL (NO protocol prefix)
@@ -266,13 +274,21 @@ CDP_API_KEY_SECRET=<required-for-mainnet>
 
 ## PM2 Process Management
 
-Configuration in `infrastructure/pm2/ecosystem.config.js` (the one `yarn pm2:start` uses):
-- `payment-service`: 2 instances, cluster mode (`API_INSTANCES`)
-- `upload-api`: 2 instances, cluster mode (`API_INSTANCES`)
-- `upload-workers`: 1 instance, fork mode (avoid duplicate processing; `WORKER_INSTANCES`)
-- `admin-dashboard`: 1 instance, fork mode
+The canonical config is `infrastructure/pm2/ecosystem.config.js` (what `yarn pm2:start`
+uses). It defines **five** processes:
+- `payment-service`: cluster mode, default 2 instances (`API_INSTANCES`), API :4001
+- `upload-api`: cluster mode, default 2 instances (`API_INSTANCES`), API :3001
+- `upload-workers`: fork mode, 1 instance (`WORKER_INSTANCES`) — the BullMQ bundle
+  pipeline; must not be clustered (avoids duplicate job processing)
+- `payment-workers`: fork mode, hardcoded 1 instance — finalizes pending crypto-
+  payment credits (`creditPendingTx` + `adminCreditTool`); never scaled, to avoid
+  duplicate financial processing
+- `admin-dashboard`: fork mode, 1 instance — Bull Board + admin stats :3002
 
-⚠️ A **second, divergent** `ecosystem.config.js` exists at the repo root with different processes (`payment-workers`, `bull-board` instead of `admin-dashboard`). It is NOT the one `pm2:start` uses — prefer the `infrastructure/pm2/` file and avoid `pm2 start ecosystem.config.js` from root unless intentional.
+The repo-root `ecosystem.config.js` is a thin re-export shim of the canonical file
+(`module.exports = require("./infrastructure/pm2/ecosystem.config.js")`), so
+`pm2 start ecosystem.config.js` from the root launches the same complete set. Edit
+the canonical file under `infrastructure/pm2/`, not the root shim.
 
 ## Troubleshooting
 
@@ -288,7 +304,7 @@ pm2 logs upload-workers --err       # Check errors
 Start with explicit PORT: `PORT=4001 NODE_ENV=production pm2 start lib/index.js`
 
 ### Database Errors
-- Verify `DB_DATABASE` matches service (`payment_service` or `upload_service`)
+- Verify the per-service database name: `PAYMENT_DB_DATABASE=payment_service` (payment) / `UPLOAD_DB_DATABASE=upload_service` (upload)
 - Run migrations: `yarn db:migrate:latest`
 
 ### Wallet Not Found
@@ -307,6 +323,10 @@ TypeScript 5 / Node.js 22+ (required by @ar.io/sdk v4, ESM-only) • Yarn 3.6.0 
 - **README.md**: Administrator setup guide, vertical integration, troubleshooting
 - **CLAUDE.md**: Development guidance and architecture overview
 - **packages/*/CLAUDE.md**: Service-specific implementation details
-- **docs/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details
-- **UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md** (repo root): end-to-end design of the unsigned/raw x402 upload flow
-- **DOCKER_IMPLEMENTATION_PLAN.md** (repo root): proposed 5-phase PM2→Docker migration — **a plan, not yet implemented** (no compose/Dockerfile artifacts exist in the tree yet)
+- **docs/README.md**: Index of the full documentation tree
+- **docs/architecture/ARCHITECTURE.md**: Complete system architecture
+- **docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md**: Authoritative production deployment runbook
+- **docs/operations/ADMIN_GUIDE.md**: Day-to-day administration
+- **docs/api/README.md**: REST API reference
+- **docs/guides/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details (signed + unsigned uploads)
+- **docs/archive/**, **docs/migration/**: historical artifacts only (not current state)

@@ -29,7 +29,7 @@ This directory contains utility scripts for managing and monitoring the AR.IO Bu
 
 **Usage:**
 ```bash
-./scripts/setup.sh
+./scripts/setup-bundler.sh
 ```
 
 **When to use:** First-time setup or complete reconfiguration
@@ -40,7 +40,7 @@ This directory contains utility scripts for managing and monitoring the AR.IO Bu
 **Simplified setup script** for quick installation without interactive prompts.
 
 **Features:**
-- Checks all prerequisites (Node.js 18+, Yarn, Docker)
+- Checks all prerequisites (Node.js 22, Yarn, Docker)
 - Installs dependencies
 - Configures environment files from samples
 - Initializes infrastructure
@@ -388,7 +388,7 @@ pm2 stop all     # Stop all services
 ### First-Time Setup
 ```bash
 # Interactive setup with guidance
-./scripts/setup.sh
+./scripts/setup-bundler.sh
 
 # OR automated setup (if .env already configured)
 ./scripts/setup-basic.sh

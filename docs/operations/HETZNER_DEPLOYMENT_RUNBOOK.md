@@ -9,9 +9,10 @@
 > has gaps or contradictions, they are called out inline as **⚠️ ACTION** items that must be resolved
 > before or during the deploy.
 >
-> Companion docs: `README.md` (setup + vertical integration), `ADMIN_GUIDE.md`,
-> `docs/architecture/HETZNER_MIGRATION_ANALYSIS.md` (the gap/cost/HA analysis this runbook operationalizes),
-> `DOCKER_IMPLEMENTATION_PLAN.md` (future containerization + security-hardening checklist).
+> Companion docs: root `README.md` (setup + vertical integration),
+> `docs/operations/ADMIN_GUIDE.md`, and the historical
+> `docs/archive/HETZNER_MIGRATION_ANALYSIS.md` (the gap/cost/HA analysis this
+> runbook operationalizes).
 
 ---
 
@@ -37,7 +38,7 @@ Redis queues `:6381`, MinIO `:9000/9001`), (2) PM2 Node services + workers, (3) 
 **Minimum recommended (single-host prod):** 8 vCPU / 32 GB RAM / 2× NVMe (OS + data).
 Rationale: Postgres + 2 Redis + MinIO + ~6 Node processes (2 API clusters × 2 instances, upload-workers,
 payment-workers, admin-dashboard) + bundle build/seed CPU spikes. See
-`SCALE_TESTING_ANALYSIS.md` for worker/DB-pool tuning under load.
+`docs/archive/SCALE_TESTING_ANALYSIS.md` for worker/DB-pool tuning under load.
 
 **Disk:** MinIO and Postgres grow with traffic. The tiered-retention cleanup (filesystem 7d, MinIO 90d —
 §12) bounds growth, but size the data volume for ≥90 days of cold data plus bundle working space.
@@ -156,7 +157,7 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 
 - **DB:** `DB_HOST/PORT/USER/PASSWORD`, `DB_WRITER_ENDPOINT`/`DB_READER_ENDPOINT` (same host single-node),
   `PAYMENT_DB_DATABASE=payment_service`, `UPLOAD_DB_DATABASE=upload_service`, pool `DB_POOL_MIN/MAX`
-  (see `SCALE_FIX_IMPLEMENTATION_PLAN.md` for prod pool sizing).
+  (see `docs/archive/SCALE_FIX_IMPLEMENTATION_PLAN.md` for prod pool sizing).
 - **Redis ×2:** cache `REDIS_CACHE_HOST/PORT=6379` (+ alias `ELASTICACHE_HOST/PORT`); queues
   `REDIS_QUEUE_HOST/PORT=6381` (+ alias `REDIS_HOST/REDIS_PORT_QUEUES`). ⚠️ dual-naming footgun — set both.
 - **MinIO/S3:** `S3_ENDPOINT=http://localhost:9000`, rotated `S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`,

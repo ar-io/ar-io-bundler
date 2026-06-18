@@ -6,7 +6,7 @@ Get started with AR.IO Bundler development and deployment.
 
 ### Prerequisites
 
-- **Node.js** 18+ (recommended: use [nvm](https://github.com/nvm-sh/nvm))
+- **Node.js** 22 (required; .nvmrc v22.22.0) (recommended: use [nvm](https://github.com/nvm-sh/nvm))
 - **Yarn** 3.6.0+
 - **Docker** & Docker Compose
 - **Git**
@@ -15,7 +15,7 @@ Get started with AR.IO Bundler development and deployment.
 
 ```bash
 # Clone repository
-git clone https://github.com/vilenarios/ar-io-bundler.git
+git clone https://github.com/ar-io/ar-io-bundler.git
 cd ar-io-bundler
 
 # Install dependencies
@@ -154,5 +154,5 @@ yarn db:migrate
 
 ## Support
 
-- [GitHub Issues](https://github.com/vilenarios/ar-io-bundler/issues)
+- [GitHub Issues](https://github.com/ar-io/ar-io-bundler/issues)
 - [Main Documentation](../README.md)

@@ -5,7 +5,7 @@ This guide walks you through setting up the AR.IO Bundler using the interactive 
 ## Quick Start
 
 ```bash
-./scripts/setup.sh
+./scripts/setup-bundler.sh
 ```
 
 The setup wizard will guide you through configuring all required and optional settings for your bundler.
@@ -169,7 +169,7 @@ The setup wizard walks you through 16 steps:
 ## Example Session
 
 ```bash
-$ ./scripts/setup.sh
+$ ./scripts/setup-bundler.sh
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🚀 AR.IO Bundler Setup Wizard
