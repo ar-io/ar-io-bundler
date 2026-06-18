@@ -18,6 +18,7 @@
 export * from "./gateway";
 export * from "./kyve";
 export * from "./solana";
+export * from "./solana-ario";
 export * from "./ethereum";
 export * from "./arweave";
 export * from "./matic";

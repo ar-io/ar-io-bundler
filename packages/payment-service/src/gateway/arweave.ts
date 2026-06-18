@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+import { fromB64Url } from "@ar.io/sdk";
 import { AxiosInstance } from "axios";
 import BigNumber from "bignumber.js";
 
@@ -21,17 +22,26 @@ import { createAxiosInstance } from "../axiosClient";
 import { gatewayUrls } from "../constants";
 import logger from "../logger";
 import { TransactionId } from "../types";
+import { ownerToAddress } from "../utils/base64";
 import {
   Gateway,
   GatewayParams,
   TransactionInfo,
   TransactionStatus,
+  turboCreditDestinationAddressGqlTagName,
 } from "./gateway";
 
 export type ArweaveTransactionResponse = {
   owner: string;
   target: string;
   quantity: string;
+  reward: string;
+  tags: { name: string; value: string }[];
+  data_size: string;
+  data_root: string;
+  signature: string;
+  last_tx: string;
+  data: string;
 };
 
 export interface ArweaveTransactionStatusResponse {
@@ -50,8 +60,8 @@ export class ArweaveGateway extends Gateway {
   constructor({
     endpoint = gatewayUrls.arweave,
     axiosInstance = createAxiosInstance({}),
-    pendingTxMaxAttempts,
-    paymentTxPollingWaitTimeMs,
+    pendingTxMaxAttempts = 10,
+    paymentTxPollingWaitTimeMs = 1200,
     minConfirmations = +(process.env.ARWEAVE_MIN_CONFIRMATIONS || 18),
   }: ArweaveGatewayParams = {}) {
     super({
@@ -93,10 +103,24 @@ export class ArweaveGateway extends Gateway {
   public async getTransaction(
     transactionId: TransactionId
   ): Promise<TransactionInfo> {
-    return this.pollGatewayForTx(
-      () => this.getTxFromGql(transactionId),
-      transactionId
-    );
+    return this.pollGatewayForTx(async () => {
+      try {
+        const result = await Promise.any([
+          this.getTxFromGql(transactionId),
+          this.getTxFromTxEndpoint(transactionId),
+        ]);
+        if (!result) {
+          throw new Error("Transaction not found via GQL or Tx endpoint");
+        }
+        return result;
+      } catch (error) {
+        logger.error("Error getting transaction from gateway", {
+          transactionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
+      }
+    }, transactionId);
   }
 
   private async getTxFromGql(
@@ -112,6 +136,10 @@ export class ArweaveGateway extends Gateway {
         quantity {
           winston
         }
+        tags {
+          name
+          value
+        }
       }
     }
   `;
@@ -125,10 +153,72 @@ export class ArweaveGateway extends Gateway {
     if (!transaction) {
       return undefined;
     }
+
+    const turboCreditDestinationAddressTag = transaction.tags?.find(
+      (tag: { name: string; value: string }) =>
+        tag.name === turboCreditDestinationAddressGqlTagName
+    );
+    const turboCreditDestinationAddress = turboCreditDestinationAddressTag
+      ? turboCreditDestinationAddressTag.value
+      : undefined;
+
+    if (turboCreditDestinationAddressTag) {
+      logger.info(
+        `Found ${turboCreditDestinationAddressGqlTagName} tag in Arweave Transaction: ${turboCreditDestinationAddress}`,
+        { transactionId }
+      );
+    }
+
     return {
       transactionSenderAddress: transaction.owner.address,
       transactionQuantity: BigNumber(transaction.quantity.winston),
       transactionRecipientAddress: transaction.recipient,
+      turboCreditDestinationAddress,
     };
   }
+
+  private getTxFromTxEndpoint = async (
+    transactionId: TransactionId
+  ): Promise<TransactionInfo> => {
+    const response = await this.axiosInstance.get<
+      "Accepted" | "Not Found" | ArweaveTransactionResponse
+    >(`${this.endpoint}tx/${transactionId}`, { validateStatus: () => true });
+
+    if (response.status === 404 || response.data === "Not Found") {
+      throw new Error(`Transaction ${transactionId} not found`);
+    }
+    if (response.status === 202 || response.data === "Accepted") {
+      throw new Error(`Transaction ${transactionId} not yet confirmed`);
+    }
+
+    const data = response.data as ArweaveTransactionResponse;
+
+    // Convert Base64URL encoded tags and owner to UTF-8 strings
+    const nativeAddress = ownerToAddress(data.owner);
+    const tags: { name: string; value: string }[] = data.tags.map((tag) => ({
+      name: fromB64Url(tag.name).toString("utf-8"),
+      value: fromB64Url(tag.value).toString("utf-8"),
+    }));
+
+    const turboCreditDestinationAddressTag = tags.find(
+      (tag) => tag.name === turboCreditDestinationAddressGqlTagName
+    );
+    const turboCreditDestinationAddress = turboCreditDestinationAddressTag
+      ? turboCreditDestinationAddressTag.value
+      : undefined;
+
+    if (turboCreditDestinationAddressTag) {
+      logger.info(
+        `Found ${turboCreditDestinationAddressGqlTagName} tag in Arweave Transaction: ${turboCreditDestinationAddress}`,
+        { transactionId }
+      );
+    }
+
+    return {
+      transactionSenderAddress: nativeAddress,
+      transactionQuantity: BigNumber(data.quantity),
+      transactionRecipientAddress: data.target,
+      turboCreditDestinationAddress,
+    };
+  };
 }

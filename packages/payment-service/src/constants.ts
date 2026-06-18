@@ -330,7 +330,9 @@ export const promoCodeBackfills = {
   welcomeTwentyPercentOff: "TOKEN2049",
 };
 
-export const maxGiftMessageLength = process.env.MAX_GIFT_MESSAGE_LENGTH ?? 250;
+export const maxGiftMessageLength = +(
+  process.env.MAX_GIFT_MESSAGE_LENGTH ?? 250
+);
 
 export const giftingEmailAddress =
   process.env.GIFTING_EMAIL_ADDRESS ?? "gift@ardrive.io";
