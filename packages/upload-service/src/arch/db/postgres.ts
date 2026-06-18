@@ -656,7 +656,7 @@ export class PostgresDatabase implements Database {
       // append USD/AR conversion rate for accounting purposes
       await tx(tableNames.postedBundle).insert({
         ...newBundleDbResult,
-        usd_to_ar_rate: usdToArRate,
+        usd_to_ar_rate: usdToArRate ?? null,
       });
     });
   }
