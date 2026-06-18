@@ -19,6 +19,7 @@
     "test:payment": "yarn workspace @ar-io-bundler/payment-service test",
     "test:upload": "yarn workspace @ar-io-bundler/upload-service test",
     "test:e2e": "mocha tests/e2e/**/*.test.ts --timeout 30000",
+    "test:e2e:local": "yarn workspace @ar-io-bundler/upload-service test:e2e:turbo",
     "db:up": "docker compose up postgres redis-cache redis-queues minio minio-init -d",
     "db:down": "docker compose down",
     "db:migrate": "./scripts/migrate-all.sh",
