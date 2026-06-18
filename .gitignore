@@ -67,3 +67,6 @@ ops-test-wallet*.json
 
 # Backup output (contains wallets, .env, and user data — never commit)
 backups/
+
+# Claude Code: keep shared skills + settings.json, ignore personal local settings
+.claude/settings.local.json
