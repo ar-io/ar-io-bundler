@@ -236,18 +236,54 @@ async function waitUntilPlanned(
   throw new Error(`Timed out: items never fully planned within ${timeoutMs}ms`);
 }
 
-/** Poll until a bundle reaches the seed leg (perma.online) or becomes permanent. */
-async function waitForSeed(database: Knex, timeoutMs: number): Promise<void> {
+/** Distinct plan_ids covering the given items (planned or already-permanent). */
+async function planIdsOf(database: Knex, ids: string[]): Promise<string[]> {
+  const rows = [
+    ...(await database("planned_data_item")
+      .whereIn("data_item_id", ids)
+      .distinct("plan_id")),
+    ...(await database("permanent_data_items")
+      .whereIn("data_item_id", ids)
+      .distinct("plan_id")),
+  ];
+  return [...new Set(rows.map((r) => r.plan_id))];
+}
+
+/**
+ * Poll until THIS TEST's own bundle plan(s) reach the seed leg (perma.online) or
+ * become permanent — keyed on the items' plan_id, NOT "does any bundle exist".
+ * (Going all the way to permanent needs Arweave block confirmation, which is too
+ * slow/flaky for a test; "seeded" is the meaningful "data left for Arweave" signal.)
+ */
+async function waitForItemsSeeded(
+  database: Knex,
+  ids: string[],
+  timeoutMs: number
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let remaining = "?";
   while (Date.now() < deadline) {
-    const seeded = await database("seeded_bundle")
-      .whereNotNull("seeded_date")
-      .first();
-    const permanent = await database("permanent_bundle").first();
-    if (seeded || permanent) return;
+    const planIds = await planIdsOf(database, ids);
+    if (planIds.length > 0) {
+      const done = new Set(
+        [
+          ...(await database("seeded_bundle")
+            .whereIn("plan_id", planIds)
+            .whereNotNull("seeded_date")
+            .distinct("plan_id")),
+          ...(await database("permanent_bundle")
+            .whereIn("plan_id", planIds)
+            .distinct("plan_id")),
+        ].map((r) => r.plan_id)
+      );
+      if (done.size >= planIds.length) return;
+      remaining = `${planIds.length - done.size}/${planIds.length}`;
+    }
     await sleep(3000);
   }
-  throw new Error(`Timed out: no bundle reached seed/permanent in ${timeoutMs}ms`);
+  throw new Error(
+    `Timed out: ${remaining} of the test's bundle plan(s) never seeded within ${timeoutMs}ms`
+  );
 }
 
 describe("E2E Scale / Throughput Suite", function () {
@@ -294,7 +330,7 @@ describe("E2E Scale / Throughput Suite", function () {
         await waitForIngest(database, [id], 30 * 1000);
 
         await waitUntilPlanned(database, [id], 5 * 60 * 1000);
-        await waitForSeed(database, 2 * 60 * 1000);
+        await waitForItemsSeeded(database, [id], 4 * 60 * 1000);
       });
     }
   });
@@ -321,11 +357,11 @@ describe("E2E Scale / Throughput Suite", function () {
         await waitForIngest(database, ids, 60 * 1000);
 
         // 10k items can need multiple plan cycles; scale the budget with count.
-        await waitUntilPlanned(
-          database,
-          ids,
-          Math.max(3, Math.ceil(count / 1000)) * 60 * 1000
-        );
+        const budgetMin = Math.max(3, Math.ceil(count / 1000));
+        await waitUntilPlanned(database, ids, budgetMin * 60 * 1000);
+
+        // ...and prove the bundle(s) holding THESE items actually seeded.
+        await waitForItemsSeeded(database, ids, budgetMin * 60 * 1000);
       });
     }
   });
@@ -372,6 +408,19 @@ describe("E2E Scale / Throughput Suite", function () {
       }
 
       await waitUntilPlanned(database, [...adIds, ...rgIds], 5 * 60 * 1000);
+
+      // Routing isn't enough — prove the ArDrive items actually packed into
+      // DIFFERENT bundle plan(s) than the default items (dedicated bundling, not
+      // just a dedicated tag).
+      const adPlans = await planIdsOf(database, adIds);
+      const rgPlans = await planIdsOf(database, rgIds);
+      expect(adPlans.length, "ArDrive items should be planned").to.be.greaterThan(0);
+      expect(rgPlans.length, "plain items should be planned").to.be.greaterThan(0);
+      const overlap = adPlans.filter((p) => rgPlans.includes(p));
+      expect(
+        overlap,
+        `ArDrive + default items must not share a bundle plan (shared: ${overlap.join()})`
+      ).to.have.length(0);
     });
   });
 
