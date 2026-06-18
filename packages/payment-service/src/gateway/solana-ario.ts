@@ -155,7 +155,12 @@ export class SolanaARIOGateway extends Gateway {
       try {
         return await this.arioReadable.getArNSRecord({ name });
       } catch (error) {
-        if (error instanceof NotFound) {
+        // @ar.io/sdk v4 throws a plain Error ("ArNS record not found: <name>")
+        // for unregistered names instead of a typed NotFound, so match the
+        // message too. An unregistered name = available = undefined (NOT an
+        // error) — otherwise every Buy-Name price lookup fails.
+        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof NotFound || /record not found/i.test(message)) {
           return undefined;
         }
         throw error;
