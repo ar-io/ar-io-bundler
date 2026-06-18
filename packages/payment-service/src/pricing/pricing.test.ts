@@ -91,14 +91,15 @@ describe("TurboPricingService class", () => {
           adjustment_start_date: startDate.toISOString(),
         };
 
-        await paymentDatabase["writer"](
-          tableNames.uploadAdjustmentCatalog
-        ).insert(insert);
+        await paymentDatabase["writer"](tableNames.uploadAdjustmentCatalog)
+          .insert(insert)
+          .onConflict("catalog_id")
+          .merge();
       });
 
       after(async () => {
         await paymentDatabase["writer"](tableNames.uploadAdjustmentCatalog)
-          .where({ catalog_id: "best_stub_id_ever_2" })
+          .where({ catalog_id: "best_stub_id_ever" })
           .delete();
       });
 
@@ -267,7 +268,9 @@ describe("TurboPricingService class", () => {
         operator: "multiply",
         operator_magnitude: "0.8",
         adjustment_start_date: "2021-01-01T00:00:00.000Z", // some time in the past
-      });
+      })
+        .onConflict("catalog_id")
+        .merge();
 
       const price = await pricing.getWCForPayment({
         payment: new Payment({ amount: 100, type: "usd" }),
@@ -381,7 +384,10 @@ describe("TurboPricingService class", () => {
 
         await paymentDatabase["writer"](
           tableNames.singleUseCodePaymentAdjustmentCatalog
-        ).insert(insert);
+        )
+          .insert(insert)
+          .onConflict("catalog_id")
+          .merge();
       });
 
       it("returns the expected price for a given payment", async () => {
@@ -509,7 +515,9 @@ describe("TurboPricingService class", () => {
           operator: "add",
           operator_magnitude: "-500",
           adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
-        });
+        })
+          .onConflict("catalog_id")
+          .merge();
       });
 
       it("returns the expected adjustment when within minimum payment amount", async () => {
@@ -598,7 +606,9 @@ describe("TurboPricingService class", () => {
           operator: "multiply",
           operator_magnitude: "0.50",
           adjustment_start_date: "2023-09-20T16:47:37.660Z", // in the past
-        });
+        })
+          .onConflict("catalog_id")
+          .merge();
       });
 
       it("returns the expected adjustment when within maximum discount amount", async () => {
@@ -773,7 +783,9 @@ describe("TurboPricingService class", () => {
         // Use a specific date range to ensure the event is active only for this test
         adjustment_start_date: farInThePast.toISOString(),
         adjustment_end_date: twoDaysLater.toISOString(),
-      });
+      })
+        .onConflict("catalog_id")
+        .merge();
 
       stub(oracle, "getFiatPricesForOneToken").resolves(expectedTokenPrices);
       const { inclusiveAdjustments, finalPrice } =
