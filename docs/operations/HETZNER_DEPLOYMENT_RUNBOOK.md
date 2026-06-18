@@ -64,6 +64,11 @@ Put MinIO + Postgres on the NVMe data volume; keep OS separate.
 **OS:** Ubuntu 22.04/24.04 LTS (matches current tooling). Create a non-root deploy user (the runbook
 assumes `bundler`; **do not** hardcode `/home/vilenarios` — see ⚠️ ACTION in §10/§12).
 
+> **Validated on Ubuntu 26.04 (2026-06):** also works. On 26.04, Docker's official apt repo has no
+> `resolute` codename yet — install Docker from Ubuntu's own repo instead:
+> `apt-get install -y docker.io docker-compose-v2 docker-buildx` (ships Docker 29.x + compose v2 2.40.x,
+> recent enough). Add `jq postgresql-client redis-tools` for the operational helpers.
+
 ---
 
 ## 2. OS hardening & firewall
@@ -86,6 +91,65 @@ internet. Everything else binds to localhost or the private network to the gatew
 
 ⚠️ ACTION: the dev/test box exposes Bull Board, MinIO console, Postgres, and both Redis on `0.0.0.0`.
 On Hetzner, bind infra to `127.0.0.1` / the private gateway interface and firewall the rest.
+
+### Minimal firewall — validated config (Hetzner Cloud Firewall + Tailscale)
+
+Two layers, in order of preference on a Hetzner **Cloud** server:
+
+1. **Hetzner Cloud Firewall (primary).** Edge-level and stateful, and — unlike a host UFW — **not bypassed
+   by Docker's iptables rules**. Inbound is default-deny for any port not listed; outbound defaults to
+   allow-all. Prefer this over UFW on Cloud servers. (On dedicated/Robot servers without it, UFW works, but
+   note Docker's published ports bypass UFW — only an issue for containers published to `0.0.0.0`; our infra
+   binds `127.0.0.1`, so it's unaffected.)
+2. **Tailscale for the admin plane.** Put SSH + every admin/infra UI on the tailnet instead of the public
+   internet. Tailscale rides its own `tailscale0` interface and uses outbound NAT-traversal + DERP
+   (outbound 443), so a tight *inbound* public firewall does **not** break it — and services that bind
+   `0.0.0.0` become tailnet-only automatically once the public firewall denies their ports (no rebinding
+   needed). It also means **SSH over the tailnet (`ssh <tailnet-ip>`) keeps working even if public 22 is ever
+   misconfigured** — your lockout backstop.
+
+**Minimal inbound allow-list (everything else denied at the edge):**
+
+| Proto/Port | Source | Why |
+|---|---|---|
+| TCP 22 | admin IPs (or `0.0.0.0/0` until Tailscale SSH is trusted) | SSH |
+| TCP 80, 443 | `0.0.0.0/0` | public TLS reverse proxy (§14) |
+| TCP 3001, 4001 | `0.0.0.0/0` **only if** serving the APIs raw (no proxy yet) | drop once they move behind 443 |
+| UDP 41641 | `0.0.0.0/0` | Tailscale direct connections (perf; DERP still works without it) |
+| ICMP | `0.0.0.0/0` | ping/diagnostics |
+
+Deliberately **NOT** listed — reachable via tailnet/localhost only: `3002` (admin dashboard / Bull Board),
+`9000/9001` (MinIO API/console), `5432` (Postgres), `6379/6381` (Redis ×2), `9090` (Prometheus). Leave
+**outbound allow-all** so the bundler can reach the chunk-broadcaster / gateway / Arweave nodes (some over
+the tailnet).
+
+**Apply via hcloud CLI (scope to the one server — a project token can see ALL servers):**
+```bash
+export HCLOUD_TOKEN=...                         # project-scoped; only touch YOUR server id
+hcloud firewall create --name ar-io-bundler-fw
+for p in 22 80 443 3001 4001; do
+  hcloud firewall add-rule ar-io-bundler-fw --direction in --protocol tcp --port $p \
+    --source-ips 0.0.0.0/0 --source-ips ::/0 --description "tcp $p"
+done
+hcloud firewall add-rule ar-io-bundler-fw --direction in --protocol udp  --port 41641 \
+  --source-ips 0.0.0.0/0 --source-ips ::/0 --description "tailscale direct"
+hcloud firewall add-rule ar-io-bundler-fw --direction in --protocol icmp \
+  --source-ips 0.0.0.0/0 --source-ips ::/0 --description "icmp"
+hcloud firewall apply-to-resource ar-io-bundler-fw --type server --server <THIS_SERVER_ID>
+```
+
+🛑 **Lockout safety — do these every time you attach a firewall:**
+- Add the **TCP 22 rule and verify it BEFORE you attach.** Attaching a firewall with no/empty inbound rules
+  is default-deny = instant SSH lockout.
+- Have a **Tailscale (or Hetzner Console) backup path** open before attaching.
+- Arm a **deadman** that fails *open*:
+  `nohup bash -c 'sleep 900; hcloud firewall remove-from-resource ar-io-bundler-fw --type server --server <ID>' &`
+  — it auto-reverts if you can't reconnect; cancel it by **PID** once a *fresh* SSH session is confirmed.
+  (Do **not** `pkill -f 'sleep 900'` — it self-matches your own shell.)
+- Cloud Firewall is stateful, so your current SSH session survives the attach; still confirm with a **new**
+  session before trusting it.
+- Then harden: tighten TCP 22 to the tailnet/admin IPs, and once a TLS reverse proxy is up, drop the public
+  3001/4001 rules and serve only via 443.
 
 ---
 
@@ -220,6 +284,25 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 `MINIO_CLEANUP_DAYS=90`) are now documented in `.env.sample` on branch `fix/pm2-ecosystem-portability` (Lane 6).
 Set them explicitly for prod (§12); prefer the worker-based cleanup over the bash `CLEANUP_RETENTION_DAYS` path.
 
+🛑 **BOOT-BLOCKERS — empty-string `.env.sample` values crash services on a fresh deploy** (validated
+2026-06-18). Several vars ship as `KEY=` (empty string), which is *defined* and therefore defeats the
+code's `?? default` / `!== undefined` guards and trips unconditional required-checks. Worse, pm2 **cluster**
+mode swallows the throw — `*-error.log` is 0 bytes and you only see repeating warns. **Diagnose by running
+the failing entry directly:** `cd packages/<svc> && node lib/index.js`. Before first start, set/neutralize
+these five:
+
+| Var | Symptom if empty | Fix |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | payment `server.ts` throws "Stripe secret key or webhook secret not set" (ignores `STRIPE_ENABLED`) | dummy `sk_test_...` + `STRIPE_WEBHOOK_SECRET` (no network call at boot) |
+| `X402_PAYMENT_ADDRESS` | upload `validateX402Config` FATAL (ignores `X402_ENABLED`) | a valid EVM address (or `ETHEREUM_ADDRESS`/`BASE_ETH_ADDRESS`) |
+| `ARIO_SIGNING_JWK` | `JSON.parse("")` crash (payment API + payment-workers) | **comment the line out** (vestigial; writes use `ARIO_SOLANA_SIGNER_SECRET_KEY`) |
+| `ARIO_MINT_ADDRESS` | `new PublicKey("")` → "Invalid public key input" (payment-service + payment-workers) | **comment the line out** (SDK uses MAINNET ARIO mint default) |
+| `ADMIN_PASSWORD` | admin-dashboard returns HTTP **503** (locked), not 401 | append `ADMIN_PASSWORD=$(openssl rand -hex 24)` |
+
+(Root-cause fixes — strip the empty assignments from `.env.sample`, and make the Stripe/x402 boot checks
+respect their `*_ENABLED` flags — are tracked separately as code changes; the above is the deploy-time
+workaround.)
+
 > **Still to fold into `.env.sample` at integration:** `PRICE_ORACLE_GATEWAY_URL` (Lane 3) and `ARIO_GATEWAY_URL`
 > (Lane 4) are implemented and named, with safe `arweave.net` defaults, but were NOT added to `.env.sample`
 > (lanes correctly avoided editing it — Lane 6 owns it). The coordinator adds these two vars when merging.
@@ -236,6 +319,12 @@ yarn db:migrate        # or scripts/migrate-all.sh — migrates payment then upl
 `MIGRATE_ON_STARTUP=false` by default; run migrations explicitly during deploy. Migration logic lives in
 `packages/payment-service/src/database/schema.ts` and `packages/upload-service/src/arch/db/migrator.ts`.
 After backport lanes land, re-run migrations (Lane 1 nested-offsets and any Solana-ARIO schema may add columns).
+
+⚠️ **`scripts/migrate-all.sh` (and `yarn db:migrate`) do NOT load `.env`** — knex then falls back to the
+default user `postgres` and fails with "password authentication failed for user postgres". Export the env
+first: `set -a; . ./.env; set +a; yarn db:migrate`. (Naive sourcing trips on `APP_NAME=AR.IO Bundler`'s
+space — harmless for migration; the services use dotenv's real parser.) Verify after:
+`payment_service` should have ~26 tables, `upload_service` ~67.
 
 ---
 
@@ -314,6 +403,13 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
 
 1. **Reads/pricing →** point `ARWEAVE_GATEWAY` / `PUBLIC_ACCESS_GATEWAY` at the gateway. (Lane 3/4 backports
    make the *payment-service* price oracle gateway-configurable too — currently it still hardcodes arweave.net.)
+   - **Mind the port on an AR.IO indexer node.** The Arweave HTTP API (`/price`, `/tx_anchor`, `/info`,
+     `/tx/<id>/status`) and GraphQL are served by the gateway's **envoy** front proxy, *not* the core
+     `/ar-io` port. On the turbo-gateway indexer box, envoy = `:13000` (reads + `/price`) and core = `:14000`
+     (`/ar-io/admin/queue-data-item`, wire 2). So `ARWEAVE_GATEWAY` + `PRICE_ORACLE_GATEWAY_URL` → `:13000`,
+     `OPTICAL_BRIDGE_URL` → `:14000`. The core port returns 404 for `/price`. `ARWEAVE_UPLOAD_NODE` (chunk/tx
+     posting) can also target the envoy when it fronts a real Arweave node — confirm `:13000/tx_anchor` and
+     `:13000/info` return 200. This achieves "no `arweave.net` anywhere."
 2. **Optical bridging →** upload-workers POST new items to `OPTICAL_BRIDGE_URL` (gateway `:4000/ar-io/admin/queue-data-item`)
    with `AR_IO_ADMIN_KEY`; the second gateway goes in `OPTIONAL_OPTICAL_BRIDGE_URLS`.
 3. **MinIO → gateway data serving →** compose joins MinIO to the external `ar-io-network` with virtual-host
@@ -392,7 +488,7 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 - [ ] Migrations applied (incl. backport-lane schema changes)
 - [ ] Cron: plan (5 min) + cleanup (daily) installed with correct Node path
 - [ ] Reverse proxy + TLS; `UPLOAD_SERVICE_PUBLIC_URL` set to public HTTPS
-- [ ] Firewall: only 22/80/443 public; 3002/9001/5432/redis private
+- [ ] Firewall (Hetzner Cloud Firewall + Tailscale admin plane, §2): public inbound limited to 22 / 80 / 443 (+ 3001/4001 only until behind a proxy) + UDP 41641 + ICMP; 3002 / 9000-9001 / 5432 / 6379-6381 / 9090 tailnet/localhost-only; outbound allow-all; SSH-lockout safety (22-rule-before-attach, Tailscale backstop, deadman) followed
 - [ ] Boot persistence verified via a test reboot
 - [ ] Backups scheduled (PG ×2, MinIO, wallets) and a restore tested
 - [ ] Vertical integration verified against both gateways (optical + MinIO retrieval)

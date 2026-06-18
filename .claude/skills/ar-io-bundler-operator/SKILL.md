@@ -86,6 +86,7 @@ other queues: finalize-upload, unbundle-bdi, cleanup-fs        payment-pending-t
 The bundler is wired to a co-located AR.IO gateway (the `ar-io-node` repo; use the **`ar-io-gateway-operator`** skill for that side). Three independent wires, all in the bundler `.env`:
 
 1. **Reads / pricing** — `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY`, `PRICE_ORACLE_GATEWAY_URL`, `ARIO_GATEWAY_URL` point at the gateway, **never `arweave.net`** (its `/price` 429s under load → "Pricing Oracle Unavailable" on every priced upload).
+   - **Port matters on an AR.IO indexer node:** the Arweave HTTP API (`/price`, `/tx_anchor`, `/info`, `/tx/<id>/status`) and GraphQL are served by the gateway's **envoy** front proxy, *not* by the core `/ar-io` port. On the turbo-gateway indexer box: envoy is `:13000` (reads + `/price`), the core admin/optical endpoint is `:14000` (`/ar-io/admin/queue-data-item`). So `ARWEAVE_GATEWAY`/`PRICE_ORACLE_GATEWAY_URL` → `:13000`, `OPTICAL_BRIDGE_URL` → `:14000`. Hitting the core port for `/price` returns 404 (it doesn't proxy the Arweave HTTP API). `ARWEAVE_UPLOAD_NODE` (chunk/tx posting) can also use the envoy if it fronts a real Arweave node — confirm `:13000/tx_anchor` and `:13000/info` return 200.
 2. **Optical bridge** — `upload-workers` POST new data items to `OPTICAL_BRIDGE_URL` (`<gateway>:4000/ar-io/admin/queue-data-item`) authed with `AR_IO_ADMIN_KEY`; a second gateway can be listed in `OPTIONAL_OPTICAL_BRIDGE_URLS`. **Two things must line up for items to actually index:**
    - bundler `AR_IO_ADMIN_KEY` **==** gateway `ADMIN_API_KEY` (else optical POSTs 401), and
    - the gateway's `ANS104_UNBUNDLE_FILTER` owner **==** this bundler's Arweave wallet (or `{always:true}`), so the gateway unbundles this bundler's on-chain bundles.
@@ -126,6 +127,14 @@ On a multi-node/HA setup, run plan/cleanup/verify on **one node only** (or behin
 7. **Two Arweave wallets** — `TURBO_JWK_FILE` (`wallet.json`, signs bundles = the bundler's posting identity) and `RAW_DATA_ITEM_JWK_FILE` (`rawWallet.json`, signs unsigned x402 raw uploads). Absolute paths, mode 600. Losing `wallet.json` loses the posting identity — back it up out-of-band.
 8. **Doc drift** — the ADMIN_GUIDE / `docs/operations/README.md` are partly stale (service-prefixed env names, AWS S3 examples, `bull-board` naming, `FEE_MULTIPLIER`, an outdated queue list). Trust, in order: `HETZNER_DEPLOYMENT_RUNBOOK.md` → root `README.md` → `CLAUDE.md`/`allWorkers.ts` → ADMIN_GUIDE. AWS/SQS/Lambda/DynamoDB phrasing anywhere is legacy.
 9. **`verify.sh`'s error-grep branch is effectively a no-op** (`grep -q … | head -1`) — it tends to report "no critical errors" regardless. Don't rely on it to catch log errors; use `pm2 logs <name> --err` or this skill's health-check.
+10. **Fresh-deploy boot-blockers: empty-string `.env.sample` values crash boot with EMPTY stderr.** Several vars ship as `KEY=` (empty string). Empty string is *defined*, so it defeats `?? default` and `!== undefined` guards and trips unconditional required-checks — and pm2 **cluster** mode swallows the throw, so `*-error.log` is 0 bytes and you see only repeating warns. **Diagnose by running the entry directly:** `cd packages/<svc> && node lib/index.js` (or `lib/workers/...`) — the real error prints to the console. The five known blockers and fixes:
+    - `STRIPE_SECRET_KEY` empty → payment `server.ts` throws "Stripe secret key or webhook secret not set" **unconditionally** (ignores `STRIPE_ENABLED`). Set a dummy `sk_test_...` (+ `STRIPE_WEBHOOK_SECRET`); the Stripe client ctor makes no network call.
+    - `X402_PAYMENT_ADDRESS` empty → upload `validateX402Config` FATALs **unconditionally** (ignores `X402_ENABLED`). Set any valid EVM address (or legacy `ETHEREUM_ADDRESS`/`BASE_ETH_ADDRESS`).
+    - `ARIO_SIGNING_JWK=` empty → `JSON.parse("")` crash at payment `server.ts`, `jobs/creditPendingTx.ts`, `workers/creditPendingTx.worker.ts` (kills API **and** payment-workers). **Comment the line out** (vestigial; ArNS writes now use `ARIO_SOLANA_SIGNER_SECRET_KEY`).
+    - `ARIO_MINT_ADDRESS=` empty → `?? default` doesn't fire, then unwrapped `new PublicKey("")` → "Invalid public key input" (payment-service + payment-workers via `ARIOGateway`). **Comment the line out** (SDK uses the MAINNET ARIO mint default).
+    - `ADMIN_PASSWORD` unset (not even in `.env.sample`) → admin-dashboard returns **HTTP 503** (locked), not 401. Append `ADMIN_PASSWORD=$(openssl rand -hex 24)`; then 401 no-auth / 200 with `-u admin:<pw>`.
+    Reload after `.env` edits: `pm2 restart <proc> --update-env`, or clean `./scripts/stop.sh --services-only && pm2 delete all && ./scripts/start.sh`.
+11. **`scripts/migrate-all.sh` does NOT load `.env`** — so `yarn db:migrate` falls back to the knex default user `postgres` and dies with "password authentication failed for user postgres". Export env first: `set -a; . ./.env; set +a; yarn db:migrate` (naive sourcing chokes on `APP_NAME=AR.IO Bundler`'s space — harmless for migrate; the services themselves use dotenv's real parser).
 
 ## When something breaks: where to look
 
@@ -140,6 +149,9 @@ On a multi-node/HA setup, run plan/cleanup/verify on **one node only** (or behin
 | `pm2 list` empty though services run | wrong-node pm2 (pitfall 1) |
 | Admin dashboard 401 | expected — it's auth-protected; that means it's up |
 | Service won't boot, `ERR_REQUIRE_ESM` | Node < 22 (pitfall 1) |
+| Service crash-loops, `*-error.log` empty, only warns in out.log | Empty-string `.env` boot-blocker (pitfall 10) — run `cd packages/<svc> && node lib/index.js` to see the real throw |
+| `yarn db:migrate` → "password authentication failed for user postgres" | migrate-all.sh doesn't load `.env` (pitfall 11) — export env first |
+| Admin dashboard returns 503 (not 401) | `ADMIN_PASSWORD` unset (pitfall 10) |
 
 ## Deployment (Hetzner)
 
