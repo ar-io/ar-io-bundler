@@ -662,6 +662,34 @@ export class S3ObjectStore implements ObjectStore {
     }
   }
 
+  public async deleteObject(Key: string): Promise<void> {
+    this.logger.debug(`Deleting S3 object...`, {
+      Key,
+      Bucket: this.bucketName,
+    });
+
+    try {
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key,
+      });
+
+      await s3ClientForBucket(this.bucketName).send(deleteCommand);
+
+      this.logger.debug(`Deleted S3 object!`, {
+        Key,
+        Bucket: this.bucketName,
+      });
+    } catch (error) {
+      this.logger.error(`Failed to delete S3 object!`, {
+        Key,
+        Bucket: this.bucketName,
+        error,
+      });
+      throw error;
+    }
+  }
+
   public async getMultipartUploadParts(
     Key: string,
     uploadId: UploadId

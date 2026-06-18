@@ -52,6 +52,7 @@ export interface ObjectStore {
     destinationKey: string;
     Options?: ObjectStoreOptions;
   }): Promise<void>;
+  deleteObject(Key: string): Promise<void>;
   getObjectPayloadInfo(Key: string): Promise<PayloadInfo>;
 
   // multipart uploads

@@ -148,6 +148,10 @@ export class FileSystemObjectStore implements ObjectStore {
     throw new Error("Method not implemented.");
   }
 
+  async deleteObject(_Key: string): Promise<void> {
+    throw new Error("Method not implemented.");
+  }
+
   async completeMultipartUpload(
     _Key: string,
     _uploadId: UploadId
