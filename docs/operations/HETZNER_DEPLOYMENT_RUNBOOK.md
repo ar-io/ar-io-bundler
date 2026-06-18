@@ -31,6 +31,23 @@ The bundler is **three logical tiers** on one host: (1) Docker infra (Postgres, 
 Redis queues `:6381`, MinIO `:9000/9001`), (2) PM2 Node services + workers, (3) cron triggers
 (plan/cleanup/verify). Vertical integration links MinIO + optical bridging to the AR.IO gateway.
 
+### Single-node vs HA
+
+**This runbook deploys the SINGLE-NODE topology** — the recommended starting point: all three tiers on
+one host. The architecture is HA-ready, so moving to HA later is config + infra, not a rewrite. The
+conceptual HA model (what scales, what stays singleton, HA Postgres/Redis/MinIO + load balancer) lives in
+`docs/architecture/ARCHITECTURE.md` → *Deployment topologies*. The **deltas to this runbook for HA** are:
+
+- §5 Infra → externalize to HA clusters: Postgres primary+replica w/ failover (point
+  `DB_READER_ENDPOINT` at replicas, `DB_WRITER_ENDPOINT` at primary), Redis Sentinel/Cluster, distributed
+  MinIO (≥4 drives) or managed S3.
+- §9–10 PM2 → run the **stateless** payment-api/upload-api on N nodes behind a load balancer (§14 becomes
+  a real LB, not just a single reverse proxy). Scale upload-workers freely (BullMQ distributes); keep
+  `payment-workers` single-instance unless tx-hash idempotency is confirmed.
+- §12 Cron → run the plan/cleanup/verify triggers on **one designated node** (or behind a Redis
+  leader-lock) — never on every node, or you get duplicate/competing bundle plans.
+- §6 Secrets/wallets → must be identical on every node (config management / secret store).
+
 ---
 
 ## 1. Server prerequisites & sizing
