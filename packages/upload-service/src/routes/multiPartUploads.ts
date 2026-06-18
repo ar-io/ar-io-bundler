@@ -56,6 +56,7 @@ import {
   sleep,
 } from "../utils/common";
 import { quarantineDataItem } from "../utils/dataItemUtils";
+import { extractClientIp } from "../utils/ipRateLimitCache";
 import {
   BlocklistedAddressError,
   DataItemExistsWarning,
@@ -571,11 +572,15 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
     arweaveGateway,
   } = ctx.state;
 
+  // Client IP for per-IP free-upload byte limiting (PE-9011)
+  const ipAddress = extractClientIp(ctx.req);
+
   logger.debug("Finalizing via HTTP request", {
     paidBy,
     uploadId,
     token,
     asyncValidation,
+    ipAddress,
     rawHeaders: ctx.request.req.rawHeaders,
   });
   try {
@@ -590,6 +595,7 @@ export async function finalizeMultipartUploadWithHttpRequest(ctx: KoaContext) {
       asyncValidation,
       token: token ?? "arweave",
       paidBy,
+      ipAddress,
     });
     ctx.status = result.newDataItemAdded && asyncValidation ? 201 : 200;
     ctx.body = result.receipt;
@@ -649,6 +655,7 @@ export async function finalizeMultipartUpload({
   asyncValidation,
   token,
   paidBy,
+  ipAddress,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -660,6 +667,7 @@ export async function finalizeMultipartUpload({
   asyncValidation: boolean;
   token: string;
   paidBy?: NativeAddress[];
+  ipAddress?: string;
 }): Promise<{
   receipt: MultiPartUploadResponse;
   newDataItemAdded: boolean;
@@ -744,6 +752,7 @@ export async function finalizeMultipartUpload({
       logger: fnLogger,
       token,
       paidBy,
+      ipAddress,
     });
     return {
       receipt: signedReceipt,
@@ -764,6 +773,7 @@ export async function finalizeMultipartUpload({
     asyncValidation,
     token,
     paidBy,
+    ipAddress,
   });
 
   return {
@@ -784,6 +794,7 @@ export async function finalizeMPUWithInFlightEntity({
   asyncValidation,
   token,
   paidBy,
+  ipAddress,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -796,6 +807,7 @@ export async function finalizeMPUWithInFlightEntity({
   asyncValidation: boolean;
   token: string;
   paidBy?: NativeAddress[];
+  ipAddress?: string;
 }): Promise<MultiPartUploadResponse> {
   if (inFlightMPUEntity.failedReason) {
     throw new InvalidDataItem();
@@ -993,6 +1005,7 @@ export async function finalizeMPUWithInFlightEntity({
     logger,
     token,
     paidBy,
+    ipAddress,
   });
 }
 
@@ -1007,6 +1020,7 @@ export async function finalizeMPUWithValidatedInfo({
   logger,
   token,
   paidBy,
+  ipAddress,
 }: {
   uploadId: UploadId;
   objectStore: ObjectStore;
@@ -1022,6 +1036,7 @@ export async function finalizeMPUWithValidatedInfo({
   logger: winston.Logger;
   token: string;
   paidBy?: NativeAddress[];
+  ipAddress?: string;
 }): Promise<MultiPartUploadResponse> {
   // If we're here, then we know we've previously completed the multipart upload and
   // validated the data item, but the data item isn't yet in the fulfillment pipeline.
@@ -1051,6 +1066,7 @@ export async function finalizeMPUWithValidatedInfo({
       logger: fnLogger,
       token,
       paidBy,
+      ipAddress,
     });
   }
 
@@ -1130,6 +1146,7 @@ export async function finalizeMPUWithValidatedInfo({
     },
     logger: fnLogger,
     paidBy,
+    ipAddress,
   });
 }
 
@@ -1144,6 +1161,7 @@ export async function finalizeMPUWithRawDataItem({
   logger,
   token,
   paidBy,
+  ipAddress,
 }: {
   uploadId: UploadId;
   paymentService: PaymentService;
@@ -1155,6 +1173,7 @@ export async function finalizeMPUWithRawDataItem({
   logger: winston.Logger;
   token: string;
   paidBy?: NativeAddress[];
+  ipAddress?: string;
 }) {
   logger.info(
     "Resuming finalization of multipart upload with existing raw data item"
@@ -1233,6 +1252,7 @@ export async function finalizeMPUWithRawDataItem({
     },
     logger,
     paidBy,
+    ipAddress,
   });
 }
 
@@ -1246,6 +1266,7 @@ export async function finalizeMPUWithDataItemInfo({
   dataItemInfo,
   logger,
   paidBy,
+  ipAddress,
 }: {
   uploadId: UploadId;
   objectStore: ObjectStore;
@@ -1255,6 +1276,7 @@ export async function finalizeMPUWithDataItemInfo({
     tags: Tag[];
   };
   paidBy?: NativeAddress[];
+  ipAddress?: string;
   paymentService: PaymentService;
   database: Database;
   arweaveGateway: ArweaveGateway;
@@ -1295,6 +1317,7 @@ export async function finalizeMPUWithDataItemInfo({
         dataItemId: dataItemInfo.dataItemId,
         signatureType: dataItemInfo.signatureType,
         paidBy,
+        ipAddress,
       });
   fnLogger = fnLogger.child({
     paymentResponse,
@@ -1324,6 +1347,16 @@ export async function finalizeMPUWithDataItemInfo({
     fnLogger.debug("Balance successfully reserved", {
       assessedWinstonPrice: paymentResponse.costOfDataItem,
     });
+
+    // Track per-IP free-upload byte usage when the upload was free
+    // (cost of 0 winston). PE-9011.
+    if (ipAddress && paymentResponse.costOfDataItem.toString() === "0") {
+      await paymentService.trackIpUsage(
+        ipAddress,
+        dataItemInfo.byteCount,
+        fnLogger
+      );
+    }
   } else {
     fnLogger.error(`Failing multipart upload due to insufficient balance.`);
     performQuarantine();

@@ -37,7 +37,10 @@ import {
   Winston,
 } from "../types/types";
 import { PaymentServiceReturnedError } from "../utils/errors";
+import { getIpUsage, updateIpUsage } from "../utils/ipRateLimitCache";
 import { createAxiosInstance } from "./axiosClient";
+import { CacheService } from "./cacheServiceTypes";
+import { getElasticacheService } from "./elasticacheService";
 
 // TODO: Payment service response API
 export interface ReserveBalanceResponse {
@@ -77,6 +80,12 @@ interface CheckBalanceParams {
   nativeAddress: NativeAddress;
   signatureType: number;
   paidBy?: NativeAddress[];
+  /**
+   * Client IP address, used to enforce per-IP free-upload byte limits
+   * (PE-9011). Optional: when absent (e.g. async/queue finalize paths) the
+   * IP rate limit is not enforced (fail-open).
+   */
+  ipAddress?: string;
 }
 
 interface CreateDelegatedPaymentApprovalParams {
@@ -192,6 +201,13 @@ export interface PaymentService {
   finalizeX402Payment(
     params: FinalizeX402PaymentParams
   ): Promise<X402FinalizeResult>;
+
+  // IP-based rate limiting for free uploads (PE-9011)
+  trackIpUsage(
+    ipAddress: string,
+    bytesUsed: ByteCount,
+    logger?: winston.Logger
+  ): Promise<void>;
 }
 
 const allowedReserveBalanceResponse: ReserveBalanceResponse = {
@@ -201,6 +217,25 @@ const allowedReserveBalanceResponse: ReserveBalanceResponse = {
 };
 
 const secret = process.env.PRIVATE_ROUTE_SECRET ?? testPrivateRouteSecret;
+
+/**
+ * Per-IP free-upload byte limit (PE-9011). Defaults to 5 GB per IP per TTL
+ * window (see FREE_BYTES_PER_IP_TTL_SECS in ipRateLimitCache, default 24h).
+ */
+export const freeBytesPerIp = +(
+  process.env.FREE_BYTES_PER_IP ?? 1024 * 1024 * 1024 * 5
+);
+
+/**
+ * IP addresses excluded from per-IP free-upload rate limiting (CSV).
+ */
+export const ipsExcludedFromIpRateLimiting = new Set(
+  (process.env.IPS_EXCLUDED_FROM_IP_RATE_LIMITING ?? "")
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter((ip) => ip.length > 0)
+);
+
 export class TurboPaymentService implements PaymentService {
   constructor(
     private readonly shouldAllowArFSData: boolean = allowArFSData,
@@ -210,7 +245,8 @@ export class TurboPaymentService implements PaymentService {
     readonly paymentServiceURL: string | undefined = process.env
       .PAYMENT_SERVICE_BASE_URL,
     paymentServiceProtocol: string = process.env.PAYMENT_SERVICE_PROTOCOL ??
-      "https"
+      "https",
+    private readonly cacheService: CacheService = getElasticacheService()
   ) {
     this.logger = logger.child({
       class: this.constructor.name,
@@ -228,6 +264,7 @@ export class TurboPaymentService implements PaymentService {
     nativeAddress,
     signatureType,
     paidBy = [],
+    ipAddress,
   }: CheckBalanceParams): Promise<CheckBalanceResponse> {
     const logger = this.logger.child({ nativeAddress, size });
 
@@ -242,6 +279,7 @@ export class TurboPaymentService implements PaymentService {
         size,
         nativeAddress,
         signatureType,
+        ipAddress,
       })
     ) {
       logger.debug(
@@ -310,8 +348,9 @@ export class TurboPaymentService implements PaymentService {
   private async checkBalanceForDataInternal({
     size,
     nativeAddress,
+    ipAddress,
   }: CheckBalanceParams): Promise<boolean> {
-    const logger = this.logger.child({ nativeAddress, size });
+    const logger = this.logger.child({ nativeAddress, size, ipAddress });
 
     logger.debug("Checking balance for wallet.");
 
@@ -323,9 +362,23 @@ export class TurboPaymentService implements PaymentService {
     }
 
     if (this.shouldAllowArFSData && size <= freeUploadLimitBytes) {
-      // TODO: Add limitations PE-2603
+      // Enforce per-IP free-upload byte limits (PE-9011). If the IP has
+      // exhausted its free byte allowance, deny the free upload and fall
+      // through to requiring payment.
+      if (
+        ipAddress &&
+        !ipsExcludedFromIpRateLimiting.has(ipAddress) &&
+        !(await this.checkIpRateLimit(ipAddress, size, logger))
+      ) {
+        logger.debug(
+          "IP free-upload byte limit exceeded. Not allowing free upload; payment required.",
+          { ipAddress, requestedBytes: size }
+        );
+        return false;
+      }
+
       logger.debug(
-        "This data item is under the free ArFS data limit. Allowing data item to be bundled by the service..."
+        "This data item is under the free ArFS data limit and within IP rate limits. Allowing data item to be bundled by the service..."
       );
 
       return true;
@@ -334,12 +387,89 @@ export class TurboPaymentService implements PaymentService {
     return false;
   }
 
+  /**
+   * Returns true if the IP is within its free-upload byte allowance for the
+   * requested upload, false if granting the free upload would exceed it.
+   * Fails open (returns true) if the IP usage cache is unavailable.
+   */
+  private async checkIpRateLimit(
+    ipAddress: string,
+    requestedBytes: ByteCount,
+    logger: winston.Logger
+  ): Promise<boolean> {
+    try {
+      const usage = await getIpUsage({
+        ipAddress,
+        cacheService: this.cacheService,
+        logger,
+      });
+
+      const currentUsage = usage?.bytesUsed || 0;
+      const totalAfterRequest = currentUsage + requestedBytes;
+
+      if (totalAfterRequest > freeBytesPerIp) {
+        logger.warn(
+          "IP free-upload byte limit would be exceeded. User must pay for bytes.",
+          {
+            ipAddress,
+            currentUsage,
+            requestedBytes,
+            limit: freeBytesPerIp,
+            totalAfterRequest,
+          }
+        );
+        return false;
+      }
+
+      logger.debug("IP free-upload byte limit check passed", {
+        ipAddress,
+        currentUsage,
+        requestedBytes,
+        limit: freeBytesPerIp,
+        totalAfterRequest,
+      });
+
+      return true;
+    } catch (error) {
+      logger.error(
+        "Error checking IP free-upload byte limit, allowing by default (fail-open)",
+        { error, ipAddress }
+      );
+      return true; // Fail open for availability
+    }
+  }
+
+  public async trackIpUsage(
+    ipAddress: string,
+    bytesUsed: ByteCount,
+    logger: winston.Logger = this.logger
+  ): Promise<void> {
+    if (ipsExcludedFromIpRateLimiting.has(ipAddress)) {
+      logger.debug("IP is excluded from rate limiting. Not tracking usage.", {
+        ipAddress,
+      });
+      return;
+    }
+    try {
+      await updateIpUsage({
+        ipAddress,
+        bytesToAdd: bytesUsed,
+        cacheService: this.cacheService,
+        logger,
+      });
+      logger.debug("Successfully tracked IP usage", { ipAddress, bytesUsed });
+    } catch (error) {
+      logger.error("Error tracking IP usage", { error, ipAddress, bytesUsed });
+    }
+  }
+
   public async reserveBalanceForData({
     size,
     nativeAddress,
     dataItemId,
     signatureType,
     paidBy = [],
+    ipAddress,
   }: ReserveBalanceParams): Promise<ReserveBalanceResponse> {
     const logger = this.logger.child({ nativeAddress, size });
 
@@ -350,6 +480,7 @@ export class TurboPaymentService implements PaymentService {
         size,
         nativeAddress,
         signatureType,
+        ipAddress,
       })
     ) {
       logger.debug(
