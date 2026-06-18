@@ -228,6 +228,9 @@ export function pendingPaymentTransactionDBMap(
       dbResult.destination_address_type as DestinationAddressType,
     createdDate: dbResult.created_date,
     winstonCreditAmount: W(dbResult.winston_credit_amount),
+    transactionSenderAddress: dbResult.transaction_sender_address,
+    usdEquivalent: Number(dbResult.usd_equivalent),
+    referer: dbResult.referer ?? undefined,
   };
 }
 

@@ -78,6 +78,7 @@ export type WincForCryptoPaymentResponse = {
   finalPrice: FinalPrice;
   actualPaymentAmount: Winston;
   inclusiveAdjustments: PaymentAdjustment[];
+  usdEquivalent: number;
   // adjustments: PaymentAdjustment[];
 };
 
@@ -783,6 +784,13 @@ export class TurboPricingService implements PricingService {
       feeMode = "none";
     }
 
+    // Capture the USD value from the base-token amount BEFORE `amount` is
+    // converted to winc below, so usd_equivalent reflects the actual payment.
+    const usdEquivalent = await this.getUsdPriceForCryptoAmount({
+      amount: amount.toString(),
+      token,
+    });
+
     if (token !== "arweave") {
       const tokenRatio = await this.tokenToFiatOracle.getPriceRatioForToken(
         token
@@ -922,6 +930,7 @@ export class TurboPricingService implements PricingService {
       finalPrice,
       actualPaymentAmount: amount,
       inclusiveAdjustments: inclusiveAdjustments,
+      usdEquivalent,
     };
   }
 

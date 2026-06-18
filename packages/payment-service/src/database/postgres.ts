@@ -1279,6 +1279,9 @@ export class PostgresDatabase implements Database {
       transactionId,
       transactionQuantity,
       tokenType,
+      transactionSenderAddress,
+      usdEquivalent,
+      referer,
     } = params;
 
     await this.writer.transaction(async (knexTransaction) => {
@@ -1289,6 +1292,9 @@ export class PostgresDatabase implements Database {
         transaction_id: transactionId,
         transaction_quantity: transactionQuantity.toString(),
         token_type: tokenType,
+        transaction_sender_address: transactionSenderAddress,
+        usd_equivalent: usdEquivalent,
+        referer,
       };
 
       await knexTransaction<PendingPaymentTransactionDBResult>(
@@ -1518,6 +1524,9 @@ export class PostgresDatabase implements Database {
       transactionQuantity,
       tokenType,
       blockHeight,
+      transactionSenderAddress,
+      usdEquivalent,
+      referer,
     } = params;
 
     await this.writer.transaction(async (knexTransaction) => {
@@ -1529,6 +1538,9 @@ export class PostgresDatabase implements Database {
         transaction_quantity: transactionQuantity.toString(),
         token_type: tokenType,
         block_height: blockHeight,
+        transaction_sender_address: transactionSenderAddress,
+        usd_equivalent: usdEquivalent,
+        referer,
       };
 
       await knexTransaction<CreditedPaymentTransactionDBResult>(

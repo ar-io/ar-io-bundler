@@ -115,7 +115,7 @@ export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
       );
     }
 
-    const { inclusiveAdjustments, finalPrice } =
+    const { inclusiveAdjustments, finalPrice, usdEquivalent } =
       await pricingService.getWCForCryptoPayment({
         amount: W(pendingTx.transactionQuantity),
         token,
@@ -131,6 +131,8 @@ export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
       destinationAddress: pendingTx.transactionSenderAddress,
       destinationAddressType: token,
       winstonCreditAmount: finalPrice.winc,
+      transactionSenderAddress: pendingTx.transactionSenderAddress,
+      usdEquivalent,
     };
 
     const newPendingWithoutCatalogIds = {
