@@ -319,6 +319,13 @@ export class ArweaveGateway implements Gateway {
       /queue-data-item\/?$/,
       "queue-optimistic-tx"
     );
+    if (optimisticTxUrl === opticalBridgeUrl) {
+      logger.error(
+        "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive the optimistic-tx endpoint. Skipping optimistic-tx post.",
+        { opticalBridgeUrl }
+      );
+      return;
+    }
     logger.debug("Posting bundle tx to optimistic-tx queue...", {
       bundleTxId: bundleTx.id,
       optimisticTxUrl,
