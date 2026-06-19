@@ -45,6 +45,7 @@ import { toStripeMetadata } from "../utils/common";
 import { parseQueryParams } from "../utils/parseQueryParams";
 import {
   assertUiModeAndUrls,
+  getSanitizedReferer,
   validateDestinationAddressType,
   validateGiftMessage,
 } from "../utils/validators";
@@ -65,7 +66,7 @@ export async function topUp(ctx: KoaContext, next: Next) {
     address: rawDestinationAddress,
   } = ctx.params;
 
-  const referer = ctx.headers.referer;
+  const referer = getSanitizedReferer(ctx);
 
   const loggerObject = { amount, currency, method, rawDestinationAddress };
 
@@ -258,6 +259,7 @@ export async function topUp(ctx: KoaContext, next: Next) {
     paymentProvider: "stripe",
     adjustments,
     giftMessage,
+    referer,
   };
 
   const { paymentProvider, adjustments: _a, ...stripeMetadataRaw } = topUpQuote;

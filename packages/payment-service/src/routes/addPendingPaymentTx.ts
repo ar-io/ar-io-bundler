@@ -33,6 +33,7 @@ import {
 import { KoaContext } from "../server";
 import { W, isSupportedPaymentToken } from "../types";
 import { sendCryptoFundSlackMessage } from "../utils/slack";
+import { getSanitizedReferer } from "../utils/validators";
 import { walletAddresses } from "./info";
 
 export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
@@ -115,7 +116,7 @@ export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
       );
     }
 
-    const { inclusiveAdjustments, finalPrice } =
+    const { inclusiveAdjustments, finalPrice, usdEquivalent } =
       await pricingService.getWCForCryptoPayment({
         amount: W(pendingTx.transactionQuantity),
         token,
@@ -131,6 +132,9 @@ export async function addPendingPaymentTx(ctx: KoaContext, _next: Next) {
       destinationAddress: pendingTx.transactionSenderAddress,
       destinationAddressType: token,
       winstonCreditAmount: finalPrice.winc,
+      transactionSenderAddress: pendingTx.transactionSenderAddress,
+      usdEquivalent,
+      referer: getSanitizedReferer(ctx),
     };
 
     const newPendingWithoutCatalogIds = {

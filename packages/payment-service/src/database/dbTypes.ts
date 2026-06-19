@@ -120,6 +120,7 @@ export interface TopUpQuote {
   quoteCreationDate: Timestamp;
   paymentProvider: PaymentProvider;
   giftMessage?: string;
+  referer?: string;
 }
 
 export type PendingPaymentTransaction = {
@@ -132,6 +133,10 @@ export type PendingPaymentTransaction = {
 
   destinationAddress: UserAddress;
   destinationAddressType: DestinationAddressType;
+
+  transactionSenderAddress: UserAddress;
+  usdEquivalent: number;
+  referer?: string;
 };
 
 export type FailedPaymentTransaction = PendingPaymentTransaction & {
@@ -166,6 +171,9 @@ export type PendingPaymentTransactionDBInsert = {
   destination_address: string;
   destination_address_type: string;
   created_date?: string;
+  transaction_sender_address: string;
+  usd_equivalent: number;
+  referer?: string;
 };
 
 export type PendingPaymentTransactionDBResult =
@@ -183,11 +191,12 @@ export type FailedPaymentTransactionDBResult =
 
 export type CreditedPaymentTransactionDBInsert = Omit<
   PendingPaymentTransactionDBResult,
-  "created_date"
+  "created_date" | "referer"
 > & {
   created_date?: string;
   credited_transaction_date?: string;
   block_height: number;
+  referer?: string; // nullable column; keep optional like created_date
 };
 
 export type CreditedPaymentTransactionDBResult =
@@ -393,6 +402,7 @@ export interface AuditLogDBResult extends AuditLogInsert {
 export interface UserDBResult extends UserDBInsert {
   promotional_info: JsonSerializable;
   user_creation_date: string;
+  wallet_labels?: string; // CSV of labels; column exists for parity, not yet populated
 }
 
 export interface TopUpQuoteDBInsert {
@@ -406,6 +416,7 @@ export interface TopUpQuoteDBInsert {
   payment_provider: string;
   quote_expiration_date: string;
   gift_message?: string;
+  referer?: string;
 }
 
 export interface TopUpQuoteDBResult extends TopUpQuoteDBInsert {
@@ -687,6 +698,7 @@ export type ArNSPurchaseParams = Omit<ArNSTokenCostParams, "assertBalance"> & {
   /** USD to ARIO rate at the time of purchase */
   usdArioRate: number;
   paidBy: UserAddress[];
+  referer?: string;
 };
 
 type ArNSPurchaseQuoteFields = {
@@ -773,6 +785,7 @@ type ArNSPurchaseDBCols = {
   paid_by?: string;
   overflow_spend?: string;
   message_id?: string;
+  referer?: string;
 };
 
 type ArNSPurchaseQuoteDBCols = {

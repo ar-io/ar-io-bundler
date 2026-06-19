@@ -40,7 +40,10 @@ import {
   toStripeMetadata,
 } from "../utils/common";
 import { parseQueryParams } from "../utils/parseQueryParams";
-import { getValidatedArNSPurchaseQuoteParams } from "../utils/validators";
+import {
+  getSanitizedReferer,
+  getValidatedArNSPurchaseQuoteParams,
+} from "../utils/validators";
 
 /**
  * This route is used to create a purchase quote for an ArNS purchase.
@@ -62,7 +65,7 @@ export async function arnsPurchaseQuote(ctx: KoaContext, next: Next) {
   const { ario } = gatewayMap;
 
   let logger: Logger = ctx.state.logger.child({
-    referer: ctx.headers.referer,
+    referer: getSanitizedReferer(ctx),
     method: "arnsPurchaseQuote",
   });
 
@@ -180,6 +183,7 @@ export async function arnsPurchaseQuote(ctx: KoaContext, next: Next) {
       paymentProvider: "stripe",
       excessWincAmount,
       adjustments,
+      referer: getSanitizedReferer(ctx),
     };
 
     logger = logger.child({
@@ -199,7 +203,7 @@ export async function arnsPurchaseQuote(ctx: KoaContext, next: Next) {
         wincQty: wincPriceForArNSPurchase.valueOf(),
         excessWincAmount: excessWincAmount.valueOf(),
         mARIOQty: mARIOQty.valueOf(),
-        referer: ctx.headers.referer ?? null,
+        referer: getSanitizedReferer(ctx) ?? null,
       },
     });
 

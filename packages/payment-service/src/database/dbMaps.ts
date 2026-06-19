@@ -98,6 +98,7 @@ export function topUpQuoteDBMap({
   destination_address,
   destination_address_type,
   winston_credit_amount,
+  referer,
 }: TopUpQuoteDBResult): TopUpQuote {
   return {
     paymentAmount: +payment_amount,
@@ -110,6 +111,7 @@ export function topUpQuoteDBMap({
     destinationAddress: destination_address,
     destinationAddressType: destination_address_type as DestinationAddressType,
     winstonCreditAmount: new Winston(winston_credit_amount),
+    referer: referer ?? undefined,
   };
 }
 
@@ -228,6 +230,9 @@ export function pendingPaymentTransactionDBMap(
       dbResult.destination_address_type as DestinationAddressType,
     createdDate: dbResult.created_date,
     winstonCreditAmount: W(dbResult.winston_credit_amount),
+    transactionSenderAddress: dbResult.transaction_sender_address,
+    usdEquivalent: Number(dbResult.usd_equivalent),
+    referer: dbResult.referer ?? undefined,
   };
 }
 
@@ -309,6 +314,7 @@ export function arnsPurchaseReceiptDBMap(
     excessWincAmount: dbResult.excess_winc
       ? W(dbResult.excess_winc)
       : undefined,
+    referer: dbResult.referer ?? undefined,
   };
 }
 
@@ -383,6 +389,7 @@ export function arnsPurchaseQuoteDBMap(
     currencyType: dbResult.currency_type,
     paymentProvider: dbResult.payment_provider,
     excessWincAmount: W(dbResult.excess_winc),
+    referer: dbResult.referer ?? undefined,
   };
 }
 
@@ -405,6 +412,7 @@ export function arnsPurchaseQuoteDBInsertFromParams({
   type,
   years,
   excessWincAmount,
+  referer,
 }: ArNSPurchaseQuoteParams): ArNSPurchaseQuoteDBInsert {
   return {
     currency_type: currencyType,
@@ -425,5 +433,6 @@ export function arnsPurchaseQuoteDBInsertFromParams({
     type,
     years,
     excess_winc: excessWincAmount.toString(),
+    referer,
   };
 }

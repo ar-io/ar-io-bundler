@@ -214,6 +214,9 @@ function stubPendingPaymentTxInsert({
   transaction_quantity = "100",
   transaction_id = "The Stubbiest Transaction" + Math.random(),
   token_type = "arweave",
+  transaction_sender_address = "",
+  usd_equivalent = 0,
+  referer,
 }: Partial<PendingPaymentTransactionDBResult>): PendingPaymentTransactionDBInsert {
   return {
     transaction_id,
@@ -223,6 +226,9 @@ function stubPendingPaymentTxInsert({
     destination_address_type,
     transaction_quantity,
     winston_credit_amount,
+    transaction_sender_address,
+    usd_equivalent,
+    referer,
   };
 }
 
