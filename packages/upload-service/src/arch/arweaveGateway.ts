@@ -294,7 +294,10 @@ export class ArweaveGateway implements Gateway {
    * mirroring how data-item headers are optical-posted. Opt-in via
    * `OPTIMISTIC_TX_BRIDGE_ENABLED`; requires `AR_IO_ADMIN_KEY`. Targets the same
    * gateway admin host as the optical bridge (`OPTICAL_BRIDGE_URL`). Best-effort:
-   * logs and swallows errors so it never blocks/fails the post-bundle job.
+   * single attempt (no retries) with a short timeout, and logs+swallows errors —
+   * optimistic indexing must never block or fail the on-chain bundle post. The
+   * caller fires this detached (not awaited) so a slow/unavailable gateway can't
+   * throttle post-bundle throughput.
    */
   public async postBundleTxToOptimisticTxQueue(
     bundleTx: Transaction
@@ -321,13 +324,15 @@ export class ArweaveGateway implements Gateway {
       optimisticTxUrl,
     });
     try {
-      await this.retryStrategy.sendRequest(() =>
-        this.axiosInstance.post(optimisticTxUrl, bundleTx, {
-          headers: {
-            Authorization: `Bearer ${adminKey}`,
-          },
-        })
-      );
+      // Single attempt, short timeout — no retryStrategy. Retrying a best-effort
+      // pre-mine index is pointless (it races the actual mine) and could pile up
+      // background work under load; one quick shot is enough.
+      await this.axiosInstance.post(optimisticTxUrl, bundleTx, {
+        headers: {
+          Authorization: `Bearer ${adminKey}`,
+        },
+        timeout: 5000,
+      });
     } catch (error) {
       logger.error("Error posting bundle tx to optimistic-tx queue", {
         bundleTxId: bundleTx.id,
