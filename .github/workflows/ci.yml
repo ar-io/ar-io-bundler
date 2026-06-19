@@ -49,6 +49,12 @@ jobs:
     # migrations and unit tests — they never move real funds.
     env:
       NODE_ENV: test
+      # .nvmrc pins Node 22.22, which enables native TypeScript type-stripping
+      # (default since 22.18). That intercepts .ts files before ts-node/register
+      # (mocha's .mocharc) can transpile them, so tests/testSetup.ts fails with
+      # "Cannot use import statement outside a module". Disable native stripping
+      # so ts-node stays authoritative — matching local dev on older Node.
+      NODE_OPTIONS: "--no-experimental-strip-types"
       DB_HOST: localhost
       DB_PORT: 5432
       DB_USER: turbo_admin
