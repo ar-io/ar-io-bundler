@@ -367,6 +367,18 @@ sudo ./scripts/setup-pm2-startup.sh   # configures pm2 startup (systemd) for the
 pm2 save                              # persist the process list across reboot
 ```
 
+⚠️ **`setup-pm2-startup.sh` breaks on nvm Node** (validated 2026-06): it runs `pm2 startup` via
+`su - <user> -c …`, whose login shell drops the nvm PATH → `env: 'node': No such file or directory`, and
+**no unit is written**. With a system Node (nodesource, §3 — recommended) this is a non-issue. On an
+nvm box, run `pm2 startup` directly instead, with the nvm bin on PATH, so the generated unit bakes the
+right `Environment=PATH`:
+```bash
+export PATH="$HOME/.nvm/versions/node/v22.22.0/bin:$PATH"
+pm2 startup systemd -u root --hp /root   # writes + enables /etc/systemd/system/pm2-root.service
+pm2 save
+# confirm the unit's Environment=PATH includes the nvm bin dir (else node won't resolve at boot)
+```
+
 Verify a reboot brings up Docker infra (restart policies, §5) **and** PM2 (saved list). The dev box does
 not currently guarantee this — validate it explicitly on Hetzner.
 
@@ -378,7 +390,16 @@ not currently guarantee this — validate it explicitly on Hetzner.
 |---|---|---|
 | Bundle planning (**required** — without it nothing bundles) | `packages/upload-service/cron-trigger-plan.sh` | `*/5 * * * *` |
 | Tiered cleanup (FS 7d / MinIO 90d) | `packages/upload-service/cron-trigger-cleanup.sh` | `0 2 * * *` |
-| Bundle verify (mark permanent) | `scripts/trigger-verify.sh` | periodic (e.g. hourly) |
+| Bundle verify (mark permanent) — **effectively required** | `scripts/trigger-verify.sh` | `*/15 * * * *` |
+
+🛑 **Verify is NOT optional (validated 2026-06).** Data items reach `permanent_data_items` only once their
+bundle tx has **≥18 confirmations** (`txPermanentThreshold`, ~36 min on Arweave). The verify job that
+`seed-bundle` auto-enqueues fires after only **5 min** — under the threshold — completes without promoting,
+and **does not re-enqueue**. So without the recurring `trigger-verify.sh` cron, bundles seed + mine but
+**never finalize**. Run it `*/15` with `VERIFY_WORKER_CONCURRENCY=1` (verify scans *all* seeded bundles each
+run — the job `planId` is ignored — and only holds a `FOR UPDATE NOWAIT` lock for the SELECT, so >1 worker
+overlaps and throws). Note `trigger-verify.sh` enqueues a cosmetic `manual-trigger-<ts>` planId; harmless
+because verify ignores it.
 
 🛑 **CRON `node` PATH (will bite silently).** Lane 6 made the scripts portable (`NODE_BIN:-node` + dir
 resolution), but **cron runs with a stripped PATH that does not contain an nvm-installed Node 22**. Because
@@ -465,7 +486,32 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
   Alert on queue depth (BullMQ), worker liveness (esp. payment-workers + upload-workers), DB pool saturation,
   disk usage (MinIO/Postgres growth), and post/verify failure rates.
 - **Queues:** Bull Board / admin-dashboard at `:3002` (admin-only).
-- **Logs:** install `pm2-logrotate` (PM2 logs) and logrotate for cron logs; the dev box rotates neither.
+- **Logs:** install `pm2-logrotate` for the PM2 app logs (`pm2 install pm2-logrotate; pm2 set
+  pm2-logrotate:max_size 50M; pm2 set pm2-logrotate:retain 14; pm2 set pm2-logrotate:compress true`) and a
+  system `logrotate` rule for the cron logs (`/etc/logrotate.d/bundler` over `/var/log/bundler/*.log`, use
+  `copytruncate`). PM2 does **not** rotate by default and the cron logs grow unbounded otherwise.
+
+### Performance / load tuning (before a load test)
+
+- **DB connection ceiling (the first wall).** Each Node proc opens a Knex pool up to `DB_POOL_MAX` (default
+  50). With ~6 procs (payment×2, payment-workers, upload-api×2, upload-workers) that's **up to 300** — and
+  **double** if reader+writer pools are separate (`DB_READER/WRITER_ENDPOINT`). Postgres ships
+  `max_connections=100`. Raise it (e.g. `command: postgres -c max_connections=400 -c shared_buffers=2GB` in
+  compose, ~10 MB RAM/conn) **or** cap `DB_POOL_MAX`, **or** front it with PgBouncer. Watch
+  `SELECT count(*) FROM pg_stat_activity` and "too many clients already" / pool-acquire timeouts.
+- **`UV_THREADPOOL_SIZE` (crypto/fs-bound bundling).** Setting it in `.env` is **inert** — the services
+  dotenv-load `.env` in-process, but libuv reads this from the **OS exec env at startup**. PM2 also injects
+  env via its wrapper, not the exec env. Put it where the PM2 daemon spawns workers: restart the daemon with
+  it exported (`pm2 kill; export UV_THREADPOOL_SIZE=8; ./scripts/start.sh`) and add
+  `Environment=UV_THREADPOOL_SIZE=8` via a `pm2-root.service.d/override.conf` drop-in for reboot. Verify with
+  `tr '\0' '\n' </proc/<pid>/environ | grep UV_THREADPOOL_SIZE`.
+- **Kernel net headroom** (`/etc/sysctl.d/*.conf` + `sysctl --system`): widen
+  `net.ipv4.ip_local_port_range = 1024 65535` (many outbound conns to payment/gateway/broadcaster),
+  `net.core.somaxconn = 65535`, `net.ipv4.tcp_max_syn_backlog = 16384`, `net.core.netdev_max_backlog = 16384`.
+  `tcp_tw_reuse=2` (loopback) already covers the upload→payment localhost path; monitor `nf_conntrack_count`
+  (Docker NAT is active). File descriptors are already generous (`LimitNOFILE` high / systemd `infinity`).
+- **App listen backlog** is Node's default **511** (not env-tunable) — a real per-listener ceiling under
+  connection-burst load even with `somaxconn` raised.
 
 ---
 

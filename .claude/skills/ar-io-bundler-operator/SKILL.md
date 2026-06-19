@@ -73,12 +73,12 @@ other queues: finalize-upload, unbundle-bdi, cleanup-fs        payment-pending-t
 ```
 
 - **`plan-bundle` is cron-driven** — a cron enqueues it every 5 min. No cron ⇒ items pile up in `new_data_item` and nothing ever bundles. This is the #1 "uploads work but nothing posts" cause.
-- `post-bundle` posts the bundle tx; `seed-bundle` uploads chunks then enqueues `verify-bundle` with a **5-min delay**; `verify-bundle` promotes data items to `permanent_data_items` once confirmed.
+- `post-bundle` posts the bundle tx; `seed-bundle` uploads chunks then enqueues `verify-bundle` with a **5-min delay**; `verify-bundle` promotes data items to `permanent_data_items` once the bundle tx has **≥18 confirmations** (`txPermanentThreshold`, ~36 min on Arweave). The 5-min verify almost always fires *under* that threshold and **does not re-enqueue**, so a **recurring verify trigger is required** (see crons) or bundles never finalize. `verify-bundle` scans **all** seeded bundles each run (the job's `planId` is ignored) and guards with `SELECT … FOR UPDATE NOWAIT`, which only spans the SELECT — so run it **single-flight** (`VERIFY_WORKER_CONCURRENCY=1`) to avoid overlapping passes throwing lock/empty-promotion errors.
 - `optical-post` fires in parallel — POSTs each data item to the gateway's admin queue for optimistic caching/indexing. Independent of the on-chain path.
 - Inspect depth: `health-check` prints `wait/active/failed` per queue, or use Bull Board at `http://localhost:3002/admin/queues`. Failed-job counts are **retained** (BullMQ keeps them) — a nonzero `failed` is history, not necessarily a live fire; check timestamps in `pm2 logs upload-workers`.
 
 ### Tunable knobs
-- Worker concurrency (only these 4 are env-tunable; rest hardcoded in `allWorkers.ts`): `PLAN_WORKER_CONCURRENCY` (5), `PREPARE_WORKER_CONCURRENCY` (3), `POST_WORKER_CONCURRENCY` (2), `VERIFY_WORKER_CONCURRENCY` (3).
+- Worker concurrency (only these 4 are env-tunable; rest hardcoded in `allWorkers.ts`): `PLAN_WORKER_CONCURRENCY` (5), `PREPARE_WORKER_CONCURRENCY` (3), `POST_WORKER_CONCURRENCY` (2), `VERIFY_WORKER_CONCURRENCY` (default 3 — **set to 1**: verify scans all seeded bundles, so >1 overlaps/contends).
 - Scale: `API_INSTANCES` (cluster APIs), `WORKER_INSTANCES` (keep 1). DB pool `DB_POOL_MIN/MAX` (5/50). Server timeouts `REQUEST_TIMEOUT_MS` etc.
 
 ## Gateway integration — the three wires
@@ -101,7 +101,7 @@ The bundler is wired to a co-located AR.IO gateway (the `ar-io-node` repo; use t
 |---|---|---|---|
 | Bundle planning | `packages/upload-service/cron-trigger-plan.sh` | `*/5 * * * *` | **Yes — nothing bundles without it** |
 | Tiered cleanup | `packages/upload-service/cron-trigger-cleanup.sh` | `0 2 * * *` | Recommended (retention) |
-| Bundle verify | `scripts/trigger-verify.sh` | hourly (optional) | No — seeding already enqueues verify with a 5-min delay |
+| Bundle verify | `scripts/trigger-verify.sh` | every ~15 min | **Effectively YES** — the seed-enqueued 5-min verify usually fires under the 18-conf permanence threshold and never re-enqueues, so without a recurring trigger nothing reaches `permanent_data_items`. (`trigger-verify.sh` enqueues a bogus `manual-trigger-<ts>` planId — harmless only because verify ignores planId and scans all seeded bundles.) Pair with `VERIFY_WORKER_CONCURRENCY=1`. |
 
 **The footgun:** cron runs with a stripped PATH. Both wrappers honor `NODE_BIN` (default bare `node`). If the only `node` is under nvm — or the system `node` is an old version — the cron **fails silently** (`set -e` + log redirect) and bundling just stops. Always pin it:
 ```bash
