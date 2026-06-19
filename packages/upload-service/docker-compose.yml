@@ -106,19 +106,6 @@ services:
 # fulfillment-service removed - replaced by BullMQ workers managed by PM2
   # See ecosystem.config.js for worker configuration
 
-  migrator-service:
-    build:
-      context: .
-      dockerfile: Dockerfile.migration
-      args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
-    environment:
-      DB_HOST: upload-service-pg
-      DB_PORT: 5432
-      DB_PASSWORD: postgres
-    depends_on:
-      - upload-service-pg
-
   upload-service-pg:
     image: postgres:16.1
     environment:
