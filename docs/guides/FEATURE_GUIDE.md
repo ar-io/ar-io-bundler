@@ -1298,9 +1298,8 @@ BACKUP_DATA_ITEM_BUCKET=backup-data-items
    - Creates: `raw-data-items`, `backup-data-items` buckets
    - Sets public read access
 
-6. **Migrators** (One-time database setup)
-   - `payment-migrator`: Runs payment service migrations
-   - `upload-migrator`: Runs upload service migrations
+> Database migrations run on the host via `yarn db:migrate` (invoked by
+> `scripts/start.sh`), not as Docker services.
 
 **Docker Compose Commands:**
 ```bash

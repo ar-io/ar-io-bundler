@@ -7,7 +7,6 @@
 # Images:
 #   ghcr.io/ar-io/ar-io-bundler-payment          (packages/payment-service/Dockerfile)
 #   ghcr.io/ar-io/ar-io-bundler-upload           (packages/upload-service/Dockerfile)
-#   ghcr.io/ar-io/ar-io-bundler-upload-migration (packages/upload-service/Dockerfile.migration)
 #
 # Build context: each service Dockerfile does `COPY . . && yarn && yarn build`
 # and expects a single, self-contained package (no @ar-io-bundler/* workspace
@@ -51,9 +50,6 @@ jobs:
           - name: upload
             context: packages/upload-service
             dockerfile: packages/upload-service/Dockerfile
-          - name: upload-migration
-            context: packages/upload-service
-            dockerfile: packages/upload-service/Dockerfile.migration
     steps:
       - name: Checkout
         uses: actions/checkout@v4

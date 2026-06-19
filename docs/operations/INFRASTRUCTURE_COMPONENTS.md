@@ -35,13 +35,8 @@ This document lists all infrastructure components and how they're managed by our
    - **IMPORTANT**: Must be explicitly run with `docker compose up minio-init`
    - Safe to run multiple times (uses `--ignore-existing`)
    
-6. **Payment Migrator** (runs once, exits)
-   - Container: `ar-io-bundler-payment-migrator`
-   - Runs payment service database migrations
-   
-7. **Upload Migrator** (runs once, exits)
-   - Container: `ar-io-bundler-upload-migrator`
-   - Runs upload service database migrations
+> Database migrations are NOT containerized. They run on the host via
+> `yarn db:migrate` (invoked by `scripts/start.sh`) against both databases.
 
 ## PM2 Services
 

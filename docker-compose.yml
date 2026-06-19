@@ -103,42 +103,6 @@ services:
       echo 'MinIO buckets created successfully';
       "
 
-  # Payment Service Migrator
-  payment-migrator:
-    build:
-      context: ./packages/payment-service
-      dockerfile: Dockerfile.migration
-    container_name: ar-io-bundler-payment-migrator
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${PAYMENT_DB_NAME:-payment_service}
-      DB_USER: ${DB_USER:-turbo_admin}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-    command: yarn db:migrate:latest
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  # Upload Service Migrator
-  upload-migrator:
-    build:
-      context: ./packages/upload-service
-      dockerfile: Dockerfile.migration
-    container_name: ar-io-bundler-upload-migrator
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${UPLOAD_DB_NAME:-upload_service}
-      DB_USER: ${DB_USER:-turbo_admin}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-    command: yarn db:migrate:latest
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 volumes:
   postgres-data:
   redis-cache-data:
