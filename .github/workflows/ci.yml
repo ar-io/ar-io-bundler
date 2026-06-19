@@ -23,6 +23,41 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+
+    # Postgres for the DB-coupled unit tests (payment-service pricing specs seed
+    # adjustment catalogs). A fresh service container per run = a clean DB, so
+    # the seed/duplicate-key flakiness from a dirty shared DB can't happen here.
+    # Unit tests need ONLY Postgres — no Redis/MinIO.
+    services:
+      postgres:
+        image: postgres:16.1
+        env:
+          POSTGRES_USER: turbo_admin
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U turbo_admin -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Single source of truth for the test env. DB creds match docker-compose /
+    # init-databases.sql. The dummy X402_PAYMENT_ADDRESS / SOLANA_ADDRESS satisfy
+    # the payment-service module-load config validation (constants.ts) during
+    # migrations and unit tests — they never move real funds.
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: turbo_admin
+      DB_PASSWORD: postgres
+      PAYMENT_DB_DATABASE: payment_service
+      UPLOAD_DB_DATABASE: upload_service
+      X402_PAYMENT_ADDRESS: "0x0000000000000000000000000000000000000001"
+      SOLANA_ADDRESS: "11111111111111111111111111111111"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,25 +92,30 @@ jobs:
         run: yarn build
 
       # Root script: `yarn workspaces foreach -pt run typecheck`.
-      # BLOCKING: the type debt has been burned down (both services typecheck
-      # clean, including their test files; the one genuinely-dead integration
-      # spec was quarantined to tests/*.disabled).
+      # BLOCKING: both services typecheck clean (incl. test files; the one
+      # genuinely-dead integration spec is quarantined to tests/*.disabled).
       - name: Typecheck
         run: yarn typecheck
 
       # Root `lint` maps to each workspace's `lint:check` (eslint).
-      # BLOCKING: zero lint ERRORS across both services. Warnings remain and do
-      # not fail the build (eslint exits non-zero only on errors).
+      # BLOCKING: zero lint ERRORS across both services (warnings don't fail).
       - name: Lint
         run: yarn lint
 
+      # Create both databases on the fresh Postgres service (the compose
+      # init-databases.sql is not auto-mounted into a GH Actions service
+      # container), then migrate the payment DB — the only one the unit tests
+      # touch. PGPASSWORD lets psql auth non-interactively.
+      - name: Create databases
+        run: psql -h localhost -U turbo_admin -d postgres -f infrastructure/postgres/init-databases.sql
+        env:
+          PGPASSWORD: postgres
+
+      - name: Migrate payment DB
+        run: yarn db:migrate:payment
+
       # Root script: `yarn workspaces foreach -pt run test:unit`.
-      # Only payment-service and upload-service define test:unit. The specs are
-      # green locally (195 + 195) but several are DB-coupled (they need a
-      # migrated Postgres and seeded adjustment catalogs) and run in parallel
-      # against a shared DB. NON-BLOCKING until the CI job provisions Postgres +
-      # runs migrations before this step; tracked as the test:unit CI-infra
-      # follow-up. Build + typecheck + lint are the hard gates.
+      # BLOCKING: upload-service specs are pure unit (no infra); payment-service
+      # specs run against the migrated Postgres above. Green at 195 + 195.
       - name: Unit tests
         run: yarn test:unit
-        continue-on-error: true
