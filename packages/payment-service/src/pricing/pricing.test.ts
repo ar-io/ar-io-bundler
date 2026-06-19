@@ -700,6 +700,7 @@ describe("TurboPricingService class", () => {
 
   describe("getWCForCryptoPayment", () => {
     it("returns the expected price for a given arweave payment", async () => {
+      stub(oracle, "getFiatPricesForOneToken").resolves(expectedTokenPrices);
       const { inclusiveAdjustments, finalPrice } =
         await pricing.getWCForCryptoPayment({
           amount: W(100),
@@ -745,6 +746,7 @@ describe("TurboPricingService class", () => {
     });
 
     it("returns the expected price for a given arweave payment with feeMode invert", async () => {
+      stub(oracle, "getFiatPricesForOneToken").resolves(expectedTokenPrices);
       const { inclusiveAdjustments, finalPrice } =
         await pricing.getWCForCryptoPayment({
           amount: W(100),

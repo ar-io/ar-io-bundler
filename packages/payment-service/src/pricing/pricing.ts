@@ -785,11 +785,21 @@ export class TurboPricingService implements PricingService {
     }
 
     // Capture the USD value from the base-token amount BEFORE `amount` is
-    // converted to winc below, so usd_equivalent reflects the actual payment.
-    const usdEquivalent = await this.getUsdPriceForCryptoAmount({
-      amount: amount.toString(),
-      token,
-    });
+    // converted to winc below. Best-effort attribution ONLY: usd_equivalent
+    // defaults to 0 and must never block recording a payment the user has
+    // already sent, even if the USD oracle is down or rate-limited.
+    let usdEquivalent = 0;
+    try {
+      usdEquivalent = await this.getUsdPriceForCryptoAmount({
+        amount: amount.toString(),
+        token,
+      });
+    } catch (error) {
+      this.logger.warn(
+        "Failed to compute usd_equivalent; defaulting to 0 (non-blocking).",
+        { token, error: error instanceof Error ? error.message : error }
+      );
+    }
 
     if (token !== "arweave") {
       const tokenRatio = await this.tokenToFiatOracle.getPriceRatioForToken(
