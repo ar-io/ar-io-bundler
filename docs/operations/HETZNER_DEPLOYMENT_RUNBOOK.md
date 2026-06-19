@@ -493,12 +493,20 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 
 ### Performance / load tuning (before a load test)
 
-- **DB connection ceiling (the first wall).** Each Node proc opens a Knex pool up to `DB_POOL_MAX` (default
-  50). With ~6 procs (payment×2, payment-workers, upload-api×2, upload-workers) that's **up to 300** — and
-  **double** if reader+writer pools are separate (`DB_READER/WRITER_ENDPOINT`). Postgres ships
-  `max_connections=100`. Raise it (e.g. `command: postgres -c max_connections=400 -c shared_buffers=2GB` in
-  compose, ~10 MB RAM/conn) **or** cap `DB_POOL_MAX`, **or** front it with PgBouncer. Watch
-  `SELECT count(*) FROM pg_stat_activity` and "too many clients already" / pool-acquire timeouts.
+- **DB connection ceiling (the first wall) — load-test validated 2026-06.** Postgres ships
+  `max_connections=100`, but the upload-API cluster alone (`API_INSTANCES=2 × DB_POOL_MAX=50 = 100`) can
+  consume the whole pool, **starving the workers**: in a 2-client intake test the `new-data-item` queue
+  backed up to ~5,300 and `load1` thrashed to ~28 while the monitor itself got locked out of Postgres.
+  Bumping to `max_connections=400` + `shared_buffers=2GB` eliminated the backlog entirely (queue ≈0) and
+  doubled stable throughput. **Empirical note:** the real concurrent working-set was only **~120–150**
+  connections (the Knex pools don't all fill to `DB_POOL_MAX` at once), so the 300–600 pool-math worst case
+  overestimates — `max_connections` of **200–400 is ample**; the default 100 just sits *below* real demand.
+  `docker-compose.yml` now defaults the postgres service to these (parameterized via
+  `PG_MAX_CONNECTIONS`/`PG_SHARED_BUFFERS`); cap `DB_POOL_MAX` or front with PgBouncer as alternatives. Watch
+  `SELECT count(*) FROM pg_stat_activity` (client backends) and "too many clients already" / pool-acquire timeouts.
+  - **Cleanup caveat:** deleting `new_data_item` rows directly does NOT remove the MinIO `raw-data-item/<id>`
+    objects (cleanup is DB-driven), so raw row-deletes orphan objects — delete the objects too, or reconcile
+    the bucket against the DB.
 - **`UV_THREADPOOL_SIZE` (crypto/fs-bound bundling).** Setting it in `.env` is **inert** — the services
   dotenv-load `.env` in-process, but libuv reads this from the **OS exec env at startup**. PM2 also injects
   env via its wrapper, not the exec env. Put it where the PM2 daemon spawns workers: restart the daemon with

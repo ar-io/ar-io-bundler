@@ -4,6 +4,15 @@ services:
     image: postgres:16.1
     container_name: ar-io-bundler-postgres
     restart: unless-stopped
+    # Load-test tuning: the app's API cluster (API_INSTANCES x DB_POOL_MAX) can
+    # otherwise exhaust the default max_connections=100. Override via env if needed.
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=${PG_MAX_CONNECTIONS:-400}"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-2GB}"
+    shm_size: "1gb"
     environment:
       POSTGRES_USER: ${DB_USER:-turbo_admin}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
