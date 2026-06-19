@@ -79,6 +79,9 @@ export async function postBundleHandler(
     const [transactionPostResponseData] = await Promise.all([
       arweaveGateway.postBundleTx(bundleTx),
       arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
+      // Optimistically index the bundle tx on the gateway so it (and its
+      // unbundled data items) resolve before it mines. Opt-in, best-effort.
+      arweaveGateway.postBundleTxToOptimisticTxQueue(bundleTx),
     ]);
 
     // fetch AR rate - but don't throw on failure

@@ -62,6 +62,7 @@ export interface Gateway {
   getCurrentBlockHeight(): Promise<number>;
   getBalanceForWallet(wallet: PublicArweaveAddress): Promise<Winston>;
   postBundleTxToAdminQueue(bundleTxId: TransactionId): Promise<void>;
+  postBundleTxToOptimisticTxQueue(bundleTx: Transaction): Promise<void>;
 }
 
 export const currentBlockInfoCache = new ReadThroughPromiseCache<
@@ -283,6 +284,55 @@ export class ArweaveGateway implements Gateway {
           error: error instanceof Error ? error.message : "Unknown error",
         });
       }
+    }
+  }
+
+  /**
+   * Optionally pushes a signed bundle tx header to the AR.IO gateway's optimistic
+   * L1 tx index (`POST /ar-io/admin/queue-optimistic-tx`) so the bundle becomes
+   * resolvable (GraphQL `transaction(id)`, `block: null`) before it mines —
+   * mirroring how data-item headers are optical-posted. Opt-in via
+   * `OPTIMISTIC_TX_BRIDGE_ENABLED`; requires `AR_IO_ADMIN_KEY`. Targets the same
+   * gateway admin host as the optical bridge (`OPTICAL_BRIDGE_URL`). Best-effort:
+   * logs and swallows errors so it never blocks/fails the post-bundle job.
+   */
+  public async postBundleTxToOptimisticTxQueue(
+    bundleTx: Transaction
+  ): Promise<void> {
+    if (process.env.OPTIMISTIC_TX_BRIDGE_ENABLED !== "true") {
+      return;
+    }
+    const adminKey = process.env.AR_IO_ADMIN_KEY;
+    const opticalBridgeUrl = process.env.OPTICAL_BRIDGE_URL;
+    if (adminKey === undefined || opticalBridgeUrl === undefined) {
+      logger.warn(
+        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY or OPTICAL_BRIDGE_URL is missing; skipping optimistic-tx post."
+      );
+      return;
+    }
+    // The optimistic-tx admin endpoint lives next to the optical data-item queue
+    // on the same gateway: .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
+    const optimisticTxUrl = opticalBridgeUrl.replace(
+      /queue-data-item\/?$/,
+      "queue-optimistic-tx"
+    );
+    logger.debug("Posting bundle tx to optimistic-tx queue...", {
+      bundleTxId: bundleTx.id,
+      optimisticTxUrl,
+    });
+    try {
+      await this.retryStrategy.sendRequest(() =>
+        this.axiosInstance.post(optimisticTxUrl, bundleTx, {
+          headers: {
+            Authorization: `Bearer ${adminKey}`,
+          },
+        })
+      );
+    } catch (error) {
+      logger.error("Error posting bundle tx to optimistic-tx queue", {
+        bundleTxId: bundleTx.id,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   }
 }
