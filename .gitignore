@@ -70,3 +70,6 @@ backups/
 
 # Claude Code: keep shared skills + settings.json, ignore personal local settings
 .claude/settings.local.json
+
+# perf baseline run outputs
+scripts/perf/results/
