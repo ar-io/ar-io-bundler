@@ -265,7 +265,14 @@ export class DbTestHelper {
   }
 
   public async insertStubUser(insertParams: StubUserParams): Promise<void> {
-    return this.knex(tableNames.user).insert(stubUserInsert(insertParams));
+    // Upsert: integration suites share one DB and several seed the same stub
+    // user (e.g. testAddress in both router + x402 suites). Running serially each
+    // suite's before-hook sets the balance it needs; idempotency just prevents a
+    // duplicate-key crash when a later suite re-seeds an already-present address.
+    await this.knex(tableNames.user)
+      .insert(stubUserInsert(insertParams))
+      .onConflict("user_address")
+      .merge();
   }
 
   public async insertStubTopUpQuote(
