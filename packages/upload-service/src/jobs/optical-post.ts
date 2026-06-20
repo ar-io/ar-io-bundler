@@ -255,9 +255,26 @@ export const opticalPostHandler = async ({
     });
 
     if (status < 200 || status >= 300) {
-      throw Error(
-        `Failed to post to primary optical bridge: ${status} ${statusText}`
+      // Honor gateway backpressure. 429 (Too Many Requests) and 5xx are
+      // transient — throw so the BullMQ job retries with exponential backoff
+      // (see queues/config defaultJobOptions). This lets the gateway shed load
+      // (e.g. when its data-item indexer queue is near capacity) without us
+      // dropping the optimistic post. Permanent 4xx (400/401/403/...) won't
+      // succeed on retry, so log and give up rather than burning retries.
+      if (status === 429 || status >= 500) {
+        childLogger.warn(
+          `Optical bridge applied backpressure; retrying with backoff.`,
+          { status, statusText }
+        );
+        throw Error(
+          `Optical bridge backpressure/transient: ${status} ${statusText}`
+        );
+      }
+      childLogger.error(
+        `Optical bridge rejected data item (non-retryable, giving up).`,
+        { status, statusText }
       );
+      return;
     }
 
     childLogger.debug(

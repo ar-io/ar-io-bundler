@@ -62,6 +62,7 @@ export interface Gateway {
   getCurrentBlockHeight(): Promise<number>;
   getBalanceForWallet(wallet: PublicArweaveAddress): Promise<Winston>;
   postBundleTxToAdminQueue(bundleTxId: TransactionId): Promise<void>;
+  postBundleTxToOptimisticTxQueue(bundleTx: Transaction): Promise<void>;
 }
 
 export const currentBlockInfoCache = new ReadThroughPromiseCache<
@@ -283,6 +284,67 @@ export class ArweaveGateway implements Gateway {
           error: error instanceof Error ? error.message : "Unknown error",
         });
       }
+    }
+  }
+
+  /**
+   * Optionally pushes a signed bundle tx header to the AR.IO gateway's optimistic
+   * L1 tx index (`POST /ar-io/admin/queue-optimistic-tx`) so the bundle becomes
+   * resolvable (GraphQL `transaction(id)`, `block: null`) before it mines —
+   * mirroring how data-item headers are optical-posted. Opt-in via
+   * `OPTIMISTIC_TX_BRIDGE_ENABLED`; requires `AR_IO_ADMIN_KEY`. Targets the same
+   * gateway admin host as the optical bridge (`OPTICAL_BRIDGE_URL`). Best-effort:
+   * single attempt (no retries) with a short timeout, and logs+swallows errors —
+   * optimistic indexing must never block or fail the on-chain bundle post. The
+   * caller fires this detached (not awaited) so a slow/unavailable gateway can't
+   * throttle post-bundle throughput.
+   */
+  public async postBundleTxToOptimisticTxQueue(
+    bundleTx: Transaction
+  ): Promise<void> {
+    if (process.env.OPTIMISTIC_TX_BRIDGE_ENABLED !== "true") {
+      return;
+    }
+    const adminKey = process.env.AR_IO_ADMIN_KEY;
+    const opticalBridgeUrl = process.env.OPTICAL_BRIDGE_URL;
+    if (adminKey === undefined || opticalBridgeUrl === undefined) {
+      logger.warn(
+        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY or OPTICAL_BRIDGE_URL is missing; skipping optimistic-tx post."
+      );
+      return;
+    }
+    // The optimistic-tx admin endpoint lives next to the optical data-item queue
+    // on the same gateway: .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
+    const optimisticTxUrl = opticalBridgeUrl.replace(
+      /queue-data-item\/?$/,
+      "queue-optimistic-tx"
+    );
+    if (optimisticTxUrl === opticalBridgeUrl) {
+      logger.error(
+        "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive the optimistic-tx endpoint. Skipping optimistic-tx post.",
+        { opticalBridgeUrl }
+      );
+      return;
+    }
+    logger.debug("Posting bundle tx to optimistic-tx queue...", {
+      bundleTxId: bundleTx.id,
+      optimisticTxUrl,
+    });
+    try {
+      // Single attempt, short timeout — no retryStrategy. Retrying a best-effort
+      // pre-mine index is pointless (it races the actual mine) and could pile up
+      // background work under load; one quick shot is enough.
+      await this.axiosInstance.post(optimisticTxUrl, bundleTx, {
+        headers: {
+          Authorization: `Bearer ${adminKey}`,
+        },
+        timeout: 5000,
+      });
+    } catch (error) {
+      logger.error("Error posting bundle tx to optimistic-tx queue", {
+        bundleTxId: bundleTx.id,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   }
 }

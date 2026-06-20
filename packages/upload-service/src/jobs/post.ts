@@ -76,6 +76,11 @@ export async function postBundleHandler(
 
   try {
     // post bundle, throw error on failure
+    // Optimistically index the bundle tx on the gateway so it resolves before it
+    // mines. Opt-in + best-effort, fired DETACHED (not awaited) so a slow or
+    // unavailable gateway can never block or slow the on-chain bundle post.
+    void arweaveGateway.postBundleTxToOptimisticTxQueue(bundleTx);
+
     const [transactionPostResponseData] = await Promise.all([
       arweaveGateway.postBundleTx(bundleTx),
       arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
