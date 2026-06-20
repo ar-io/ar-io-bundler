@@ -335,6 +335,28 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
    S3 creds, and prioritize MinIO in `ON_DEMAND_RETRIEVAL_ORDER=s3,trusted-gateways,ar-io-network,chunks-offset-aware,tx-data`.
    - **Same host:** `docker network connect <bundler-network> <gateway-core-container>`, restart gateway core.
    - **Different host (two baremetal gateways):** route the MinIO aliases to the bundler's private address on each gateway (DNS or `/etc/hosts`).
+4. **Bundle seeding (TX headers + chunks) →** `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
+   - **Why direct-to-core:4000:** in non-dry-run mode envoy routes `POST /tx` to `trusted_arweave_nodes` (upstream Arweave), *bypassing core* — so seeding via the public/nginx path silently disables the gateway's **optimistic TX indexing** (`OPTIMISTIC_TX_INDEXING_ENABLED=true`). Direct-to-core hits core's own `POST /tx` handler, which optimistically indexes **and** broadcasts. (`POST /chunk` reaches core either way, but direct also skips TLS/nginx/rate-limit/x402 overhead.)
+   - **Reads/anchor stay on `ARWEAVE_GATEWAY` (`:3000`)** — the split is intentional: reads/`/tx_anchor`/price via the read gateway, POST seeding via core.
+   - **Cutover caveat:** `localhost:4000` works because core publishes `0.0.0.0:4000` and the bundler runs on-host (PM2). If the bundler is containerized on `ar-io-network`, change this to `http://<gateway-core-container>:4000` (inside a container `localhost` is the bundler itself, not core).
+   - The bundler's chunk posts appear to core as the **docker bridge gateway IP** (~`172.18.0.1`), an internal/cutover-stable address — relevant to the allowlist below.
+
+### Gateway-side chunk-ingest cache config (set in the *gateway's* `.env`, not the bundler's)
+
+Optimistic chunk cache holds posted chunk bytes until their `data_root` confirms on-chain, then GC reclaims junk. Tuned 2026-06-20 from observed confirm latency (p50 ~7.5m / p90 ~51m / p99 ~59m over an 8h window):
+
+```
+CHUNK_INGEST_CACHE_ENABLED=true
+CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200    # 2h leash, open ingest (~2x p99). Default is 6h.
+CHUNK_INGEST_ALLOWLIST_CONFIRMATION_TIMEOUT_SECONDS=14400  # 4h leash, allowlisted posters. Default is 24h.
+# CHUNK_INGEST_MAX_PENDING_BYTES   unset -> 25 GiB disk backstop (keep default)
+# CHUNK_INGEST_GC_INTERVAL_MS      unset -> 5 min sweep (keep default)
+CHUNK_INGEST_CACHE_ALLOWLIST=     # see TODO below
+```
+
+- **Verified working** (disk_pressure + ttl eviction both fire; only *unconfirmed* chunks evicted) via synthetic well-formed chunks — costs no AR (only TXs cost AR; the ~0.0025 AR/$0.005 per-tx floor makes an unbundled tiny-tx loop ~$400+/day, so bundle).
+- **Caveat:** `CHUNK_INGEST_*` are **startup-read** — changing any of them needs `docker compose up -d --force-recreate core`. The `chunk_ingest_pending_bytes` metric is GC-lagged (refreshes only on sweep); use `chunk_ingest_cache_total` for live confirmation.
+- **TODO (allowlist, do at cutover):** `CHUNK_INGEST_CACHE_ALLOWLIST` is empty = open ingest (any valid chunk cached at the 2h tier; the 4h tier only activates once populated). To restrict caching to the local bundler and enable the 4h tier, set it to the bundler's apparent source IP **as core sees it** — confirm empirically against live bundler traffic (expected ~`172.18.0.1`, the docker bridge gateway). Re-verify after the Hetzner cutover in case the bridge IP or bundler deployment model changes.
 
 ---
 
