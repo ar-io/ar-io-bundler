@@ -1,0 +1,53 @@
+# Full-stack integration tests (`test:docker`) for both services.
+#
+# This is the SLOW, full-stack gate: each service spins up its real infra
+# (Postgres/Redis/MinIO/arlocal) in Docker and runs its integration suite in a
+# container. It is intentionally NOT a per-pull_request gate (a run is several
+# minutes); per-PR build/typecheck/lint/unit live in ci.yml and stay untouched.
+#
+# Triggers: pushes to the integration/release branches (develop, main — plus
+# master during the transition) and a nightly schedule, so regressions in the
+# bundle/payment pipelines are caught as code lands and as external deps drift.
+name: Integration (test:docker)
+
+on:
+  push:
+    branches: [develop, main, master]
+  schedule:
+    # Nightly at 07:00 UTC.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-docker:
+    name: ${{ matrix.service }} test:docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Report both services even if one fails.
+      fail-fast: false
+      matrix:
+        service: [upload-service, payment-service]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run integration test:docker (${{ matrix.service }})
+        working-directory: packages/${{ matrix.service }}
+        # This is exactly the body of each package's `yarn test:docker` script,
+        # run directly so CI needs no host `yarn install` — the suite (and its
+        # `yarn install --immutable`) runs inside the container, from the
+        # monorepo-root build context. mocha --retries 1 (in test:integration)
+        # absorbs incidental flakiness (e.g. arlocal/network warmup).
+        run: |
+          docker compose down -v
+          docker compose --profile test up test-runner \
+            --exit-code-from test-runner --build
