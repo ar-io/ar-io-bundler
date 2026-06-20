@@ -27,4 +27,3 @@ export async function down(knex: Knex): Promise<void> {
   const migrator = new X402PaymentsMigrator(knex);
   return migrator.rollback();
 }
-

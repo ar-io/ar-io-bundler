@@ -63,7 +63,10 @@ export async function rawDataUploadRoute(ctx: KoaContext): Promise<void> {
  *
  * Used by: POST /x402/upload/unsigned, and internally by dataItemRoute for auto-detected raw data
  */
-export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Promise<void> {
+export async function handleRawDataUpload(
+  ctx: KoaContext,
+  rawBody: Buffer
+): Promise<void> {
   const { logger } = ctx.state;
 
   // Check if raw data uploads are enabled
@@ -78,7 +81,11 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
 
   // Parse the request (supports both binary + headers and JSON envelope)
   const contentType = ctx.req.headers?.["content-type"];
-  const parsedRequest = parseRawDataRequest(rawBody, contentType, ctx.req.headers);
+  const parsedRequest = parseRawDataRequest(
+    rawBody,
+    contentType,
+    ctx.req.headers
+  );
 
   // Validate raw data
   const maxSize = 10 * 1024 * 1024 * 1024; // 10 GB
@@ -129,7 +136,9 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   let payerAddress: string;
   let paymentPayload: any;
   try {
-    paymentPayload = JSON.parse(Buffer.from(paymentHeaderValue, "base64").toString("utf8"));
+    paymentPayload = JSON.parse(
+      Buffer.from(paymentHeaderValue, "base64").toString("utf8")
+    );
     const authorization = paymentPayload.payload?.authorization;
     payerAddress = authorization?.from;
 
@@ -162,7 +171,10 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   const totalTagCount = userTagCount + systemTagCount + contentTypeTagCount;
 
   // Estimate final data item size (raw data + ANS-104 overhead with accurate tag count)
-  const estimatedDataItemSize = estimateDataItemSize(parsedRequest.data.length, totalTagCount);
+  const estimatedDataItemSize = estimateDataItemSize(
+    parsedRequest.data.length,
+    totalTagCount
+  );
 
   logger.info("Calculating pricing for x402 upload", {
     rawDataSize: parsedRequest.data.length,
@@ -173,16 +185,22 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   });
 
   // Get Winston cost from Arweave gateway (exact cost for estimated data item size)
-  const winstonCost = await ctx.state.arweaveGateway.getWinstonPriceForByteCount(
-    estimatedDataItemSize
-  );
+  const winstonCost =
+    await ctx.state.arweaveGateway.getWinstonPriceForByteCount(
+      estimatedDataItemSize
+    );
 
   // Convert Winston to USDC (exact conversion, no markup)
   const { x402PricingOracle } = await import("../utils/x402Pricing");
-  const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(winstonCost);
+  const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(
+    winstonCost
+  );
 
   // Apply configured x402 pricing buffer (your fee/profit margin)
-  const x402BufferPercent = parseInt(process.env.X402_PRICING_BUFFER_PERCENT || "15", 10);
+  const x402BufferPercent = parseInt(
+    process.env.X402_PRICING_BUFFER_PERCENT || "15",
+    10
+  );
   const usdcAmountRequired = Math.ceil(
     Number(exactUsdcAmount) * (1 + x402BufferPercent / 100)
   ).toString();
@@ -195,8 +213,11 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   });
 
   // Build payment requirements for verification
-  const uploadServicePublicUrl = process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
-  const networkConfig = ctx.state.x402Service.getNetworkConfig(paymentPayload.network);
+  const uploadServicePublicUrl =
+    process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
+  const networkConfig = ctx.state.x402Service.getNetworkConfig(
+    paymentPayload.network
+  );
 
   if (!networkConfig) {
     return errorResponse(ctx, {
@@ -238,7 +259,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
 
     if (!verification.isValid) {
       return errorResponse(ctx, {
-        errorMessage: verification.invalidReason || "Payment verification failed",
+        errorMessage:
+          verification.invalidReason || "Payment verification failed",
         status: 402,
       });
     }
@@ -272,7 +294,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   // Validate and normalize user tags
   const validTags = (parsedRequest.tags || []).filter((tag: any) => {
     if (!tag || typeof tag !== "object") return false;
-    if (typeof tag.name !== "string" || typeof tag.value !== "string") return false;
+    if (typeof tag.name !== "string" || typeof tag.value !== "string")
+      return false;
     return true;
   });
 
@@ -340,11 +363,14 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     16 +
     numTagsBytes;
 
-  const payloadContentType = parsedRequest.contentType || "application/octet-stream";
+  const payloadContentType =
+    parsedRequest.contentType || "application/octet-stream";
 
   // Store x402 payment record in database
   const { x402PricingOracle: oracle } = await import("../utils/x402Pricing");
-  const wincPaid = await oracle.getWinstonForUSDC(paymentPayload.payload.authorization.value);
+  const wincPaid = await oracle.getWinstonForUSDC(
+    paymentPayload.payload.authorization.value
+  );
   await ctx.state.database.insertX402Payment({
     paymentId,
     txHash: settlement.transactionHash!,
@@ -389,7 +415,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
       payloadContentType,
       uploadedDate: new Date().toISOString(),
       signatureType: 1, // Arweave signature type (data item is signed with Arweave wallet)
-      deadlineHeight: await ctx.state.arweaveGateway.getCurrentBlockHeight() + 50,
+      deadlineHeight:
+        (await ctx.state.arweaveGateway.getCurrentBlockHeight()) + 50,
       failedBundles: [],
       premiumFeatureType: "default",
       signature,
@@ -405,7 +432,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
       payloadContentType,
       uploadedDate: new Date().toISOString(),
       signatureType: 1, // Arweave signature type (data item is signed with Arweave wallet)
-      deadlineHeight: await ctx.state.arweaveGateway.getCurrentBlockHeight() + 50,
+      deadlineHeight:
+        (await ctx.state.arweaveGateway.getCurrentBlockHeight()) + 50,
       failedBundles: [],
       premiumFeatureType: "default",
       signature: signatureB64Url, // Queue expects string
@@ -445,10 +473,13 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
         });
       } catch (opticalError) {
         // Soft error, just log
-        logger.error("Error while attempting to enqueue for optical bridging!", {
-          error: opticalError,
-          dataItemId: dataItem.id,
-        });
+        logger.error(
+          "Error while attempting to enqueue for optical bridging!",
+          {
+            error: opticalError,
+            dataItemId: dataItem.id,
+          }
+        );
       }
     } else {
       logger.debug("Optical bridging disabled - skipping optical post");
@@ -466,7 +497,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     id: dataItem.id,
     timestamp: Date.now(),
     version: "0.2.0",
-    deadlineHeight: await ctx.state.arweaveGateway.getCurrentBlockHeight() + 50,
+    deadlineHeight:
+      (await ctx.state.arweaveGateway.getCurrentBlockHeight()) + 50,
     dataCaches,
     fastFinalityIndexes,
     winc: wincPaid.toString(),
@@ -485,7 +517,10 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
 
   // Return success response
   ctx.status = 201;
-  ctx.set("X-Payment-Response", Buffer.from(JSON.stringify(x402PaymentResponse)).toString("base64"));
+  ctx.set(
+    "X-Payment-Response",
+    Buffer.from(JSON.stringify(x402PaymentResponse)).toString("base64")
+  );
   ctx.body = {
     id: dataItem.id,
     owner: jwkToPublicArweaveAddress(rawDataItemWallet), // Raw data item wallet address
@@ -503,7 +538,8 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     x402Network: paymentPayload.network,
     x402Mode: "payg",
     payerAddress,
-    message: "Payment metadata stored in response. TX hash and payment ID available via x402Payment object",
+    message:
+      "Payment metadata stored in response. TX hash and payment ID available via x402Payment object",
   });
 }
 
@@ -521,7 +557,11 @@ async function send402PaymentRequired(
 ): Promise<void> {
   const { logger } = ctx.state;
 
-  logger.info("Sending 402 Payment Required", { byteCount, mimeType, tagCount: tags?.length || 0 });
+  logger.info("Sending 402 Payment Required", {
+    byteCount,
+    mimeType,
+    tagCount: tags?.length || 0,
+  });
 
   // Calculate pricing using IDENTICAL logic to upload handler
   // Import estimation function
@@ -538,16 +578,22 @@ async function send402PaymentRequired(
   const estimatedDataItemSize = estimateDataItemSize(byteCount, totalTagCount);
 
   // Get Winston cost from Arweave gateway (exact cost for estimated data item size)
-  const winstonCost = await ctx.state.arweaveGateway.getWinstonPriceForByteCount(
-    estimatedDataItemSize
-  );
+  const winstonCost =
+    await ctx.state.arweaveGateway.getWinstonPriceForByteCount(
+      estimatedDataItemSize
+    );
 
   // Convert Winston to USDC (exact conversion, no markup)
   const { x402PricingOracle } = await import("../utils/x402Pricing");
-  const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(winstonCost);
+  const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(
+    winstonCost
+  );
 
   // Apply configured x402 pricing buffer (your fee/profit margin)
-  const x402BufferPercent = parseInt(process.env.X402_PRICING_BUFFER_PERCENT || "15", 10);
+  const x402BufferPercent = parseInt(
+    process.env.X402_PRICING_BUFFER_PERCENT || "15",
+    10
+  );
   const usdcAmountRequired = Math.ceil(
     Number(exactUsdcAmount) * (1 + x402BufferPercent / 100)
   ).toString();
@@ -573,7 +619,10 @@ async function send402PaymentRequired(
   // Get network config for correct USDC address
   const network = process.env.X402_NETWORK || "base-sepolia";
   const networkConfig = ctx.state.x402Service.getNetworkConfig(network);
-  const usdcAddress = networkConfig?.usdcAddress || process.env.USDC_CONTRACT_ADDRESS || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+  const usdcAddress =
+    networkConfig?.usdcAddress ||
+    process.env.USDC_CONTRACT_ADDRESS ||
+    "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
   // Get x402 payment requirements
   const paymentRequirements = {

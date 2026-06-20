@@ -14,10 +14,10 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import axios from "axios";
-import { ethers } from "ethers";
 // @ts-expect-error - @coinbase/x402 doesn't export types
 import { createFacilitatorConfig } from "@coinbase/x402";
+import axios from "axios";
+import { ethers } from "ethers";
 // @ts-expect-error - x402/verify doesn't export types
 import { useFacilitator } from "x402/verify";
 
@@ -47,7 +47,10 @@ function toCoinbaseFormat(data: any): any {
       const result: any = {};
       for (const [key, val] of Object.entries(value)) {
         // Convert timestamp fields to strings for Coinbase
-        if ((key === "validAfter" || key === "validBefore") && typeof val === "number") {
+        if (
+          (key === "validAfter" || key === "validBefore") &&
+          typeof val === "number"
+        ) {
           result[key] = val.toString();
         } else {
           result[key] = convert(val);
@@ -72,10 +75,15 @@ const cdpApiKeyId = process.env.CDP_API_KEY_ID;
 const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET;
 
 if (!cdpApiKeyId || !cdpApiKeySecret) {
-  logger.warn("CDP credentials not configured - x402 Coinbase facilitator will not work");
+  logger.warn(
+    "CDP credentials not configured - x402 Coinbase facilitator will not work"
+  );
 }
 
-const coinbaseFacilitatorConfig = createFacilitatorConfig(cdpApiKeyId, cdpApiKeySecret);
+const coinbaseFacilitatorConfig = createFacilitatorConfig(
+  cdpApiKeyId,
+  cdpApiKeySecret
+);
 const coinbaseFacilitator = useFacilitator(coinbaseFacilitatorConfig);
 
 // x402 Network Configuration
@@ -194,7 +202,9 @@ export class X402Service {
       const { authorization, signature } = paymentPayload.payload;
 
       // Validate amount
-      if (BigInt(authorization.value) < BigInt(requirements.maxAmountRequired)) {
+      if (
+        BigInt(authorization.value) < BigInt(requirements.maxAmountRequired)
+      ) {
         return {
           isValid: false,
           invalidReason: `Insufficient amount: ${authorization.value} < ${requirements.maxAmountRequired}`,
@@ -268,7 +278,8 @@ export class X402Service {
       logger.error("X402 payment verification failed", { error });
       return {
         isValid: false,
-        invalidReason: error instanceof Error ? error.message : "Verification error",
+        invalidReason:
+          error instanceof Error ? error.message : "Verification error",
       };
     }
   }
@@ -303,8 +314,11 @@ export class X402Service {
         });
 
         try {
-          const isCoinbaseFacilitator = networkConfig.facilitatorUrl.includes("api.cdp.coinbase.com");
-          const isCommunityFacilitator = networkConfig.facilitatorUrl.includes("x402.rs");
+          const isCoinbaseFacilitator = networkConfig.facilitatorUrl.includes(
+            "api.cdp.coinbase.com"
+          );
+          const isCommunityFacilitator =
+            networkConfig.facilitatorUrl.includes("x402.rs");
 
           logger.info("Settling x402 payment via facilitator", {
             facilitator: networkConfig.facilitatorUrl,
@@ -316,14 +330,20 @@ export class X402Service {
           // Use SDK for Coinbase facilitator
           if (isCoinbaseFacilitator) {
             try {
-              logger.info("Settling x402 payment with Coinbase facilitator SDK", {
-                url: networkConfig.facilitatorUrl,
-                network: paymentPayload.network,
-              });
+              logger.info(
+                "Settling x402 payment with Coinbase facilitator SDK",
+                {
+                  url: networkConfig.facilitatorUrl,
+                  network: paymentPayload.network,
+                }
+              );
 
               // Convert timestamps to strings for Coinbase
               const coinbasePayload = toCoinbaseFormat(paymentPayload);
-              const result = await coinbaseFacilitator.settle(coinbasePayload, requirements);
+              const result = await coinbaseFacilitator.settle(
+                coinbasePayload,
+                requirements
+              );
 
               if (result.transaction) {
                 logger.info("X402 payment settled via Coinbase SDK", {
@@ -332,7 +352,9 @@ export class X402Service {
                 });
                 return { success: true, transactionHash: result.transaction };
               } else {
-                logger.error("Coinbase SDK settlement failed - no transaction hash");
+                logger.error(
+                  "Coinbase SDK settlement failed - no transaction hash"
+                );
                 return { success: false, error: "settlement_failed" };
               }
             } catch (error: any) {
@@ -340,7 +362,10 @@ export class X402Service {
                 error: error.message,
                 stack: error.stack,
               });
-              return { success: false, error: error.message || "settlement_failed" };
+              return {
+                success: false,
+                error: error.message || "settlement_failed",
+              };
             }
           }
 
@@ -510,10 +535,13 @@ export class X402Service {
         }
 
         // Recovered address doesn't match - might be a smart contract wallet
-        logger.debug("ECDSA recovery didn't match from address, trying ERC-1271", {
-          from: authorization.from,
-          recoveredAddress,
-        });
+        logger.debug(
+          "ECDSA recovery didn't match from address, trying ERC-1271",
+          {
+            from: authorization.from,
+            recoveredAddress,
+          }
+        );
       } catch (ecdsaError: any) {
         // ECDSA verification failed - this is expected for smart contract wallets
         // Common error: "invalid raw signature length" for WebAuthn/passkey signatures
@@ -621,17 +649,29 @@ export class X402Service {
     });
 
     // Compute the EIP-712 typed data hash
-    const typedDataHash = ethers.TypedDataEncoder.hash(domain, types, authorization);
+    const typedDataHash = ethers.TypedDataEncoder.hash(
+      domain,
+      types,
+      authorization
+    );
 
     // Create contract instance
-    const walletContract = new ethers.Contract(walletAddress, ERC1271_ABI, provider);
+    const walletContract = new ethers.Contract(
+      walletAddress,
+      ERC1271_ABI,
+      provider
+    );
 
     try {
       // Call isValidSignature(bytes32 hash, bytes signature) -> bytes4
-      const result = await walletContract.isValidSignature(typedDataHash, signature);
+      const result = await walletContract.isValidSignature(
+        typedDataHash,
+        signature
+      );
 
       // Check if result matches the ERC-1271 magic value
-      const isValid = result.toLowerCase() === ERC1271_MAGIC_VALUE.toLowerCase();
+      const isValid =
+        result.toLowerCase() === ERC1271_MAGIC_VALUE.toLowerCase();
 
       logger.info("ERC-1271 isValidSignature result", {
         walletAddress,
@@ -662,7 +702,9 @@ export class X402Service {
     facilitatorUrl: string
   ): Promise<X402VerificationResult> {
     try {
-      const isCoinbaseFacilitator = facilitatorUrl.includes("api.cdp.coinbase.com");
+      const isCoinbaseFacilitator = facilitatorUrl.includes(
+        "api.cdp.coinbase.com"
+      );
       const isCommunityFacilitator = facilitatorUrl.includes("x402.rs");
 
       // Decode payment header
@@ -680,7 +722,10 @@ export class X402Service {
 
           // Convert timestamps to strings for Coinbase
           const coinbasePayload = toCoinbaseFormat(paymentPayload);
-          const result = await coinbaseFacilitator.verify(coinbasePayload, requirements);
+          const result = await coinbaseFacilitator.verify(
+            coinbasePayload,
+            requirements
+          );
 
           logger.info("Coinbase SDK verification result", {
             isValid: result.isValid,
@@ -692,14 +737,18 @@ export class X402Service {
             invalidReason: result.invalidReason,
           };
         } catch (error: any) {
-          logger.error("Coinbase SDK verification failed - making manual request for details", {
-            error: error.message,
-            stack: error.stack,
-          });
+          logger.error(
+            "Coinbase SDK verification failed - making manual request for details",
+            {
+              error: error.message,
+              stack: error.stack,
+            }
+          );
 
           // Make manual request to get detailed error
           try {
-            const authHeaders = await coinbaseFacilitatorConfig.createAuthHeaders();
+            const authHeaders =
+              await coinbaseFacilitatorConfig.createAuthHeaders();
 
             const coinbasePayload = toCoinbaseFormat(paymentPayload);
             const requestBody = {
@@ -734,10 +783,15 @@ export class X402Service {
 
             return {
               isValid: false,
-              invalidReason: response.data?.errorMessage || error.message || "verification_failed",
+              invalidReason:
+                response.data?.errorMessage ||
+                error.message ||
+                "verification_failed",
             };
           } catch (detailError: any) {
-            logger.error("Failed to get detailed error", { error: detailError.message });
+            logger.error("Failed to get detailed error", {
+              error: detailError.message,
+            });
             return {
               isValid: false,
               invalidReason: error.message || "verification_failed",

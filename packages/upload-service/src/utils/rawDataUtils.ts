@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { Tag } from "@dha-team/arbundles";
+
 import { SignatureConfig } from "../types/types";
 
 /**
@@ -31,14 +32,14 @@ export function isANS104DataItem(buffer: Buffer): boolean {
 
   // Valid ANS-104 signature types (from SignatureConfig enum)
   const validSignatureTypes = [
-    SignatureConfig.ARWEAVE,        // 1
-    SignatureConfig.ED25519,        // 2
-    SignatureConfig.ETHEREUM,       // 3
-    SignatureConfig.SOLANA,         // 4
-    SignatureConfig.INJECTEDAPTOS,  // 5
-    SignatureConfig.MULTIAPTOS,     // 6
-    SignatureConfig.TYPEDETHEREUM,  // 7
-    SignatureConfig.KYVE,           // 8
+    SignatureConfig.ARWEAVE, // 1
+    SignatureConfig.ED25519, // 2
+    SignatureConfig.ETHEREUM, // 3
+    SignatureConfig.SOLANA, // 4
+    SignatureConfig.INJECTEDAPTOS, // 5
+    SignatureConfig.MULTIAPTOS, // 6
+    SignatureConfig.TYPEDETHEREUM, // 7
+    SignatureConfig.KYVE, // 8
   ];
 
   return validSignatureTypes.includes(signatureType);
@@ -53,9 +54,9 @@ export function isANS104DataItem(buffer: Buffer): boolean {
  */
 function kebabCaseToProperCase(str: string): string {
   return str
-    .split('-')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join('-');
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join("-");
 }
 
 /**
@@ -65,7 +66,9 @@ function kebabCaseToProperCase(str: string): string {
  * Note: HTTP headers are case-insensitive and often normalized to lowercase.
  * We convert the tag name from kebab-case to proper case (e.g., "will" -> "Will")
  */
-export function extractTagsFromHeaders(headers: Record<string, string | string[] | undefined>): Tag[] {
+export function extractTagsFromHeaders(
+  headers: Record<string, string | string[] | undefined>
+): Tag[] {
   const tags: Tag[] = [];
 
   for (const [key, value] of Object.entries(headers)) {
@@ -125,20 +128,29 @@ export function parseRawDataRequest(
   return {
     data: rawBody,
     tags: headers ? extractTagsFromHeaders(headers) : [],
-    contentType: contentType && contentType !== "application/octet-stream" ? contentType : undefined,
+    contentType:
+      contentType && contentType !== "application/octet-stream"
+        ? contentType
+        : undefined,
   };
 }
 
 /**
  * Validate that raw data meets requirements
  */
-export function validateRawData(data: Buffer, maxSize: number): { valid: boolean; error?: string } {
+export function validateRawData(
+  data: Buffer,
+  maxSize: number
+): { valid: boolean; error?: string } {
   if (data.length === 0) {
     return { valid: false, error: "Data cannot be empty" };
   }
 
   if (data.length > maxSize) {
-    return { valid: false, error: `Data size ${data.length} exceeds maximum of ${maxSize} bytes` };
+    return {
+      valid: false,
+      error: `Data size ${data.length} exceeds maximum of ${maxSize} bytes`,
+    };
   }
 
   return { valid: true };

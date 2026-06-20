@@ -17,7 +17,11 @@
 import { ArweaveSigner } from "@dha-team/arbundles";
 import { Base64UrlString } from "arweave/node/lib/utils";
 
-import { rawDataItemJwk, setRawDataItemWalletAddress, turboLocalJwk } from "../constants";
+import {
+  rawDataItemJwk,
+  setRawDataItemWalletAddress,
+  turboLocalJwk,
+} from "../constants";
 import logger from "../logger";
 import { JWKInterface } from "../types/jwkTypes";
 import { jwkToPublicArweaveAddress } from "./base64";
@@ -26,7 +30,9 @@ import { jwkToPublicArweaveAddress } from "./base64";
 
 export async function getArweaveWallet(): Promise<JWKInterface> {
   if (!turboLocalJwk) {
-    throw new Error("Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env");
+    throw new Error(
+      "Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env"
+    );
   }
   logger.debug("Using local JWK for Turbo wallet");
   return turboLocalJwk;
@@ -49,7 +55,9 @@ export async function getRawDataItemWallet(): Promise<JWKInterface> {
 
 export async function getOpticalWallet(): Promise<JWKInterface> {
   if (!turboLocalJwk) {
-    throw new Error("Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env");
+    throw new Error(
+      "Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env"
+    );
   }
   logger.debug("Using local JWK for Turbo optical wallet");
   return turboLocalJwk;
@@ -57,7 +65,9 @@ export async function getOpticalWallet(): Promise<JWKInterface> {
 
 export async function getOpticalPubKey(): Promise<Base64UrlString> {
   if (!turboLocalJwk) {
-    throw new Error("Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env");
+    throw new Error(
+      "Local JWK wallet not configured. Please set TURBO_JWK_FILE in .env"
+    );
   }
   logger.debug("Using local JWK for Turbo optical pub key");
   return new ArweaveSigner(turboLocalJwk).publicKey.toString("base64url");

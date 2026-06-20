@@ -21,7 +21,6 @@ import * as promClient from "prom-client";
 import { MetricRegistry } from "./metricRegistry";
 import { dataItemRoute } from "./routes/dataItemPost";
 import { rootResponse } from "./routes/info";
-import { rawDataUploadRoute } from "./routes/rawDataPost";
 import {
   createMultiPartUpload,
   finalizeMultipartUploadWithHttpRequest,
@@ -30,12 +29,10 @@ import {
   postDataItemChunk,
 } from "./routes/multiPartUploads";
 import { offsetsHandler } from "./routes/offsets";
+import { rawDataUploadRoute } from "./routes/rawDataPost";
 import { statusHandler } from "./routes/status";
 import { swaggerDocs, swaggerDocsJSON } from "./routes/swagger";
-import {
-  x402DataItemPricing,
-  x402RawDataPricing,
-} from "./routes/x402Pricing";
+import { x402DataItemPricing, x402RawDataPricing } from "./routes/x402Pricing";
 import { KoaContext } from "./server";
 
 const metricsRegistry = MetricRegistry.getInstance().getRegistry();
@@ -51,7 +48,10 @@ const serveRoutesAndV1 = (path: string[]) =>
 router.post(serveRoutesAndV1(["/tx", "/tx/:token"]), dataItemRoute);
 
 // x402 upload routes
-router.post(serveRoutesAndV1(["/x402/upload/signed", "/x402/data-item/signed"]), dataItemRoute);
+router.post(
+  serveRoutesAndV1(["/x402/upload/signed", "/x402/data-item/signed"]),
+  dataItemRoute
+);
 router.post(serveRoutesAndV1(["/x402/upload/unsigned"]), rawDataUploadRoute);
 
 // x402 Pricing Routes
@@ -67,10 +67,13 @@ router.get(
 /**
  * START TEMPORARY PATCH TO SUPPORT up.arweave.net
  */
-router.get(["/price/:foo/:bar", "/price/:bar"], (ctx: KoaContext, next: Next) => {
-  ctx.body = "0.0000000000000";
-  return next();
-});
+router.get(
+  ["/price/:foo/:bar", "/price/:bar"],
+  (ctx: KoaContext, next: Next) => {
+    ctx.body = "0.0000000000000";
+    return next();
+  }
+);
 
 router.get("/account/balance/:rest", (ctx: KoaContext, next: Next) => {
   ctx.body = "99999999999999999999999999999999999999";

@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-import { ArweaveSigner, createData, DataItem, Tag } from "@dha-team/arbundles";
+import { ArweaveSigner, DataItem, Tag, createData } from "@dha-team/arbundles";
 import { JWKInterface } from "arweave/node/lib/wallet";
 
 export interface CreateDataItemOptions {
@@ -117,8 +117,12 @@ export async function createDataItemFromRaw(
 
   // Validate all tags before creating data item
   tags.forEach((tag, index) => {
-    if (typeof tag.name !== 'string' || typeof tag.value !== 'string') {
-      throw new Error(`Invalid tag at index ${index}: name=${typeof tag.name}(${JSON.stringify(tag.name)}), value=${typeof tag.value}(${JSON.stringify(tag.value)})`);
+    if (typeof tag.name !== "string" || typeof tag.value !== "string") {
+      throw new Error(
+        `Invalid tag at index ${index}: name=${typeof tag.name}(${JSON.stringify(
+          tag.name
+        )}), value=${typeof tag.value}(${JSON.stringify(tag.value)})`
+      );
     }
   });
 
@@ -142,7 +146,10 @@ export async function createDataItemFromRaw(
  * Estimate the size of a data item that would be created from raw data
  * Used for price quotes before the data item is actually created
  */
-export function estimateDataItemSize(rawDataSize: number, tagCount = 0): number {
+export function estimateDataItemSize(
+  rawDataSize: number,
+  tagCount = 0
+): number {
   // ANS-104 overhead calculation:
   // - Signature: ~512 bytes (Arweave signature)
   // - Owner (public key): ~512 bytes
@@ -163,5 +170,11 @@ export function estimateDataItemSize(rawDataSize: number, tagCount = 0): number 
   // are now included in the tagCount parameter by the caller (rawDataPost.ts lines 119-124, 492-497)
   // No additional system tag overhead needed here.
 
-  return rawDataSize + signatureOverhead + ownerOverhead + headerOverhead + tagOverhead;
+  return (
+    rawDataSize +
+    signatureOverhead +
+    ownerOverhead +
+    headerOverhead +
+    tagOverhead
+  );
 }

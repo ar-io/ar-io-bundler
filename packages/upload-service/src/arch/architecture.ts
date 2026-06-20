@@ -21,12 +21,15 @@ import winston from "winston";
 
 import { gatewayUrl, migrateOnStartup } from "../constants";
 import globalLogger from "../logger";
-import { getArweaveWallet, getRawDataItemWallet } from "../utils/getArweaveWallet";
+import {
+  getArweaveWallet,
+  getRawDataItemWallet,
+} from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
 import { ArweaveGateway } from "./arweaveGateway";
 import { CacheService } from "./cacheServiceTypes";
-import { Database } from "./db/database";
 import { DataItemOffsetsDB } from "./db/dataItemOffsets";
+import { Database } from "./db/database";
 import { getReaderConfig, getWriterConfig } from "./db/knexConfig";
 import { PostgresDatabase } from "./db/postgres";
 import { getElasticacheService } from "./elasticacheService";

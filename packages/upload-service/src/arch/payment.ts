@@ -689,7 +689,9 @@ export class TurboPaymentService implements PaymentService {
     const logger = this.logger.child({ nativeAddress, byteCount });
 
     if (!this.paymentServiceURL) {
-      logger.debug("No payment service URL supplied. Cannot get x402 price quote.");
+      logger.debug(
+        "No payment service URL supplied. Cannot get x402 price quote."
+      );
       return null;
     }
 
@@ -722,7 +724,11 @@ export class TurboPaymentService implements PaymentService {
     }
 
     if (status !== 200) {
-      logger.warn("Failed to get x402 price quote", { status, statusText, data });
+      logger.warn("Failed to get x402 price quote", {
+        status,
+        statusText,
+        data,
+      });
       return null;
     }
 
@@ -745,7 +751,9 @@ export class TurboPaymentService implements PaymentService {
     });
 
     if (!this.paymentServiceURL) {
-      logger.error("No payment service URL supplied. Cannot verify x402 payment.");
+      logger.error(
+        "No payment service URL supplied. Cannot verify x402 payment."
+      );
       return {
         success: false,
         error: "Payment service not configured",
@@ -824,7 +832,9 @@ export class TurboPaymentService implements PaymentService {
     const logger = this.logger.child({ dataItemId, actualByteCount });
 
     if (!this.paymentServiceURL) {
-      logger.debug("No payment service URL supplied. Skipping x402 finalization.");
+      logger.debug(
+        "No payment service URL supplied. Skipping x402 finalization."
+      );
       return { success: true }; // Not an error if payment service not configured
     }
 

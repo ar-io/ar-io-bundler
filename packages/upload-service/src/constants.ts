@@ -18,7 +18,9 @@ import * as fs from "fs";
 
 import { PublicArweaveAddress, SigInfo, SignatureConfig } from "./types/types";
 
-export const port = process.env.UPLOAD_SERVICE_PORT ? +process.env.UPLOAD_SERVICE_PORT : 3001;
+export const port = process.env.UPLOAD_SERVICE_PORT
+  ? +process.env.UPLOAD_SERVICE_PORT
+  : 3001;
 
 export const receiptVersion = "0.2.0";
 
@@ -37,12 +39,16 @@ export const allowListPublicAddresses: PublicArweaveAddress[] =
   injectedAllowListAddresses;
 
 // Function to get the raw data item wallet address (computed lazily)
-export function getRawDataItemWalletAddress(): PublicArweaveAddress | undefined {
+export function getRawDataItemWalletAddress():
+  | PublicArweaveAddress
+  | undefined {
   return rawDataItemWalletAddress;
 }
 
 // Function to set the raw data item wallet address and add to allowlist
-export function setRawDataItemWalletAddress(address: PublicArweaveAddress): void {
+export function setRawDataItemWalletAddress(
+  address: PublicArweaveAddress
+): void {
   rawDataItemWalletAddress = address;
   if (!allowListPublicAddresses.includes(address)) {
     allowListPublicAddresses.push(address);

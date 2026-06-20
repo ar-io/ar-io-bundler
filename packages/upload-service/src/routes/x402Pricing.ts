@@ -53,7 +53,9 @@ export async function x402DataItemPricing(
   if (!parsed) {
     return errorResponse(ctx, {
       status: 400,
-      errorMessage: `Invalid token "${token}". Supported tokens: ${getValidTokens().join(", ")}`,
+      errorMessage: `Invalid token "${token}". Supported tokens: ${getValidTokens().join(
+        ", "
+      )}`,
     });
   }
 
@@ -102,10 +104,7 @@ export async function x402DataItemPricing(
     );
 
     // Apply configured x402 fee (your profit margin)
-    const x402FeePercent = parseInt(
-      process.env.X402_FEE_PERCENT || "15",
-      10
-    );
+    const x402FeePercent = parseInt(process.env.X402_FEE_PERCENT || "15", 10);
     let usdcAmountRequired = Math.ceil(
       Number(exactUsdcAmount) * (1 + x402FeePercent / 100)
     );
@@ -273,7 +272,9 @@ export async function x402RawDataPricing(
   if (!parsed) {
     return errorResponse(ctx, {
       status: 400,
-      errorMessage: `Invalid token "${token}". Supported tokens: ${getValidTokens().join(", ")}`,
+      errorMessage: `Invalid token "${token}". Supported tokens: ${getValidTokens().join(
+        ", "
+      )}`,
     });
   }
 
@@ -338,7 +339,10 @@ export async function x402RawDataPricing(
     const totalTagCount = userTagCount + systemTagCount + contentTypeTagCount;
 
     // Estimate final data item size (raw data + ANS-104 overhead with accurate tag count)
-    const estimatedDataItemSize = estimateDataItemSize(byteCount, totalTagCount);
+    const estimatedDataItemSize = estimateDataItemSize(
+      byteCount,
+      totalTagCount
+    );
 
     logger.debug("Estimated data item size", {
       rawDataSize: byteCount,
@@ -366,10 +370,7 @@ export async function x402RawDataPricing(
     );
 
     // Apply configured x402 fee (your profit margin)
-    const x402FeePercent = parseInt(
-      process.env.X402_FEE_PERCENT || "15",
-      10
-    );
+    const x402FeePercent = parseInt(process.env.X402_FEE_PERCENT || "15", 10);
     let usdcAmountRequired = Math.ceil(
       Number(exactUsdcAmount) * (1 + x402FeePercent / 100)
     );

@@ -71,8 +71,9 @@ export function parseToken(token: string): {
  * Returns both {currency}-{network} and {network}-{currency} formats
  */
 export function getValidTokens(): string[] {
-  const enabledNetworks = Object.keys(x402Networks)
-    .filter((network) => x402Networks[network].enabled);
+  const enabledNetworks = Object.keys(x402Networks).filter(
+    (network) => x402Networks[network].enabled
+  );
 
   // Return both formats for better UX
   const tokens: string[] = [];

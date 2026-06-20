@@ -23,8 +23,6 @@ import {
   ReserveBalanceResponse,
 } from "../arch/payment";
 import { enqueue } from "../arch/queues";
-import { isANS104DataItem } from "../utils/rawDataUtils";
-import { handleRawDataUpload } from "./rawDataPost";
 import {
   DataItemInterface,
   InMemoryDataItem,
@@ -92,12 +90,14 @@ import {
   signDataItemHeader,
 } from "../utils/opticalUtils";
 import { ownerToNativeAddress } from "../utils/ownerToNativeAddress";
+import { isANS104DataItem } from "../utils/rawDataUtils";
 import {
   SignedReceipt,
   UnsignedReceipt,
   signReceipt,
 } from "../utils/signReceipt";
 import { streamToBuffer } from "../utils/streamToBuffer";
+import { handleRawDataUpload } from "./rawDataPost";
 
 const shouldSkipBalanceCheck = process.env.SKIP_BALANCE_CHECKS === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
@@ -131,8 +131,11 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
     // If it has custom tags or is JSON, it's likely raw data upload
     // If Content-Type is not application/octet-stream, it's likely raw data
-    const likelyRawData = hasCustomTags ||
-      (contentType && contentType !== octetStreamContentType && contentType !== "application/octet-stream");
+    const likelyRawData =
+      hasCustomTags ||
+      (contentType &&
+        contentType !== octetStreamContentType &&
+        contentType !== "application/octet-stream");
 
     if (likelyRawData) {
       logger.info("Detected raw data upload request (non-ANS104)");
@@ -149,7 +152,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       }
 
       // False positive - it's actually ANS-104, continue with normal flow
-      logger.info("False positive on raw data detection, proceeding as ANS-104");
+      logger.info(
+        "False positive on raw data detection, proceeding as ANS-104"
+      );
       // Need to recreate the stream since we consumed it
       // For now, create a readable stream from the buffer
       const { Readable } = await import("stream");
@@ -236,8 +241,7 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   // Validate x402 payment requirements
   if (x402PaymentHeader && rawContentLength === undefined) {
     return errorResponse(ctx, {
-      errorMessage:
-        "x402 payments require Content-Length header to be present",
+      errorMessage: "x402 payments require Content-Length header to be present",
     });
   }
 
@@ -246,11 +250,19 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   // This allows clients to get pricing by POSTing dummy data without creating a valid signed data item.
   // IMPORTANT: Only apply this check for x402-specific routes, NOT credit-based /tx/:token routes
   const isX402Route = ctx.path.includes("/x402/");
-  if (isX402Route && !x402PaymentHeader && rawContentLength !== undefined && !shouldSkipBalanceCheck) {
-    logger.debug("x402 route with no X-PAYMENT header - returning 402 pricing", {
-      contentLength: rawContentLength,
-      path: ctx.path,
-    });
+  if (
+    isX402Route &&
+    !x402PaymentHeader &&
+    rawContentLength !== undefined &&
+    !shouldSkipBalanceCheck
+  ) {
+    logger.debug(
+      "x402 route with no X-PAYMENT header - returning 402 pricing",
+      {
+        contentLength: rawContentLength,
+        path: ctx.path,
+      }
+    );
 
     // Return generic 402 with pricing based on Content-Length only
     // Default to Arweave signatureType (1) and placeholder address
@@ -269,10 +281,13 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         ctx.set("Content-Type", "application/json");
         ctx.body = x402Requirements;
 
-        logger.info("Returned 402 Payment Required (content-length based pricing)", {
-          contentLength: rawContentLength,
-          path: ctx.path,
-        });
+        logger.info(
+          "Returned 402 Payment Required (content-length based pricing)",
+          {
+            contentLength: rawContentLength,
+            path: ctx.path,
+          }
+        );
 
         return next();
       }
@@ -375,7 +390,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
   // This prevents users from being charged for uploading duplicates
   try {
     logger.debug("Checking database for existing data item...", { dataItemId });
-    const existingDataItemIds = await database.getExistingDataItemIds([dataItemId]);
+    const existingDataItemIds = await database.getExistingDataItemIds([
+      dataItemId,
+    ]);
     if (existingDataItemIds.size > 0) {
       const error = new DataItemExistsWarning(dataItemId);
       logger.warn("Data item already exists in database!", {
@@ -469,10 +486,15 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
     if (checkBalanceResponse.userHasSufficientBalance) {
       // User has balance - continue with traditional flow
-      logger.debug("User has balance, proceeding with upload", checkBalanceResponse);
+      logger.debug(
+        "User has balance, proceeding with upload",
+        checkBalanceResponse
+      );
     } else {
       // No balance and no X-PAYMENT - return 402 with x402 payment requirements
-      logger.debug("No balance and no X-PAYMENT header - returning 402 with x402 requirements");
+      logger.debug(
+        "No balance and no X-PAYMENT header - returning 402 with x402 requirements"
+      );
 
       await removeFromInFlight({ dataItemId, cacheService, logger });
 
@@ -741,7 +763,9 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
     };
   } else if (x402PaymentId) {
     // x402 payment already verified and settled - skip traditional reservation
-    logger.debug("Using x402 payment - skipping traditional balance reservation");
+    logger.debug(
+      "Using x402 payment - skipping traditional balance reservation"
+    );
     paymentResponse = {
       isReserved: true,
       costOfDataItem: W(0), // Cost handled by x402
