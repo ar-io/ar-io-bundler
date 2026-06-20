@@ -23,7 +23,7 @@ import {
   x402PricingBufferPercent,
 } from "../constants";
 import { UserAddressType } from "../database/dbTypes";
-import { BadQueryParam } from "../database/errors";
+import { BadQueryParam, BadRequest } from "../database/errors";
 import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
@@ -152,6 +152,13 @@ export async function x402TopUpRoute(ctx: KoaContext, next: Next) {
 
       return next();
     } catch (error) {
+      // Input-validation failures (BadQueryParam etc. extend BadRequest) are
+      // client errors → 400, not 500.
+      if (error instanceof BadRequest) {
+        ctx.status = 400;
+        ctx.body = { error: error.message };
+        return next();
+      }
       logger.error("Failed to generate x402 top-up price quote", { error });
       ctx.status = 500;
       ctx.body = {
