@@ -17,6 +17,7 @@
 import { expect } from "chai";
 
 import {
+  s3AgentOptions,
   s3HttpAgent,
   s3HttpsAgent,
   s3MaxSockets,
@@ -40,9 +41,10 @@ describe("s3AgentConfig", () => {
     expect(s3HttpsAgent.maxSockets, "https agent cap must match").to.equal(s3MaxSockets);
   });
 
-  it("keeps keepAlive on both agents", () => {
-    expect(s3HttpAgent.keepAlive).to.equal(true);
-    expect(s3HttpsAgent.keepAlive).to.equal(true);
+  it("keeps keepAlive enabled on the pooled agents", () => {
+    // keepAlive isn't a typed property on http.Agent; assert the options object
+    // that both agents are constructed from.
+    expect(s3AgentOptions.keepAlive).to.equal(true);
   });
 
   it("uses a finite cap (never unbounded)", () => {
