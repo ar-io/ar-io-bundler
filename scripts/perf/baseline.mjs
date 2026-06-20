@@ -229,8 +229,13 @@ async function uploadMultipart(size) {
   }
 }
 
-const upload = (size) =>
-  size > CFG.multipartThreshold ? uploadMultipart(size) : uploadSingle(size);
+const uploadedIds = []; // every accepted id — fed to purge-gateway.mjs for cleanup
+async function upload(size) {
+  const r =
+    size > CFG.multipartThreshold ? await uploadMultipart(size) : await uploadSingle(size);
+  if (r.id && r.status === 200) uploadedIds.push(r.id);
+  return r;
+}
 
 // ---------------------------------------------------------------------------
 // Stage tracker — given an id, record first-seen time per lifecycle stage
@@ -541,11 +546,17 @@ async function main() {
   payload.wallSec = (performance.now() - t0) / 1000;
   payload.samples = samples;
 
+  payload.uploadedIds = uploadedIds;
   printReport(payload);
 
   mkdirSync("scripts/perf/results", { recursive: true });
   writeFileSync(CFG.out, JSON.stringify(payload, null, 2));
-  console.log(`results JSON → ${CFG.out}\n`);
+  const idsFile = CFG.out.replace(/\.json$/, ".ids.txt");
+  writeFileSync(idsFile, uploadedIds.join("\n"));
+  console.log(`results JSON → ${CFG.out}`);
+  console.log(
+    `uploaded ids → ${idsFile} (${uploadedIds.length}) — feed to purge-gateway.mjs to clean the gateway\n`
+  );
 }
 
 main().catch((e) => {

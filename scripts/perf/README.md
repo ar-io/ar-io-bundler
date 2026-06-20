@@ -113,7 +113,60 @@ the dedicated box to get the authoritative numbers and size from real data.
 
 ---
 
-## 5. Safety
+## 5. Cost model — running the heavy matrix for $0
+
+The bundler's wallet pays AR **only when a bundle tx is actually mined**. So:
+- **upload / optical-access / index / plan / prepare / post-latency / throughput
+  / soak** cost **nothing** — they happen before (or independent of) on-chain
+  landing.
+- only **seed → permanent** spends AR, and the cost is **bytes-posted**, not item
+  count (18k × 1 KB = 18 MB = pennies; 18k × 520 KB = 9 GB = real money).
+
+**To run the full matrix for $0**, point the bundler's `ARWEAVE_UPLOAD_NODE` at
+the sink instead of mainnet:
+
+```bash
+# terminal 1 — the sink (ACKs posts, nothing reaches chain)
+node scripts/perf/mock-arweave-node.mjs --port 4555
+
+# terminal 2 — a perf bundler instance configured to post at the sink,
+#   but keep optical bridging at the REAL gateway so index/access is measured:
+#   ARWEAVE_UPLOAD_NODE=http://localhost:4555   (seed → sink, 0 AR)
+#   OPTICAL_BRIDGING_ENABLED=true               (headers → real gateway, measured)
+#   ARWEAVE_GATEWAY=<real gateway>              (anchor/price/verify reads)
+
+# terminal 3 — drive it
+node scripts/perf/baseline.mjs --mode throughput --sweep 5,10,25,50,100,250,500
+```
+
+The sink is **not** ArLocal — it doesn't emulate an Arweave node, it just ACKs
+the few endpoints arweave-js calls on post, so it never chokes under load.
+(For real seed→permanent timing, run a *handful* of small items against real
+Arweave — pennies.)
+
+Alternative dry-run: set the **gateway's** `PREFERRED_CHUNK_POST_NODE_URLS` to a
+sink (it defaults to `tip-1…5.arweave.xyz`) — accept-but-don't-propagate. Use a
+dedicated test gateway for that, not one serving real users.
+
+## 6. Cleaning up the gateway (purge)
+
+With optical bridging ON, the gateway indexes every test item as an **optimistic
+data item** (`bundles.db → new_data_items`, height NULL — never confirmed since
+the sink never lands them). The harness records **every uploaded id**
+(`baseline-*.ids.txt`), so cleanup is exact and can't touch real data:
+
+```bash
+# dry run — shows how many optimistic rows match
+node scripts/perf/purge-gateway.mjs --results scripts/perf/results/baseline-XYZ.json
+# delete them (optimistic rows only; height IS NULL is enforced)
+node scripts/perf/purge-gateway.mjs --results scripts/perf/results/baseline-XYZ.json --confirm
+```
+
+For **large/scale** runs, the zero-risk option is a **throwaway gateway**: point
+optical bridging at a fresh `ar-io-node`, run the matrix, then destroy it
+(`docker rm` / drop its `bundles.db`) — no purge surgery on a real gateway.
+
+## 7. Safety
 
 - Uploads + reads only. No `docker compose down`, no `db:*`, no deletes.
 - Resource sampling is read-only (`pm2 jlist`, `redis-cli` reads, a `pg`
