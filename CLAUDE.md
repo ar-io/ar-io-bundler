@@ -315,7 +315,7 @@ the canonical file under `infrastructure/pm2/`, not the root shim.
 ```bash
 pm2 list | grep upload-workers                       # Verify running
 pm2 logs upload-workers | grep "job schedulers"      # Confirm schedulers registered at startup
-./cron-trigger-plan.sh                               # Manually kick a plan run
+./packages/upload-service/cron-trigger-plan.sh       # Manually kick a plan run
 pm2 logs upload-workers --err                        # Check errors
 ```
 The bundle-planning + cleanup schedules now live inside `upload-workers` (BullMQ

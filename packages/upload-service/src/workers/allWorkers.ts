@@ -262,12 +262,38 @@ async function registerJobSchedulers() {
   });
 }
 
-// Fire-and-forget: a Redis hiccup here must not take down the workers (which
-// would be unable to do anything useful without Redis anyway). Log and move on;
-// the next worker restart re-attempts registration (upsert is idempotent).
-void registerJobSchedulers().catch((error) => {
-  logger.error("Failed to register BullMQ job schedulers", {
-    error: error instanceof Error ? error.message : String(error),
-    stack: error instanceof Error ? error.stack : undefined,
-  });
-});
+// Register with bounded retry/backoff. A transient Redis/network hiccup at
+// startup must NOT silently leave the schedules unregistered (the exact
+// silent-failure mode this change exists to kill) and must NOT crash the
+// workers either. So we retry on a backoff instead of giving up after one log;
+// upsert is idempotent, so retries are safe.
+const SCHEDULER_REGISTRATION_MAX_RETRIES = 5;
+const SCHEDULER_REGISTRATION_BASE_DELAY_MS = 5_000;
+
+async function registerJobSchedulersWithRetry(attempt = 0): Promise<void> {
+  try {
+    await registerJobSchedulers();
+  } catch (error) {
+    const retriesLeft = SCHEDULER_REGISTRATION_MAX_RETRIES - attempt;
+    logger.error("Failed to register BullMQ job schedulers", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      attempt,
+      retriesLeft,
+    });
+    if (retriesLeft > 0) {
+      const delayMs = SCHEDULER_REGISTRATION_BASE_DELAY_MS * (attempt + 1);
+      setTimeout(() => {
+        void registerJobSchedulersWithRetry(attempt + 1);
+      }, delayMs);
+    } else {
+      logger.error(
+        "Giving up registering BullMQ job schedulers after max retries; " +
+          "restart upload-workers to re-attempt (plan/cleanup will not run until then)",
+        { maxRetries: SCHEDULER_REGISTRATION_MAX_RETRIES }
+      );
+    }
+  }
+}
+
+void registerJobSchedulersWithRetry();
