@@ -1,17 +1,33 @@
 # AR.IO Bundler — Scale Test Plan (Round 2)
 
-Status: **proposed** · Owner: perf/ops · Target: confident capacity + safety margins
-for the **Hetzner single-node go-live**.
+**Status:** proposed · **Owner:** perf/ops · **Goal:** confident capacity + safety
+margins for the **Hetzner single-node go-live**.
 
-## 1. Why this exists
+**Scope:** this is a **capacity / scale + production-topology** plan. *Functional
+correctness* of each path is owned by the unit / integration / e2e suites — here those
+paths are exercised **under load** and characterized for their **scale profile**, not
+re-tested for correctness.
 
-Round 1 found and fixed **one** real limiter and characterized **small-item**
-ingest. It did **not** establish production capacity. This plan closes the gap.
+---
+
+## 1. Why this exists + production targets
+
+Round 1 found and fixed **one** limiter and characterized **small-item** ingest. It did
+**not** establish production capacity.
+
+**Production baseline (last month):** ~2 M data items, ~1 TB → **~0.8 items/s** and
+**~0.4 MB/s** *average*. Peak is bursty and **not yet measured** — assume 10–50× average
+pending real gateway/bundler numbers.
+
+**Target (the gate):** sustain **≥ measured-peak × 5** (safety factor) with headroom on
+every binding resource, **across all upload paths**, with the **optimistic→confirmed
+lifecycle intact**. ⚠️ Replace the peak estimate with a real measured peak before
+finalizing §8.
 
 **Validated in round 1**
 - S3 client socket-cap fix (50→256) — A/B proven on a 40 item/s × 256 KB soak (PR #36).
 - Small-item ingest: ~125/s single-client (client-bound), ~350/s with 8 co-located
-  clients (DB/co-location-bound).
+  clients (DB / co-location bound).
 - Full lifecycle on ArLocal for small batches; chunk-cache path mapped.
 
 **NOT yet validated (this plan)**
@@ -19,161 +35,166 @@ ingest. It did **not** establish production capacity. This plan closes the gap.
 - **Multipart / large items** (>90 MB → 10 GB `MAX_DATA_ITEM_SIZE`) — separate code path, never load-tested.
 - The **post-fix ceiling** and the **DB pool** (`DB_POOL_MAX=50`) — next known wall, untouched.
 - **Realistic payment path** (round 1 allow-listed, which *skips* the payment-service call).
-- **Endurance** (multi-hour soak: leaks/backlog/GC/memory).
+- **Endurance** (multi-hour soak: leaks / backlog / GC / memory).
 - **Failure & recovery** (dependency degradation — touches the hard gates).
 - The **off-box** ceiling (round 1 load gen was co-located → numbers are a floor).
-- **Upload-path/type/payment diversity** — only signed `/v1/tx`, eth-only, allow-listed was run.
-  Untested: x402 signed + **x402 unsigned** (bundler-signs), the 5 signature types,
-  funded/free/x402 payment tiers + reserve→refund, BDI nested bundles, multipart.
+- **Upload-path / type / payment diversity** — only signed `/v1/tx`, eth-only, allow-listed
+  was run. Untested: x402 signed + **x402 unsigned** (bundler-signs), the 5 signature
+  types, funded/free/x402 tiers + reserve→refund, BDI nested bundles, multipart.
 - **Optimistic → confirmed gateway lifecycle** (mining → gateway marks mined →
-  `new_data_items`→`stable_data_items` promotion). The optimistic half only; the
-  dry-run prod-path backend **cannot reach** the confirmation half.
+  `new_data_items`→`stable_data_items` promotion). Optimistic half only; the dry-run
+  prod-path backend **cannot reach** the confirmation half.
 - **Gateway-side read/serve scale** + the gateway's own MinIO/DB pools.
 
-**Hard gates (from the deploy decision):** never lose user data; never take money
-without crediting. S5 (failure/recovery) is where these are proven.
+**Hard gates (from the deploy decision):** never lose user data; never take money without
+crediting. **S5** is where these are proven.
 
-## 2. Methodology corrections vs round 1
+---
 
-1. **Off-box load generation.** Run the harness from a separate machine (or at minimum
-   a CPU-pinned container) so client signing doesn't steal cores from the bundler.
-2. **Payment path ON.** Fund a test wallet (admin credit) instead of allow-listing, so
-   the payment-service round-trip + its pools are in the ingest path. Allow-list numbers
-   are optimistic.
+## 2. Methodology (corrections from round 1)
+
+1. **Off-box load generation.** Run the harness from a separate machine (or at minimum a
+   CPU-pinned container) so client signing doesn't steal cores from the bundler.
+2. **Payment path ON.** Fund a test wallet (admin credit) instead of allow-listing, so the
+   payment-service round-trip + its pools are in the ingest path. Allow-list numbers are optimistic.
 3. **Real bundle packing.** Drive sustained volume long enough to fill bundles toward
    `MAX_BUNDLE_SIZE` (or a tuned target) — not the 15 s overdue-expedited toy bundles.
 4. **Pre-raise known pools** (DB + S3) before ceiling-hunting, so we measure the *system*,
    not a single pool.
-5. **Measurement rigor.** Baseline metrics *after* each restart (counters reset); measure
-   by **timestamp**, not a sliding `pm2 logs` window; capture saturation every run (§6).
+5. **One variable at a time + A/B confirm.** Round 1 mis-attributed the S3 fix's *mechanism*
+   until a back-to-back A/B (only `S3_MAX_SOCKETS` differing) isolated it. **Every fix/knob
+   gets an A/B under identical conditions** before we believe it.
+6. **Measurement rigor.** Baseline counters *after* each restart (they reset); measure by
+   **timestamp**, not a sliding `pm2 logs` window; capture saturation every run (§7).
+7. **Abort criteria (stop the run, restore, re-plan) if:** disk > 85 %; **any** real user
+   traffic appears during a dry-run/sink window; any data-loss or charge-without-credit
+   signal; or a process approaches OOM. Restore per §6 before re-running.
 
-## 2a. Test topology & backend per scenario  *(answers: ArLocal vs through the gateway?)*
+---
+
+## 3. Topology & backend per scenario  *(answers: ArLocal vs through the gateway?)*
 
 Two **independent** axes — don't conflate them.
 
 **Axis 1 — upload ingress (where clients POST).** Always the **bundler API** (`:3001`),
-never "through" the gateway — the gateway does reads + the chain backend, not upload
-ingress. Point `--upload-url` at:
+never "through" the gateway — the gateway does reads + the chain backend, not ingress.
+Point `--upload-url` at:
 - `localhost:3001` — bundler-direct (default; measures the bundler, no nginx/TLS confound).
 - the public front (`perma.online`) — only to capture end-to-end *client* latency (incl. nginx/TLS).
 
-**Axis 2 — chain backend (`ARWEAVE_UPLOAD_NODE`, where bundles post/seed).** This is the
-real question, answered **per scenario**. The **production path is through the local
-gateway in dry-run** (prod runs `ARWEAVE_UPLOAD_NODE=:4000`):
+**Axis 2 — chain backend (`ARWEAVE_UPLOAD_NODE`, where bundles post/seed).** The real
+question, answered **per scenario**. The **production path is through the local gateway in
+dry-run** (prod runs `ARWEAVE_UPLOAD_NODE=:4000`):
 
-| Backend | Exercises | $0? | Use for |
+| Backend | Exercises | $0? | Used by |
 |---|---|---|---|
-| **Local gateway `:4000` (dry-run)** | the **real prod topology** — optimistic-tx + **chunk-ingest** + broadcast leg | ✅ (dry-run = never mines) | **S1, S2, S5** (gating, production-representative) |
+| **Local gateway `:4000` (dry-run)** | the **real prod topology** — optimistic-tx + **chunk-ingest** + broadcast leg | ✅ (dry-run never mines) | **S1, S2, S5, S6** (production-representative) |
 | **Sink** | post/seed faked → isolates the **bundler ingest ceiling** (chain can't confound) | ✅ | **S3** (ceiling hunt) |
-| **ArLocal** | real tx **lifecycle incl. verify→permanent**, but a *different* backend than prod | ✅ | **S4** (lifecycle/permanence) |
-| **Real mainnet** *or* **ArLocal-fed gateway** (`TRUSTED_NODE`→ArLocal) | **mining → confirmation**: optimistic→`stable` promotion ("marked as mined") — dry-run can't reach this | ¢ / ✅ | **S7** + the true confirmation number |
+| **ArLocal** | real tx **lifecycle incl. verify→permanent**, but a *different* backend than prod | ✅ | **S4** (endurance/lifecycle) |
+| **Real mainnet** *or* **ArLocal-fed gateway** (`TRUSTED_NODE`→ArLocal) | **mining → confirmation**: optimistic→`stable` promotion ("marked as mined"), which dry-run can't reach | ¢ / ✅ | **S7** + the true confirmation number |
 
-**So: not all-ArLocal.** The production-representative runs go **through the local
-gateway (dry-run)** — that's the only way to scale-test the gateway's chunk-ingest and
-the bundler↔gateway↔MinIO interplay that vertical integration is built on. ArLocal is a
-**$0 shortcut for the permanence piece only** (gateway dry-run never confirms, so it
-can't produce verify→permanent). The sink isolates the bundler for the raw ceiling.
+**So: not all-ArLocal.** The production-representative runs go **through the local gateway
+(dry-run)** — the only way to scale-test the gateway's chunk-ingest and the
+bundler↔gateway↔MinIO interplay vertical integration is built on. ArLocal is a **$0
+shortcut for permanence only** (dry-run never confirms). The sink isolates the bundler ceiling.
 
 **The gateway is always partly in the loop** regardless of backend — optical indexing
-(`OPTICAL_BRIDGE_URL`) fires per item and serving comes from MinIO; the backend choice
-only changes the post/seed/chunk-ingest leg. ⚠️ Gateway-dry-run runs require
-`ARWEAVE_POST_DRY_RUN=true`; **restore it to `false` (recreate core) afterward.**
+(`OPTICAL_BRIDGE_URL`) fires per item and serving comes from MinIO; the backend only
+changes the post/seed/chunk-ingest leg. ⚠️ Gateway-dry-run runs require
+`ARWEAVE_POST_DRY_RUN=true`; **restore it to `false` (recreate core) afterward** (§6).
 
-## 3. Pre-step — connection-pool & concurrency audit
+---
 
-The ~50-default pattern (S3=50, DB=50) almost certainly repeats. Audit and right-size
-for the box (32 cores, local MinIO/PG). Deliverable: a table of `knob → default →
-proposed → rationale`.
+## 4. Pre-step — connection-pool & concurrency audit
 
-| Subsystem | Knob | Current | Notes |
+The ~50-default pattern (S3=50, DB=50) almost certainly repeats. Audit and right-size for
+the box (32 cores, local MinIO/PG). **Deliverable:** a `knob → default → proposed →
+rationale` table; fill the `?` rows during the audit.
+
+| Subsystem | Knob(s) | Current | Notes |
 |---|---|---|---|
-| DB | `DB_POOL_MIN`/`DB_POOL_MAX`, PG `max_connections` | 5 / 50 / 100 | next ceiling; raise both together |
-| S3/MinIO | `S3_MAX_SOCKETS` | 256 | from this round's fix |
-| Redis cache/queues | client/pool limits | ? | check ioredis defaults |
+| DB | `DB_POOL_MIN` / `DB_POOL_MAX` · PG `max_connections` | 5 / 50 · 100 | next ceiling; raise pool + PG together |
+| S3 / MinIO | `S3_MAX_SOCKETS` | 256 | from PR #36 |
+| Redis (cache + queues) | ioredis pool / connection limits | ? | check defaults |
 | Payment svc | axios pool + opossum circuit-breaker | ? | inter-service hot path |
 | Workers | BullMQ concurrencies (`*_WORKER_CONCURRENCY` + hardcoded) | mixed | rebalance for 32 cores |
 | Server | `REQUEST_/KEEPALIVE_/HEADERS_TIMEOUT_MS` | set | confirm vs load |
 
-## 4. Test scenarios (prioritized)
+---
 
-Each: **Objective · Setup · Drive · Measure · Pass criteria.**
+## 5. Test scenarios
+
+Each: **Objective · Setup · Drive · Measure · Pass.** Scenario IDs are stable references,
+**not** execution order — see §9 for sequencing.
 
 ### S1 — Real-bundle stress  *(HIGHEST — the S3 fix's untested use case)*
-- **Objective:** bundling holds under realistic *full-size* bundles with the payment
-  path on — where S3 + DB pools are hit hardest.
-- **Setup:** funded wallet (payment on); `OVERDUE` + `MAX_BUNDLE_SIZE` at production
-  values; **chain backend = local gateway `:4000` (dry-run)** — the prod path (§2a);
-  off-box clients; pools per §3.
-- **Drive:** sustained mixed 100 KB–1 MB at a rate that packs multiple full bundles
-  back-to-back, for ≥30 min.
-- **Measure:** prepare-bundle failure count (target **0** "Failed to fetch"); S3 socket +
-  DB connection saturation; plan→prepare→post→seed latency for *large* bundles; queue backlogs.
-- **Pass:** 0 prepare failures; bundles seed; no unbounded backlog; pools below saturation
-  at ≥ (prod peak × safety factor).
+- **Objective:** bundling holds under realistic *full-size* bundles with payment on — where S3 + DB pools are hit hardest.
+- **Setup:** funded wallet (payment on); `OVERDUE` + `MAX_BUNDLE_SIZE` at production values; **backend = local gateway dry-run** (§3); off-box clients; pools per §4.
+- **Drive:** sustained mixed 100 KB–1 MB at a rate that packs multiple full bundles back-to-back, ≥30 min.
+- **Measure:** prepare-bundle failures (target **0** "Failed to fetch"); S3 socket + DB connection saturation; plan→prepare→post→seed latency for *large* bundles; queue backlogs.
+- **Pass:** 0 prepare failures; bundles seed; no unbounded backlog; pools below saturation at ≥ target (§1).
 
 ### S2 — Multipart / large items  *(untested code path)*
 - **Objective:** exercise the multipart path (>90 MB) + large singles end-to-end.
-- **Setup:** as S1.
-- **Drive:** 100 MB, 500 MB, 1 GB, ~5 GB, ~10 GB (`MAX_DATA_ITEM_SIZE`) — a few each, then
-  a concurrent batch.
-- **Measure:** multipart create→chunk→finalize latency + reliability; MinIO write
-  throughput; per-process RSS; bundle path for large items.
-- **Pass:** every size uploads + bundles + seeds; no OOM; multipart finalize reliable under
-  concurrency.
+- **Setup:** as S1 (gateway dry-run).
+- **Drive:** 100 MB, 500 MB, 1 GB, ~5 GB, ~10 GB (`MAX_DATA_ITEM_SIZE`) — a few each, then a concurrent batch.
+- **Measure:** multipart create→chunk→finalize latency + reliability; MinIO write throughput; per-process RSS; bundle path for large items.
+- **Pass:** every size uploads + bundles + seeds; no OOM; multipart finalize reliable under concurrency.
 
-### S3 — Ingest ceiling (post-fix, pools raised, off-box)
+### S3 — Ingest ceiling  *(post-fix, pools raised, off-box)*
 - **Objective:** the *real* ingest ceiling and its binding constraint.
-- **Setup:** pools raised per §3; off-box load gen; payment on; sink backend.
+- **Setup:** pools raised per §4; off-box load gen; payment on; **sink backend** (§3).
 - **Drive:** concurrency sweep until throughput plateaus / errors appear.
 - **Measure:** items/s + MB/s knee; which resource saturates (CPU / DB / S3 / MinIO / payment).
-- **Pass:** ceiling + binding constraint documented; ≥ prod peak with margin.
+- **Pass:** ceiling + binding constraint documented; ≥ target (§1) with margin.
 
-### S4 — Sustained soak (endurance)
+### S4 — Sustained soak  *(endurance)*
 - **Objective:** leaks, backlog growth, chunk-cache GC, memory creep over hours.
-- **Setup:** production-representative rate + size mix; **ArLocal backend** (the only $0
-  way to drive verify→permanent through the full pipeline, §2a); ≥4 h (overnight ideal).
-- **Measure:** per-process RSS trend; queue depths over time; DB conns; MinIO/disk growth;
-  chunk-cache fill/GC; error accumulation.
+- **Setup:** production-representative rate + size mix; **ArLocal backend** (only $0 way to drive verify→permanent end-to-end, §3); ≥4 h (overnight ideal).
+- **Measure:** per-process RSS trend; queue depths over time; DB conns; MinIO/disk growth; chunk-cache fill/GC; error accumulation.
 - **Pass:** flat memory; bounded queues; GC reclaims; zero unexplained errors over the window.
 
 ### S5 — Failure & recovery  *(proves the hard gates)*
 - **Objective:** graceful degradation + recovery; **no data loss, money integrity preserved.**
-- **Cases:** MinIO slow/restart; payment-service down (circuit breaker opens); gateway down;
-  Redis full/restart; Postgres connection exhaustion; disk pressure.
-- **Measure:** does ingest **fail safe** (reject, never silently drop)? does the pipeline
-  recover when the dependency returns? any data loss? any charge-without-credit?
+- **Setup:** gateway dry-run (§3); inject one fault at a time.
+- **Cases:** MinIO slow/restart; payment-service down (breaker opens); gateway down; Redis full/restart; Postgres connection exhaustion; disk pressure.
+- **Measure:** does ingest **fail safe** (reject, never silently drop)? does the pipeline recover when the dependency returns? any data loss? any charge-without-credit?
 - **Pass:** zero data loss; defined degradation behavior; automatic recovery; money integrity intact.
 
-### S6 — Upload-path, signature-type & payment-tier coverage  *(functional-scale — every distinct code path)*
-- **Objective:** confirm *every distinct upload path* holds under load and characterize relative cost — not just the dominant signed-eth path.
-- **Endpoints:** `/v1/tx` (signed) · `/x402/upload/signed` · **`/x402/upload/unsigned`** (raw → bundler signs; a wholly separate path, `rawDataPost`) · **multipart** `/chunks/...`.
-- **Signature types:** ethereum · arweave · solana (ed25519) · kyve — different verify cost + native-address derivation.
-- **Payment tiers:** funded balance (reserve→refund) · free-limit boundary (~505 KB) · x402 (USDC, incl. ERC-1271 smart-contract sigs).
-- **Nested bundles (BDI):** the `unbundle-bdi` path under load.
-- **Measure:** acceptance + per-path latency/cost; payment **reserve→refund correctness on failed uploads** (no charge-without-credit); no path leaks/stalls under concurrency.
-- **Pass:** every path accepts + bundles correctly; payment integrity intact; relative costs documented.
+### S6 — Upload-path, signature-type & payment-tier coverage  *(every distinct code path, under load)*
+- **Objective:** confirm *every distinct upload path* holds under load and characterize relative cost — not just signed-eth.
+- **Setup:** gateway dry-run (§3); payment on.
+- **Paths:** `/v1/tx` (signed) · `/x402/upload/signed` · **`/x402/upload/unsigned`** (raw → bundler signs, `rawDataPost`) · **multipart** · sig types **ethereum / arweave / solana(ed25519) / kyve** · tiers **funded (reserve→refund) / free-limit (~505 KB) / x402** (incl. ERC-1271) · **BDI** (`unbundle-bdi`).
+- **Measure:** acceptance + per-path latency/cost; payment **reserve→refund correctness on failed uploads**; no path leaks/stalls under concurrency.
+- **Pass:** every path accepts + bundles; payment integrity intact (no charge-without-credit; refunds on failure); relative costs documented.
 
-### S7 — Optimistic → confirmed gateway lifecycle  *(the mining / "marked as mined" gap — HIGH)*
-- **Objective:** validate the full optimistic→confirmed transition on the gateway — which **dry-run cannot test** (txs never mine). This is where optimistic data reconciles with the chain, historically the riskiest spot (the partition gap stranded ~11k items here).
-- **Backend:** a **mining** backend — small **real-mainnet** set (cents) and/or **ArLocal with the gateway's `TRUSTED_NODE` pointed at it** ($0, full local chain sync).
+### S7 — Optimistic → confirmed gateway lifecycle  *(mining / "marked as mined" — HIGH)*
+- **Objective:** validate the optimistic→confirmed transition — which **dry-run cannot test** (txs never mine). This is where optimistic data reconciles with the chain; historically the riskiest spot (the partition gap stranded ~11 k items here).
+- **Backend:** a **mining** backend — small **real-mainnet** set (cents) and/or **ArLocal with the gateway's `TRUSTED_NODE` → ArLocal** ($0, full local chain sync) (§3).
 - **Drive:** upload → optical index → optimistic access → bundle **mines** → **gateway sees it confirmed → promotes `new_data_items` → `stable_data_items` ("marked as mined")** → confirmed index + access.
-- **Measure:** optimistic→confirmed latency; **every optimistically-indexed item is promoted (none stranded)**; optimistic vs confirmed bytes match; GraphQL + `/<id>` correct in both states; bundler `verify`→`permanent` agrees with the gateway's stable index.
-- **Pass:** 100% promoted, zero stranded optimistic, optimistic == confirmed bytes, data/money integrity intact.
+- **Measure:** optimistic→confirmed latency; **every optimistically-indexed item promoted (none stranded)**; optimistic vs confirmed bytes match; GraphQL + `/<id>` correct in both states; bundler `verify`→`permanent` agrees with the gateway's stable index.
+- **Pass:** 100 % promoted; zero stranded optimistic; optimistic == confirmed bytes; data/money integrity intact.
 
-### S8 — Gateway-side read/serve scale + its own pools  *(integrated)*
-- **Objective:** the gateway serving bundler data **under concurrent read load** (round 1 measured a handful). Includes the gateway's *own* MinIO/S3 pool (it threw an `@aws-lite HeadObject NotFound` earlier) and its DB.
-- **Measure:** access/index p50/p95/p99 under concurrency; gateway event-loop lag; gateway S3/DB saturation. *(Coordinate with the gateway/ar-io-node team — sibling repo.)*
+### S8 — Gateway-side read/serve scale + its own pools  *(integrated; coordinate with gateway team)*
+- **Objective:** the gateway serving bundler data **under concurrent read load** (round 1 measured a handful), incl. the gateway's *own* MinIO/S3 pool (it threw an `@aws-lite HeadObject NotFound`) and its DB.
+- **Setup:** any backend (reads are backend-independent); drive concurrent `GET /<id>` + GraphQL.
+- **Measure:** access/index p50/p95/p99 under concurrency; gateway event-loop lag; gateway S3/DB saturation.
+- **Pass:** read latency holds under target concurrency; gateway pools below saturation. *(Sibling repo — owned with the ar-io-node team.)*
 
-## 5. Cost & safety
+---
 
-- All throughput/ceiling/soak runs use the **sink** (`mock-arweave-node.mjs`) → **$0 AR**.
-- Lifecycle runs use **ArLocal** → $0, real tx semantics.
-- Real-network confirmation numbers (if needed): a *handful* of items on mainnet (cents).
+## 6. Cost & safety
+
+- **Backend per scenario per §3.** sink / ArLocal / gateway-dry-run are all **$0**; only
+  S7's real-confirmation number touches mainnet (**a handful of items, cents**).
 - **Restore after every session:** prod `.env` (`.env.perf-backup`), gateway
-  `ARWEAVE_POST_DRY_RUN=false` (+ recreate core), and **purge the gateway** of test items
-  (`purge-gateway.mjs`). Never leave the gateway in dry-run with real traffic possible.
+  `ARWEAVE_POST_DRY_RUN=false` (+ recreate core), `purge-gateway.mjs` to remove test items.
+  **Never leave the gateway in dry-run with real traffic possible.**
+- **During runs:** honor the abort criteria (§2.7).
 
-## 6. Instrumentation — capture every run
+---
+
+## 7. Instrumentation — capture every run
 
 - Per-PM2-process **CPU% + RSS** (`pm2 jlist`).
 - Per-BullMQ-queue **depth** (redis :6381) — the bottleneck signal.
@@ -181,26 +202,32 @@ Each: **Objective · Setup · Drive · Measure · Pass criteria.**
 - MinIO health + S3 socket usage.
 - Gateway: event-loop utilization + lag, `chunk_ingest_*`, `get_data_stream_*` by source.
 - Per-stage **latency p50/p95/p99** + error breakdown.
-- → harness results JSON + a per-run log; baseline counters **after** each restart.
+- → harness results JSON + a per-run log; **baseline counters after each restart**.
 
-## 7. Go / no-go exit criteria (Hetzner go-live)
+---
 
-- [ ] Ingest ceiling ≥ **(prod peak × safety factor)** with the binding constraint known + headroom.
+## 8. Go / no-go exit criteria (Hetzner go-live)
+
+- [ ] Ingest ceiling **≥ measured-peak × 5** (§1) with the binding constraint known + headroom.
 - [ ] **0** prepare/bundle failures at the target sustained rate for the target duration.
 - [ ] Multipart + large items reliable to `MAX_DATA_ITEM_SIZE`.
 - [ ] Multi-hour soak: flat memory, bounded queues, no data loss.
 - [ ] Failure/recovery: no data loss, money integrity preserved, auto-recovery.
-- [ ] All ~50-default pools right-sized + documented.
+- [ ] All ~50-default pools right-sized + documented (§4).
 - [ ] **Every upload path** (signed, x402 signed/unsigned, multipart, all sig types, all payment tiers, BDI) accepts + bundles under load with payment integrity.
-- [ ] **Optimistic→confirmed**: 100% of items promoted to stable ("marked as mined"), none stranded, optimistic == confirmed bytes (proven on a mining backend, not dry-run).
+- [ ] **Optimistic→confirmed**: 100 % promoted to stable ("marked as mined"), none stranded, optimistic == confirmed bytes — **proven on a mining backend, not dry-run.**
 
-## 8. Sequencing
+---
 
-- **Before prod (gating):** §3 pool audit → S1 (real-bundle) → S2 (multipart) →
-  S6 (upload-path coverage) → S7 (optimistic→confirmed lifecycle) → S5 (failure/recovery).
-- **Can follow / overnight:** S3 (ceiling refinement), S4 (long soak), S8 (gateway read scale — with gateway team).
+## 9. Sequencing
 
-## 9. Tooling
+- **Before prod (gating):** §4 pool audit → S1 (real-bundle) → S2 (multipart) →
+  S6 (upload-path coverage) → S7 (optimistic→confirmed) → S5 (failure/recovery).
+- **Can follow / overnight:** S3 (ceiling refinement), S4 (long soak), S8 (gateway read scale, with gateway team).
+
+---
+
+## 10. Tooling
 
 - `baseline.mjs` — harness (latency / throughput / soak / large).
 - `mock-arweave-node.mjs` — $0 sink.
