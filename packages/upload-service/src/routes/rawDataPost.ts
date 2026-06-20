@@ -36,9 +36,36 @@ import {
 } from "../utils/opticalUtils";
 import { parseRawDataRequest, validateRawData } from "../utils/rawDataUtils";
 import { signReceipt } from "../utils/signReceipt";
+import { MINIMUM_USDC_PRICE } from "./x402Pricing";
 
 const rawDataUploadsEnabled = process.env.RAW_DATA_UPLOADS_ENABLED === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
+
+/**
+ * Apply the x402 fee markup and minimum-price floor to an exact USDC amount.
+ *
+ * IMPORTANT: This MUST stay identical to the quote route (x402Pricing.ts) so the
+ * amount a client is quoted matches the amount actually charged on upload.
+ * - Fee: X402_FEE_PERCENT is primary; X402_PRICING_BUFFER_PERCENT is the
+ *   deprecated fallback (kept for back-compat with existing deployments).
+ * - Floor: the shared MINIMUM_USDC_PRICE (0.001 USDC) the quote route enforces.
+ *
+ * @param exactUsdcAmount exact USDC atomic units (no markup) from the oracle
+ * @returns final USDC atomic units (string) including fee + floor
+ */
+export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
+  // Use || (not ??) so an empty-string env var (common with compose
+  // `${VAR:-}` passthrough) falls through instead of yielding NaN. "0" is a
+  // non-empty string so a 0% fee is still honored.
+  const x402FeePercent = parseInt(
+    process.env.X402_FEE_PERCENT ||
+      process.env.X402_PRICING_BUFFER_PERCENT ||
+      "15",
+    10
+  );
+  const withFee = Math.ceil(Number(exactUsdcAmount) * (1 + x402FeePercent / 100));
+  return Math.max(withFee, MINIMUM_USDC_PRICE).toString();
+}
 
 /**
  * Koa route handler wrapper for raw data uploads
@@ -181,16 +208,12 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   const { x402PricingOracle } = await import("../utils/x402Pricing");
   const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(winstonCost);
 
-  // Apply configured x402 pricing buffer (your fee/profit margin)
-  const x402BufferPercent = parseInt(process.env.X402_PRICING_BUFFER_PERCENT || "15", 10);
-  const usdcAmountRequired = Math.ceil(
-    Number(exactUsdcAmount) * (1 + x402BufferPercent / 100)
-  ).toString();
+  // Apply configured x402 fee + minimum-price floor (MUST match the quote route)
+  const usdcAmountRequired = applyX402FeeAndFloor(exactUsdcAmount);
 
-  logger.info("Calculated x402 pricing with buffer", {
+  logger.info("Calculated x402 pricing with fee", {
     winstonCost: winstonCost.toString(),
     exactUsdcAmount,
-    x402BufferPercent,
     usdcAmountRequired,
   });
 
@@ -546,11 +569,8 @@ async function send402PaymentRequired(
   const { x402PricingOracle } = await import("../utils/x402Pricing");
   const exactUsdcAmount = await x402PricingOracle.getUSDCForWinston(winstonCost);
 
-  // Apply configured x402 pricing buffer (your fee/profit margin)
-  const x402BufferPercent = parseInt(process.env.X402_PRICING_BUFFER_PERCENT || "15", 10);
-  const usdcAmountRequired = Math.ceil(
-    Number(exactUsdcAmount) * (1 + x402BufferPercent / 100)
-  ).toString();
+  // Apply configured x402 fee + minimum-price floor (MUST match the upload handler)
+  const usdcAmountRequired = applyX402FeeAndFloor(exactUsdcAmount);
 
   logger.info("Calculated x402 price quote", {
     byteCount,
@@ -560,7 +580,6 @@ async function send402PaymentRequired(
     estimatedDataItemSize,
     winstonCost: winstonCost.toString(),
     exactUsdcAmount,
-    x402BufferPercent,
     usdcAmountRequired,
   });
 

@@ -244,35 +244,28 @@ Server includes X-Payment-Response header in success response (base64-encoded JS
 
 **PostgreSQL Tables (upload_service database):**
 
-```sql
--- x402 payment transactions
-CREATE TABLE x402_payment_transaction (
-  id UUID PRIMARY KEY,
-  user_address TEXT NOT NULL,           -- Arweave/Ethereum/Solana address
-  user_address_type TEXT NOT NULL,      -- arweave, ethereum, solana
-  tx_hash TEXT NOT NULL,                -- Blockchain transaction hash
-  network TEXT NOT NULL,                -- base-mainnet, ethereum, polygon
-  token_address TEXT NOT NULL,          -- USDC contract address
-  usdc_amount TEXT NOT NULL,            -- USDC paid (6 decimals)
-  winc_amount TEXT NOT NULL,            -- Winston equivalent
-  mode TEXT NOT NULL,                   -- payg, topup, hybrid
-  data_item_id TEXT,                    -- Upload ID (null for topup)
-  declared_byte_count BIGINT,           -- User-declared size
-  actual_byte_count BIGINT,             -- Verified size after upload
-  status TEXT NOT NULL,                 -- pending_validation, confirmed, refunded, fraud_penalty
-  paid_at TIMESTAMP NOT NULL,
-  finalized_at TIMESTAMP,
-  refund_winc TEXT,                     -- Refund amount if applicable
-  payer_address TEXT NOT NULL           -- Ethereum address that authorized payment
-);
+The upload-service stores settled x402 payments in a single flat ledger table,
+`x402_payments`. There is **no `x402_payment_transaction` / `x402_payment_reservation`
+pair in `upload_service`** — that reservation / declared-vs-actual / refund / fraud
+lifecycle (and the `status`/`mode`/`actual_byte_count`/refund columns) belongs to the
+**signed** path, which runs through the **payment-service** (see the deep-dive doc).
+The unsigned upload path is server-buffered: the bundler measures the actual byte
+count itself, so there is no declared-vs-actual reconciliation and no
+`finalizeX402Payment` step here.
 
--- x402 payment reservations (for PAYG/hybrid modes)
-CREATE TABLE x402_payment_reservation (
-  data_item_id TEXT PRIMARY KEY,
-  x402_payment_id UUID NOT NULL REFERENCES x402_payment_transaction(id),
-  winc_reserved TEXT NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  expires_at TIMESTAMP NOT NULL         -- Auto-expire after 1 hour
+```sql
+-- x402 payments (upload_service) — flat ledger, one row per settled payment
+CREATE TABLE x402_payments (
+  payment_id    UUID PRIMARY KEY,
+  tx_hash       VARCHAR(66) NOT NULL,    -- Ethereum settlement tx hash
+  network       VARCHAR(50) NOT NULL,    -- base-sepolia, base-mainnet, etc.
+  payer_address VARCHAR(42) NOT NULL,    -- Ethereum address that paid
+  usdc_amount   VARCHAR(255) NOT NULL,   -- USDC paid (6 decimals, atomic units)
+  winc_amount   VARCHAR(255) NOT NULL,   -- Winston equivalent
+  data_item_id  VARCHAR(43),             -- Linked after data item creation
+  byte_count    BIGINT NOT NULL,         -- Actual measured byte count
+  created_at    TIMESTAMP NOT NULL DEFAULT now(),
+  settled_at    TIMESTAMP NOT NULL DEFAULT now()
 );
 ```
 
@@ -553,6 +546,12 @@ if (actual >= lowerBound && actual <= upperBound) {
 - Bundler creates and signs ANS-104 data item
 - x402 payment is **REQUIRED** (no traditional balance option)
 - Payment metadata injected as data item tags
+- **Server-buffered, no finalize step:** the bundler buffers the request body and
+  measures the actual byte count itself, so the unsigned path has **no
+  declared-vs-actual fraud check and no `finalizeX402Payment` lifecycle** (that
+  declared-vs-actual reconciliation applies only to the **signed** path via the
+  payment-service). Each settled payment is written once to the flat
+  `x402_payments` ledger in `upload_service` (see §3.2).
 
 **Flow:**
 1. User sends raw data (binary or JSON envelope)

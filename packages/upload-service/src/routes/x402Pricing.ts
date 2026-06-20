@@ -26,7 +26,9 @@ import { x402PricingOracle } from "../utils/x402Pricing";
 const ARWEAVE_MIN_CHUNK_BYTES = 262144; // 256 KB
 
 // Minimum x402 price (0.001 USDC in atomic units with 6 decimals)
-const MINIMUM_USDC_PRICE = 1000;
+// Exported so the unsigned-upload handler (rawDataPost.ts) applies the SAME
+// floor it quotes here — otherwise quote and actual charge can diverge.
+export const MINIMUM_USDC_PRICE = 1000;
 
 /**
  * x402 Pricing for Signed Data Items
