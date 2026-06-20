@@ -22,6 +22,13 @@ ingest. It did **not** establish production capacity. This plan closes the gap.
 - **Endurance** (multi-hour soak: leaks/backlog/GC/memory).
 - **Failure & recovery** (dependency degradation — touches the hard gates).
 - The **off-box** ceiling (round 1 load gen was co-located → numbers are a floor).
+- **Upload-path/type/payment diversity** — only signed `/v1/tx`, eth-only, allow-listed was run.
+  Untested: x402 signed + **x402 unsigned** (bundler-signs), the 5 signature types,
+  funded/free/x402 payment tiers + reserve→refund, BDI nested bundles, multipart.
+- **Optimistic → confirmed gateway lifecycle** (mining → gateway marks mined →
+  `new_data_items`→`stable_data_items` promotion). The optimistic half only; the
+  dry-run prod-path backend **cannot reach** the confirmation half.
+- **Gateway-side read/serve scale** + the gateway's own MinIO/DB pools.
 
 **Hard gates (from the deploy decision):** never lose user data; never take money
 without crediting. S5 (failure/recovery) is where these are proven.
@@ -59,7 +66,7 @@ gateway in dry-run** (prod runs `ARWEAVE_UPLOAD_NODE=:4000`):
 | **Local gateway `:4000` (dry-run)** | the **real prod topology** — optimistic-tx + **chunk-ingest** + broadcast leg | ✅ (dry-run = never mines) | **S1, S2, S5** (gating, production-representative) |
 | **Sink** | post/seed faked → isolates the **bundler ingest ceiling** (chain can't confound) | ✅ | **S3** (ceiling hunt) |
 | **ArLocal** | real tx **lifecycle incl. verify→permanent**, but a *different* backend than prod | ✅ | **S4** (lifecycle/permanence) |
-| **Real mainnet** | true on-chain confirmation number | ¢ | a handful of items only |
+| **Real mainnet** *or* **ArLocal-fed gateway** (`TRUSTED_NODE`→ArLocal) | **mining → confirmation**: optimistic→`stable` promotion ("marked as mined") — dry-run can't reach this | ¢ / ✅ | **S7** + the true confirmation number |
 
 **So: not all-ArLocal.** The production-representative runs go **through the local
 gateway (dry-run)** — that's the only way to scale-test the gateway's chunk-ingest and
@@ -137,8 +144,25 @@ Each: **Objective · Setup · Drive · Measure · Pass criteria.**
   recover when the dependency returns? any data loss? any charge-without-credit?
 - **Pass:** zero data loss; defined degradation behavior; automatic recovery; money integrity intact.
 
-### S6 — x402 + mixed workload  *(lower priority)*
-- **Objective:** x402 paid path under load + a realistic concurrent mix of sizes/types/payment tiers.
+### S6 — Upload-path, signature-type & payment-tier coverage  *(functional-scale — every distinct code path)*
+- **Objective:** confirm *every distinct upload path* holds under load and characterize relative cost — not just the dominant signed-eth path.
+- **Endpoints:** `/v1/tx` (signed) · `/x402/upload/signed` · **`/x402/upload/unsigned`** (raw → bundler signs; a wholly separate path, `rawDataPost`) · **multipart** `/chunks/...`.
+- **Signature types:** ethereum · arweave · solana (ed25519) · kyve — different verify cost + native-address derivation.
+- **Payment tiers:** funded balance (reserve→refund) · free-limit boundary (~505 KB) · x402 (USDC, incl. ERC-1271 smart-contract sigs).
+- **Nested bundles (BDI):** the `unbundle-bdi` path under load.
+- **Measure:** acceptance + per-path latency/cost; payment **reserve→refund correctness on failed uploads** (no charge-without-credit); no path leaks/stalls under concurrency.
+- **Pass:** every path accepts + bundles correctly; payment integrity intact; relative costs documented.
+
+### S7 — Optimistic → confirmed gateway lifecycle  *(the mining / "marked as mined" gap — HIGH)*
+- **Objective:** validate the full optimistic→confirmed transition on the gateway — which **dry-run cannot test** (txs never mine). This is where optimistic data reconciles with the chain, historically the riskiest spot (the partition gap stranded ~11k items here).
+- **Backend:** a **mining** backend — small **real-mainnet** set (cents) and/or **ArLocal with the gateway's `TRUSTED_NODE` pointed at it** ($0, full local chain sync).
+- **Drive:** upload → optical index → optimistic access → bundle **mines** → **gateway sees it confirmed → promotes `new_data_items` → `stable_data_items` ("marked as mined")** → confirmed index + access.
+- **Measure:** optimistic→confirmed latency; **every optimistically-indexed item is promoted (none stranded)**; optimistic vs confirmed bytes match; GraphQL + `/<id>` correct in both states; bundler `verify`→`permanent` agrees with the gateway's stable index.
+- **Pass:** 100% promoted, zero stranded optimistic, optimistic == confirmed bytes, data/money integrity intact.
+
+### S8 — Gateway-side read/serve scale + its own pools  *(integrated)*
+- **Objective:** the gateway serving bundler data **under concurrent read load** (round 1 measured a handful). Includes the gateway's *own* MinIO/S3 pool (it threw an `@aws-lite HeadObject NotFound` earlier) and its DB.
+- **Measure:** access/index p50/p95/p99 under concurrency; gateway event-loop lag; gateway S3/DB saturation. *(Coordinate with the gateway/ar-io-node team — sibling repo.)*
 
 ## 5. Cost & safety
 
@@ -167,11 +191,14 @@ Each: **Objective · Setup · Drive · Measure · Pass criteria.**
 - [ ] Multi-hour soak: flat memory, bounded queues, no data loss.
 - [ ] Failure/recovery: no data loss, money integrity preserved, auto-recovery.
 - [ ] All ~50-default pools right-sized + documented.
+- [ ] **Every upload path** (signed, x402 signed/unsigned, multipart, all sig types, all payment tiers, BDI) accepts + bundles under load with payment integrity.
+- [ ] **Optimistic→confirmed**: 100% of items promoted to stable ("marked as mined"), none stranded, optimistic == confirmed bytes (proven on a mining backend, not dry-run).
 
 ## 8. Sequencing
 
-- **Before prod (gating):** §3 pool audit → S1 (real-bundle) → S2 (multipart) → S5 (hard gates).
-- **Can follow / overnight:** S3 (ceiling refinement), S4 (long soak), S6 (x402/mixed).
+- **Before prod (gating):** §3 pool audit → S1 (real-bundle) → S2 (multipart) →
+  S6 (upload-path coverage) → S7 (optimistic→confirmed lifecycle) → S5 (failure/recovery).
+- **Can follow / overnight:** S3 (ceiling refinement), S4 (long soak), S8 (gateway read scale — with gateway team).
 
 ## 9. Tooling
 
