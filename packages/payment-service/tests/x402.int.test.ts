@@ -126,11 +126,11 @@ describe("x402 Integration Tests", function () {
 
     it("returns error when bytes parameter is invalid", async () => {
       // Non-numeric bytes throws BadQueryParam (src/routes/x402Price.ts:54-56),
-      // which is uncaught by the route and surfaces as a 500 from Koa.
+      // which the global error handler maps to 400 (BadRequest -> 400).
       const { status } = await axios.get(
         `/v1/x402/price/1/${testAddress}?bytes=invalid`
       );
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("calculates correct USDC amount for given byte count", async () => {
@@ -205,11 +205,9 @@ describe("x402 Integration Tests", function () {
 
     // The shared axios instance uses validateStatus: () => true (always resolves),
     // so these assert on the resolved status. The payment route raises its
-    // parameter-validation failures via `throw new X402PaymentError(...)` which is
-    // uncaught by the route and surfaces as a 500 from Koa; only the post-decode
-    // failures inside the route's try/catch return explicit 4xx. Each test below
-    // cites the exact current source path. The shared assertion is that an invalid
-    // request is rejected with an error status (>= 400).
+    // parameter-validation failures via `throw new X402PaymentError(...)`
+    // (a BadRequest), which the global error handler maps to 400. Each test
+    // below cites the exact current source path.
     it("rejects payment without payment header", async () => {
       // Missing paymentHeader: throws X402PaymentError (src/routes/x402Payment.ts:54-56).
       const { status } = await axios.post(`/v1/x402/payment/1/${testAddress}`, {
@@ -217,19 +215,19 @@ describe("x402 Integration Tests", function () {
         byteCount: 1048576,
         mode: "hybrid",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("rejects payment with malformed payment header", async () => {
-      // A non-base64/JSON header decodes/parses to garbage inside the route try,
-      // caught and returned as 500 (src/routes/x402Payment.ts:107-109, 347-356).
+      // A non-base64/JSON header fails to decode/parse; the route wraps that in
+      // X402PaymentError (BadRequest) so it returns 400 (x402Payment.ts:107-117).
       const { status } = await axios.post(`/v1/x402/payment/1/${testAddress}`, {
         paymentHeader: "not-valid-base64!!!",
         dataItemId: "test-data-item-id",
         byteCount: 1048576,
         mode: "hybrid",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("rejects payment without dataItemId", async () => {
@@ -239,7 +237,7 @@ describe("x402 Integration Tests", function () {
         byteCount: 1048576,
         mode: "hybrid",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("rejects payment without byteCount", async () => {
@@ -249,7 +247,7 @@ describe("x402 Integration Tests", function () {
         dataItemId: "test-data-item-id",
         mode: "hybrid",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("validates mode parameter", async () => {
@@ -262,7 +260,7 @@ describe("x402 Integration Tests", function () {
         byteCount: 1048576,
         mode: "invalid-mode",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("defaults to hybrid mode when mode is not specified", async () => {
@@ -274,21 +272,21 @@ describe("x402 Integration Tests", function () {
         dataItemId: "test-data-item-id",
         byteCount: 1048576,
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
   });
 
   describe("POST /v1/x402/finalize", () => {
     // validateStatus: () => true -> assert on the resolved status. The finalize
-    // route throws X402PaymentError (uncaught -> 500) for missing required params
-    // and for a non-positive byteCount (ByteCount throws before the try); a
-    // not-found data item returns an explicit 404. Each test cites the source.
+    // route throws X402PaymentError (a BadRequest -> 400 via the global handler)
+    // for missing required params and for a non-positive byteCount; a not-found
+    // data item returns an explicit 404. Each test cites the source.
     it("rejects finalization without dataItemId", async () => {
       // Missing dataItemId: throws X402PaymentError (src/routes/x402Finalize.ts:43-46).
       const { status } = await axios.post(`/v1/x402/finalize`, {
         actualByteCount: 1048576,
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("rejects finalization without actualByteCount", async () => {
@@ -296,7 +294,7 @@ describe("x402 Integration Tests", function () {
       const { status } = await axios.post(`/v1/x402/finalize`, {
         dataItemId: "test-data-item-id",
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
 
     it("returns error for non-existent data item", async () => {
@@ -309,13 +307,13 @@ describe("x402 Integration Tests", function () {
     });
 
     it("validates actualByteCount is positive integer", async () => {
-      // ByteCount(-1) throws before the try block (x402Finalize.ts:49) ->
-      // uncaught -> 500.
+      // A non-positive actualByteCount throws X402PaymentError (BadRequest)
+      // before ByteCount(); the global error handler maps it to 400.
       const { status } = await axios.post(`/v1/x402/finalize`, {
         dataItemId: "test-data-item-id",
         actualByteCount: -1,
       });
-      expect(status).to.be.at.least(400);
+      expect(status).to.equal(400);
     });
   });
 

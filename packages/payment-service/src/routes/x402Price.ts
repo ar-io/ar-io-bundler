@@ -23,7 +23,7 @@ import {
   x402PricingBufferPercent,
   cdpClientKey,
 } from "../constants";
-import { BadQueryParam } from "../database/errors";
+import { BadQueryParam, BadRequest } from "../database/errors";
 import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { UserAddressType } from "../database/dbTypes";
@@ -217,12 +217,19 @@ export async function x402PriceRoute(ctx: KoaContext, next: Next) {
     ctx.set("Content-Type", "application/json");
     ctx.body = response;
   } catch (error) {
-    logger.error("Failed to generate x402 price quote", { error });
-    ctx.status = 500;
-    ctx.body = {
-      error: "Failed to generate price quote",
-      details: error instanceof Error ? error.message : "Unknown error",
-    };
+    // Input-validation failures (BadQueryParam etc. extend BadRequest) are
+    // client errors → 400, not 500.
+    if (error instanceof BadRequest) {
+      ctx.status = 400;
+      ctx.body = { error: error.message };
+    } else {
+      logger.error("Failed to generate x402 price quote", { error });
+      ctx.status = 500;
+      ctx.body = {
+        error: "Failed to generate price quote",
+        details: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   }
 
   return next();

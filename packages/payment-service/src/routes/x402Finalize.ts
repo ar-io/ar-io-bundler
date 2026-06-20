@@ -18,7 +18,7 @@ import { Next } from "koa";
 
 import { x402FraudTolerancePercent } from "../constants";
 import { DataItemId, X402PaymentStatus } from "../database/dbTypes";
-import { X402PaymentError } from "../database/errors";
+import { BadRequest, X402PaymentError } from "../database/errors";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
@@ -44,6 +44,12 @@ export async function x402FinalizeRoute(ctx: KoaContext, next: Next) {
     throw new X402PaymentError(
       "Missing dataItemId or actualByteCount"
     );
+  }
+
+  // A non-positive / non-integer byte count is invalid client input → typed
+  // BadRequest (→ 400). Without this, ByteCount(-1) throws a generic error → 500.
+  if (!Number.isInteger(actualByteCountParam) || actualByteCountParam <= 0) {
+    throw new X402PaymentError("actualByteCount must be a positive integer");
   }
 
   const actualByteCount = ByteCount(actualByteCountParam);
@@ -145,12 +151,19 @@ export async function x402FinalizeRoute(ctx: KoaContext, next: Next) {
       refundWinc: refundWinc.toString(),
     };
   } catch (error) {
-    logger.error("X402 payment finalization failed", { error });
-    ctx.status = 500;
-    ctx.body = {
-      error: "Finalization failed",
-      details: error instanceof Error ? error.message : "Unknown error",
-    };
+    // Malformed/invalid finalize input (X402PaymentError extends BadRequest) is a
+    // client error → 400, not 500.
+    if (error instanceof BadRequest) {
+      ctx.status = 400;
+      ctx.body = { error: error.message };
+    } else {
+      logger.error("X402 payment finalization failed", { error });
+      ctx.status = 500;
+      ctx.body = {
+        error: "Finalization failed",
+        details: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   }
 
   return next();
