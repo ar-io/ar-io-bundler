@@ -57,7 +57,13 @@ async function waitForArweaveGateway(): Promise<void> {
 
 exports.mochaHooks = {
   async beforeAll() {
-    await waitForArweaveGateway();
+    // Only wait for arlocal in the integration harness (test:docker sets this).
+    // testSetup.ts is shared by unit + integration via the same .mocharc, and
+    // the unit run (e.g. ci.yml) has no arlocal — polling there just hits the
+    // hook timeout. Integration opts in via WAIT_FOR_ARWEAVE_GATEWAY=true.
+    if (process.env.WAIT_FOR_ARWEAVE_GATEWAY === "true") {
+      await waitForArweaveGateway();
+    }
   },
   async beforeEach() {
     // Wait before each test to prevent replication lag on DB clean-ups

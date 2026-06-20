@@ -181,6 +181,10 @@ services:
       X402_FACILITATOR_URL_BASE_TESTNET: https://x402.org/facilitator
       # Infra: point at the in-compose service hostnames (NOT localhost).
       ARWEAVE_GATEWAY: http://arlocal:1984
+      # Make testSetup wait for arlocal's HTTP server before the suite (its
+      # container starts before its routes are live). Integration-only — the
+      # shared testSetup skips this in unit runs that have no arlocal.
+      WAIT_FOR_ARWEAVE_GATEWAY: "true"
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin123
