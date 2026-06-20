@@ -193,16 +193,29 @@ BullMQ with 11 queues for bundle fulfillment. Queue names (`jobLabels` in `src/c
 **Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`
 
 **Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
-- `PLAN_WORKER_CONCURRENCY` (default 5), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
+- `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
 - Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1
 
 **Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
 
-**CRITICAL: Bundle planning requires cron job**:
-```bash
-# Add to crontab (runs every 5 minutes)
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * /path/to/packages/upload-service/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-```
+**Bundle planning is scheduled in-process (no cron needed)**: the always-running
+`upload-workers` process registers BullMQ job schedulers at startup
+(`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min and `cleanup-fs` daily
+at 02:00. This replaced the old external `cron-trigger-*.sh` crons (which were a
+silent-failure footgun: a cron never added to crontab, or one that couldn't find
+`node` on cron's minimal PATH, meant nothing ever bundled). The schedules are
+env-tunable and disable-able:
+- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
+- Set either to `""` to disable that schedule.
+- BullMQ dedupes each schedule by id in the shared queue Redis, so exactly one
+  job fires per interval even if workers ever run multi-instance/multi-box.
+- The `cron-trigger-*.sh` / `trigger-*.js` scripts remain as **manual** on-demand
+  triggers; they no longer belong in crontab.
+
+> Teardown: schedulers persist in Redis. To stop one for good, set its
+> `*_SCHEDULE_CRON` to `""` and restart, or call
+> `getQueue(label).removeJobScheduler(id)` — otherwise it keeps firing even if
+> the registration code is reverted.
 
 ### Database Architecture
 
@@ -230,7 +243,7 @@ Data Age      Filesystem    MinIO      Storage
 
 Configure via `FILESYSTEM_CLEANUP_DAYS=7` and `MINIO_CLEANUP_DAYS=90`.
 
-**Cleanup requires its own cron** (separate from bundle planning): `packages/upload-service/cron-trigger-cleanup.sh` runs `trigger-cleanup.js`, which enqueues the `cleanup-fs` work. Like `cron-trigger-plan.sh`, it must be registered in crontab or cleanup never runs.
+**Cleanup is scheduled in-process** alongside bundle planning (see the job-scheduler note above): the `upload-workers` process registers the `cleanup-fs` schedule (`CLEANUP_SCHEDULE_CRON`, default `0 2 * * *`) at startup. `cron-trigger-cleanup.sh` / `trigger-cleanup.js` remain as manual on-demand triggers — no crontab entry required.
 
 **Object storage abstraction**: `src/arch/objectStore.ts` defines the `ObjectStore` interface (put/get/head/move/delete + multipart). Two impls exist — `S3ObjectStore` and `FileSystemObjectStore` — but `defaultArchitecture.objectStore` always wires `getS3ObjectStore()` (singleton). Local/dev still uses the S3 path against **MinIO**, NOT `FileSystemObjectStore`. The `deleteObject` method (used by the cleanup system) is implemented for S3 but is an unimplemented stub in `FileSystemObjectStore`.
 
@@ -300,11 +313,14 @@ the canonical file under `infrastructure/pm2/`, not the root shim.
 
 ### Workers Not Processing Uploads
 ```bash
-pm2 list | grep upload-workers      # Verify running
-crontab -l | grep trigger-plan      # Check cron
-./cron-trigger-plan.sh              # Manual trigger
-pm2 logs upload-workers --err       # Check errors
+pm2 list | grep upload-workers                       # Verify running
+pm2 logs upload-workers | grep "job schedulers"      # Confirm schedulers registered at startup
+./cron-trigger-plan.sh                               # Manually kick a plan run
+pm2 logs upload-workers --err                        # Check errors
 ```
+The bundle-planning + cleanup schedules now live inside `upload-workers` (BullMQ
+job schedulers), not crontab — if nothing is bundling, confirm the worker is up
+and that `PLAN_SCHEDULE_CRON` isn't set to `""`.
 
 ### Port Conflicts (EADDRINUSE)
 Start with explicit PORT: `PORT=4001 NODE_ENV=production pm2 start lib/index.js`

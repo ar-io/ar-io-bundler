@@ -35,6 +35,7 @@ import {
   EnqueuedNewDataItem,
   EnqueuedOffsetsBatch,
   EnqueueFinalizeUpload,
+  upsertRepeatable,
 } from "../arch/queues";
 import { jobLabels } from "../constants";
 import { handler as cleanupFsHandler } from "../jobs/cleanup-fs";
@@ -55,16 +56,25 @@ import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 const knex = knexFactory(getWriterConfig());
 const database = new PostgresDatabase();
 
-// Plan Bundle Worker - Runs continuously to plan new data items into bundles
-// Planning can run concurrently for different bundle sizes/types
-// Higher concurrency reduces queue backlog under high load
-// Memory usage: ~50MB per concurrent planning operation
+// Plan Bundle Worker - Runs continuously to plan new data items into bundles.
+//
+// planBundleHandler is a self-draining loop: a single invocation scans ALL
+// pending data items and keeps planning until none remain (or it hits the
+// ~14-min cap, plan.ts). Running multiple plan jobs concurrently therefore
+// doesn't speed anything up — they just contend over the same rows (the handler
+// itself runs at PARALLEL_LIMIT=1 for exactly this reason).
+//
+// OVERLAP GUARD: the in-process scheduler (below) fires plan-bundle on a fixed
+// wall-clock tick (default every 5 min). If a prior drain is still running when
+// the next tick fires, concurrency 1 makes the queued tick wait its turn rather
+// than scanning in parallel. Hence the default is 1 (was 5); still env-tunable
+// via PLAN_WORKER_CONCURRENCY, but raising it re-introduces overlap.
 const planWorker = createWorker(
   jobLabels.planBundle,
   async () => {
     await planBundleHandler(database);
   },
-  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "5", 10) }
+  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "1", 10) }
 );
 
 // Prepare Bundle Worker - Prepares bundles for posting
@@ -214,4 +224,50 @@ setupGracefulShutdown(allWorkers, logger);
 logger.info("All BullMQ workers started successfully", {
   workerCount: allWorkers.length,
   queues: allWorkers.map((w) => w.name),
+});
+
+// ---------------------------------------------------------------------------
+// In-process job schedulers (replaces the external cron-trigger-*.sh crons).
+//
+// Registered here in the always-running worker so the bundle-planning and
+// tiered-cleanup schedules can never be silently "forgotten" (the old failure
+// mode: a cron that was never added to crontab, or one that couldn't find
+// `node` on cron's minimal PATH). BullMQ dedupes each schedule by id in the
+// shared queue Redis, so this stays correct even if the worker is ever run
+// multi-instance / multi-box — exactly one job fires per interval.
+//
+// Patterns are env-overridable; set a pattern to "" to disable that schedule.
+// The cron-trigger-*.sh / trigger-*.js scripts remain as MANUAL dev triggers.
+// ---------------------------------------------------------------------------
+const PLAN_SCHEDULE_CRON = process.env.PLAN_SCHEDULE_CRON ?? "*/5 * * * *";
+const CLEANUP_SCHEDULE_CRON = process.env.CLEANUP_SCHEDULE_CRON ?? "0 2 * * *";
+
+async function registerJobSchedulers() {
+  // planId is cosmetic — planBundleHandler ignores job data and scans the DB.
+  await upsertRepeatable(
+    jobLabels.planBundle,
+    "plan-bundle-scheduler",
+    PLAN_SCHEDULE_CRON,
+    { planId: "scheduler" }
+  );
+  await upsertRepeatable(
+    jobLabels.cleanupFs,
+    "cleanup-fs-scheduler",
+    CLEANUP_SCHEDULE_CRON,
+    {}
+  );
+  logger.info("Registered BullMQ job schedulers", {
+    planBundle: PLAN_SCHEDULE_CRON || "(disabled)",
+    cleanupFs: CLEANUP_SCHEDULE_CRON || "(disabled)",
+  });
+}
+
+// Fire-and-forget: a Redis hiccup here must not take down the workers (which
+// would be unable to do anything useful without Redis anyway). Log and move on;
+// the next worker restart re-attempts registration (upsert is idempotent).
+void registerJobSchedulers().catch((error) => {
+  logger.error("Failed to register BullMQ job schedulers", {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
 });

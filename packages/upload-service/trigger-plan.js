@@ -17,8 +17,12 @@
  */
 
 /**
- * Cron script to trigger bundle planning
- * Run this periodically to process queued data items
+ * MANUAL trigger to enqueue one bundle-planning run.
+ *
+ * Bundle planning is now scheduled in-process by the upload-workers process
+ * (BullMQ job scheduler; see src/workers/allWorkers.ts, PLAN_SCHEDULE_CRON).
+ * This script remains a convenience to kick a plan run on demand; it does NOT
+ * need to be in crontab.
  */
 
 require('dotenv').config();

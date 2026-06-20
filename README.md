@@ -228,40 +228,40 @@ pm2 startup
 - **payment-workers** (fork, 1 instance): Finalizes pending crypto-payment credits
 - **admin-dashboard** (fork, 1 instance): Bull Board + admin stats (port 3002)
 
-### Step 8: Setup Bundle Planning Cron Job
+### Step 8: Bundle Planning & Cleanup Schedules (no cron setup required)
 
-The bundling pipeline requires periodic triggering to group uploaded data items into bundles. Set up a cron job to run bundle planning every 5 minutes:
+The bundling pipeline is triggered **automatically** by the always-running
+`upload-workers` process: at startup it registers two BullMQ job schedulers — one
+that plans bundles (default every 5 minutes) and one that runs tiered-retention
+cleanup (default daily at 02:00). **There is no crontab to set up.** This replaced
+the old external cron jobs, whose silent-failure modes (a cron never registered,
+or cron's minimal `PATH` lacking `node`) could quietly stop all bundling.
+
+Tune or disable the schedules via env vars in `.env` (cron syntax):
 
 ```bash
-# Use the absolute path to YOUR checkout's upload-service directory:
-BUNDLER_DIR=$(pwd)/packages/upload-service   # run from the repo root
-
-# Add to crontab (runs every 5 minutes).
-# IMPORTANT: cron runs with a minimal PATH that usually has no `node` (especially
-# with nvm). Pass NODE_BIN=$(command -v node) so the job can run — otherwise it
-# fails silently and bundle planning stops.
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * NODE_BIN=$(command -v node) $BUNDLER_DIR/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-
-# (Optional but recommended) tiered-retention cleanup, e.g. daily at 02:00:
-(crontab -l 2>/dev/null | grep -v "trigger-cleanup" ; echo "0 2 * * * NODE_BIN=$(command -v node) $BUNDLER_DIR/cron-trigger-cleanup.sh >> /tmp/bundle-cleanup-cron.log 2>&1") | crontab -
-
-# Verify cron jobs
-crontab -l | grep trigger-
+PLAN_SCHEDULE_CRON="*/5 * * * *"   # bundle planning (default); set "" to disable
+CLEANUP_SCHEDULE_CRON="0 2 * * *"  # tiered cleanup (default);   set "" to disable
 ```
 
-**What this does**: Every 5 minutes, the cron job triggers the plan worker to:
-1. Fetch pending data items from the database
-2. Group them into optimally-sized bundles
-3. Queue prepare → post → verify jobs
-4. Deliver bundles to Arweave
+**What the plan schedule does**: every interval, the plan worker:
+1. Fetches pending data items from the database
+2. Groups them into optimally-sized bundles
+3. Queues prepare → post → verify jobs
+4. Delivers bundles to Arweave
 
-**Monitor cron activity**:
+**Monitor scheduler activity**:
 ```bash
-# View cron logs
-tail -f /tmp/bundle-plan-cron.log
-
-# View worker processing
+# Confirm the schedulers registered at startup, then watch processing:
+pm2 logs upload-workers | grep "job schedulers"
 pm2 logs upload-workers
+```
+
+**Manual trigger** (on demand, e.g. to flush a backlog immediately):
+```bash
+BUNDLER_DIR=$(pwd)/packages/upload-service   # run from the repo root
+"$BUNDLER_DIR"/cron-trigger-plan.sh          # enqueue one plan run
+"$BUNDLER_DIR"/cron-trigger-cleanup.sh       # enqueue one cleanup run
 ```
 
 ### Step 9: Verify Services
@@ -779,13 +779,14 @@ pm2 list | grep upload-workers
 # Should show: upload-workers │ online
 ```
 
-2. **Check if cron job is configured**:
+2. **Check the plan/cleanup schedulers registered** (they run inside `upload-workers`, not crontab):
 ```bash
-crontab -l | grep trigger-plan
-# Should show: */5 * * * * /path/to/cron-trigger-plan.sh
+pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"
+# Should show: Registered BullMQ job schedulers { planBundle: '*/5 * * * *', cleanupFs: '0 2 * * *' }
+# If planBundle shows "(disabled)", PLAN_SCHEDULE_CRON is set to "" — unset it.
 ```
 
-3. **Manually trigger bundle planning**:
+3. **Manually trigger bundle planning** (on demand):
 ```bash
 cd packages/upload-service
 ./cron-trigger-plan.sh

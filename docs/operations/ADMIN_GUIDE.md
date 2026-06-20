@@ -158,19 +158,19 @@ cd ../upload-service
 yarn db:migrate:latest
 ```
 
-#### 7. Configure Bundle Planning Cron Job
+#### 7. Bundle Planning Schedule (automatic — no cron job)
 
-The bundler requires a cron job to trigger bundle planning every 5 minutes:
+Bundle planning (and tiered cleanup) are scheduled **in-process** by the
+`upload-workers` process — it registers BullMQ job schedulers at startup, so there
+is no crontab to configure. Defaults: planning every 5 min, cleanup daily at 02:00.
+Tune via `.env` (set a pattern to `""` to disable):
 
 ```bash
-# Get absolute path
-BUNDLER_PATH="$(pwd)/packages/upload-service"
+PLAN_SCHEDULE_CRON="*/5 * * * *"
+CLEANUP_SCHEDULE_CRON="0 2 * * *"
 
-# Add to crontab
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $BUNDLER_PATH/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-
-# Verify
-crontab -l | grep trigger-plan
+# Verify after starting services:
+pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"
 ```
 
 #### 8. Start Services
@@ -979,8 +979,9 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 # Check workers are running
 pm2 list | grep upload-workers
 
-# Check cron job configured
-crontab -l | grep trigger-plan
+# Check the plan scheduler registered (lives in upload-workers, not crontab)
+pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"
+# planBundle: '(disabled)' means PLAN_SCHEDULE_CRON is set to "" — unset it.
 
 # Check worker logs
 pm2 logs upload-workers --err --lines 50
@@ -991,18 +992,17 @@ curl http://localhost:3002/admin/queues
 
 **Solution:**
 ```bash
-# 1. Verify workers running
-pm2 restart upload-workers
+# 1. Verify workers running (use the project scripts, not `pm2 restart` directly)
+./scripts/restart.sh
 
-# 2. Setup cron job if missing
-(crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $(pwd)/packages/upload-service/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
+# 2. Ensure PLAN_SCHEDULE_CRON isn't disabled (default is */5 * * * *); restart to apply
 
-# 3. Manually trigger planning
+# 3. Manually trigger one planning run on demand
 cd packages/upload-service
 ./cron-trigger-plan.sh
 
-# 4. Check cron logs
-tail -f /tmp/bundle-plan-cron.log
+# 4. Watch worker logs
+pm2 logs upload-workers
 ```
 
 #### Port Conflicts (EADDRINUSE)
@@ -2050,7 +2050,7 @@ ar-io-bundler/
 │   │   ├── src/              # TypeScript source
 │   │   ├── lib/              # Compiled JavaScript
 │   │   ├── logs/             # PM2 logs
-│   │   ├── cron-trigger-plan.sh  # Bundle planning trigger
+│   │   ├── cron-trigger-plan.sh  # Manual bundle-planning trigger (scheduled in-process)
 │   │   └── package.json
 │   └── shared/                # Shared utilities
 ├── scripts/                   # Operational scripts
@@ -2081,7 +2081,7 @@ ar-io-bundler/
 | `docker-compose.yml` | Infrastructure (PostgreSQL, Redis, MinIO) |
 | `infrastructure/pm2/ecosystem.config.js` | PM2 process configuration |
 | `packages/*/lib/` | Compiled JavaScript (from TypeScript) |
-| `packages/upload-service/cron-trigger-plan.sh` | Bundle planning cron job |
+| `packages/upload-service/cron-trigger-plan.sh` | Manual bundle-planning trigger (planning is scheduled in-process by `upload-workers`) |
 
 ### Useful Commands
 
@@ -2116,9 +2116,9 @@ pm2 logs upload-workers         # Worker logs
 http://localhost:3002/admin/queues  # Queue dashboard
 pm2 monit                       # Real-time monitoring
 
-# Cron Jobs
-crontab -l | grep trigger-plan  # Verify bundle planning
-tail -f /tmp/bundle-plan-cron.log  # Cron job logs
+# Scheduled Jobs (in-process; plan + cleanup)
+pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"  # Verify schedulers registered
+./packages/upload-service/cron-trigger-plan.sh                          # Manually trigger a plan run
 ```
 
 ### Support & Resources

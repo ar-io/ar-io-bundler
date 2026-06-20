@@ -283,28 +283,41 @@ not currently guarantee this — validate it explicitly on Hetzner.
 
 ---
 
-## 12. Cron jobs
+## 12. Scheduled jobs
 
-| Job | Script | Schedule |
+| Job | Mechanism | Schedule |
 |---|---|---|
-| Bundle planning (**required** — without it nothing bundles) | `packages/upload-service/cron-trigger-plan.sh` | `*/5 * * * *` |
-| Tiered cleanup (FS 7d / MinIO 90d) | `packages/upload-service/cron-trigger-cleanup.sh` | `0 2 * * *` |
-| Bundle verify (mark permanent) | `scripts/trigger-verify.sh` | periodic (e.g. hourly) |
+| Bundle planning (**required** — without it nothing bundles) | **internal** — `upload-workers` BullMQ scheduler (`PLAN_SCHEDULE_CRON`) | `*/5 * * * *` |
+| Tiered cleanup (FS 7d / MinIO 90d) | **internal** — `upload-workers` BullMQ scheduler (`CLEANUP_SCHEDULE_CRON`) | `0 2 * * *` |
+| Bundle verify (mark permanent) | `scripts/trigger-verify.sh` (crontab) | periodic (e.g. hourly) |
 
-🛑 **CRON `node` PATH (will bite silently).** Lane 6 made the scripts portable (`NODE_BIN:-node` + dir
-resolution), but **cron runs with a stripped PATH that does not contain an nvm-installed Node 22**. Because
-the scripts use `set -e` and redirect to a log, a missing `node` makes the planner/cleanup **fail silently**
-— bundling just stops. Always pass an absolute Node binary in the crontab entry:
+✅ **Bundle planning and cleanup no longer need crontab.** They are registered as
+in-process BullMQ job schedulers when `upload-workers` starts (`src/workers/allWorkers.ts`),
+which **eliminates the old cron `node`-PATH footgun** (cron's stripped PATH lacking an
+nvm Node 22 used to make the planner/cleanup fail silently and stop all bundling). Tune
+them via `.env`; set a pattern to `""` to disable:
 
 ```bash
-# find it once: command -v node   (e.g. /usr/local/bin/node or ~/.nvm/.../v22.22.0/bin/node)
-*/5 * * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh    >> /var/log/bundler/plan.log 2>&1
-0 2  * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh >> /var/log/bundler/cleanup.log 2>&1
+PLAN_SCHEDULE_CRON="*/5 * * * *"
+CLEANUP_SCHEDULE_CRON="0 2 * * *"
 ```
 
-Prefer a **system Node 22** (e.g. nodesource) on Hetzner so `node` is on the default PATH and this footgun
-disappears. Confirm the cleanup vars (§7) are set, and pick **one** cleanup mechanism (worker-based
-`cron-trigger-cleanup.sh` over the bash `cleanup-bundler-files.sh`).
+BullMQ dedupes each schedule by id in the queue Redis, so exactly one job fires per
+interval. Confirm registration after deploy with
+`pm2 logs upload-workers | grep "job schedulers"`. **Teardown:** schedulers persist in
+Redis — to stop one, set its `*_SCHEDULE_CRON` to `""` and restart, or
+`getQueue(label).removeJobScheduler(id)`. The `cron-trigger-*.sh` scripts remain as
+manual on-demand triggers. Confirm the cleanup vars (§7) are set, and pick **one** cleanup
+mechanism (the internal scheduler over the bash `cleanup-bundler-files.sh`).
+
+🛑 **The verify cron still applies** (`scripts/trigger-verify.sh` is not part of the
+internal scheduler). It runs via crontab and is still subject to the stripped-PATH
+footgun, so pass an absolute Node binary:
+
+```bash
+# find it once: command -v node   (e.g. /usr/local/bin/node or a system Node 22)
+0 * * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/scripts/trigger-verify.sh >> /var/log/bundler/verify.log 2>&1
+```
 
 ---
 
@@ -343,7 +356,7 @@ Terminate HTTPS at nginx/Caddy/Traefik and upstream to the localhost API ports:
 curl -s http://localhost:3001/v1/info | jq     # upload
 curl -s http://localhost:4001/v1/info | jq     # payment
 pm2 list                                        # all 5 processes online (incl. payment-workers!)
-crontab -l | grep -E 'trigger-plan|trigger-cleanup'
+pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"  # plan + cleanup schedulers registered
 ```
 
 End-to-end: a small signed upload → confirm `new-data-item` → plan (within 5 min) → prepare → post → seed →

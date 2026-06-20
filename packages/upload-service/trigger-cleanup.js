@@ -17,12 +17,13 @@
  */
 
 /**
- * Manual trigger for filesystem and MinIO cleanup
- * Run this to manually trigger cleanup job:
- *   node scripts/trigger-cleanup.js
+ * MANUAL trigger to enqueue one filesystem + MinIO cleanup run:
+ *   node trigger-cleanup.js
  *
- * Or add to crontab for scheduling:
- *   0 2 * * * cd /path/to/bundler && node scripts/trigger-cleanup.js >> /tmp/cleanup.log 2>&1
+ * Cleanup is now scheduled in-process by the upload-workers process (BullMQ job
+ * scheduler; see src/workers/allWorkers.ts, CLEANUP_SCHEDULE_CRON). This script
+ * remains a convenience to run cleanup on demand; it does NOT need to be in
+ * crontab.
  */
 
 require('dotenv').config();
