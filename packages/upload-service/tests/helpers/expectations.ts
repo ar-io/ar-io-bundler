@@ -55,7 +55,9 @@ function expectedHeadersWithContentLength(contentLength: number) {
   return {
     "content-type": "text/plain; charset=utf-8",
     "content-length": `${contentLength}`,
-    connection: "close",
+    // Node 18→22 + the server's keep-alive timeouts mean HTTP/1.1 responses now
+    // carry `connection: keep-alive` (was "close" under the old runtime).
+    connection: "keep-alive",
   };
 }
 

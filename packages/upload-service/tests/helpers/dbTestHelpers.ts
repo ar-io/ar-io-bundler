@@ -251,8 +251,11 @@ export class DbTestHelper {
     signedDate,
     dataItemIds = [],
   }: InsertStubNewBundleBundleParams): Promise<void> {
+    // NOTE: dataItemIds.map(...) must be spread into Promise.all, not nested in
+    // an extra array — otherwise the inserts are not awaited (fire-and-forget),
+    // racing later reads/updates in tests.
     await Promise.all([
-      dataItemIds.map((dataItemId) =>
+      ...dataItemIds.map((dataItemId) =>
         this.insertStubPlannedDataItem({
           dataItemId,
           planId,
@@ -274,7 +277,7 @@ export class DbTestHelper {
     usdToArRate,
   }: InsertStubPostedBundleBundleParams): Promise<void> {
     await Promise.all([
-      dataItemIds.map((dataItemId) =>
+      ...dataItemIds.map((dataItemId) =>
         this.insertStubPlannedDataItem({
           dataItemId,
           planId,
@@ -296,7 +299,7 @@ export class DbTestHelper {
     usdToArRate,
     failedBundles = [],
   }: InsertStubSeededBundleParams): Promise<void> {
-    await Promise.all([
+    await Promise.all(
       dataItemIds.map((dataItemId) =>
         this.insertStubPlannedDataItem({
           dataItemId,
@@ -304,8 +307,8 @@ export class DbTestHelper {
           signature: stubDataItemBufferSignature,
           failedBundles,
         })
-      ),
-    ]);
+      )
+    );
     await this.knex(tableNames.seededBundle).insert(
       stubSeededBundleInsert({ bundleId, planId, seededDate, usdToArRate })
     );

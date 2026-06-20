@@ -1,24 +1,18 @@
-**/.classpath
-**/.dockerignore
-**/.env
-**/.git
-**/.gitignore
-**/.project
-**/.settings
-**/.toolstarget
-**/.vs
-**/.vscode
-**/.husky
-**/*.*proj.user
-**/*.dbmdl
-**/*.jfm
-**/charts
-**/docker-compose*
-**/compose*
-**/Dockerfile*
+# Paths are relative to the build context, which for this Dockerfile is the
+# MONOREPO ROOT (docker-compose.yml sets context: ../..). Keep .yarn/ (cache +
+# plugins) and every package.json — the root install needs them.
 **/node_modules
-**/npm-debug.log
-**/obj
-**/secrets.dev.yaml
-**/values.dev.yaml
-README.md
+**/.git
+**/lib
+**/coverage
+**/.nyc_output
+**/*.log
+**/.husky
+**/.vscode
+**/.idea
+**/Dockerfile*
+**/docker-compose*
+**/.env
+**/.env.*
+**/tmp
+**/temp

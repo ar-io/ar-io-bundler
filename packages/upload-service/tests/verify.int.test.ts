@@ -15,7 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { expect } from "chai";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { stub } from "sinon";
 
@@ -56,6 +56,14 @@ describe("Verify bundle job handler function integrated with PostgresDatabase cl
     const dataItemIds = [stubTxId14, stubTxId15, stubTxId16];
     const usdToArRate = stubUsdToArRate;
     beforeEach(async () => {
+      // The "tx not found" verify test reads the bundle tx off the filesystem
+      // (temp/bundle/<id>) to extract its tx_anchor. Seed it from the stub tx.
+      mkdirSync("temp/bundle", { recursive: true });
+      copyFileSync(
+        "tests/stubFiles/bundleTxStub",
+        `temp/bundle/${validBundleIdOnFileSystem}`
+      );
+
       await dbTestHelper.insertStubSeededBundle({
         bundleId,
         planId,

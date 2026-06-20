@@ -111,7 +111,10 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      # Create the upload_service DB up front — the migrator containers that used
+      # to do this were removed; the test-runner only runs migrations, not DB
+      # creation.
+      POSTGRES_DB: upload_service
     ports:
       - "5432:5432"
     volumes:
@@ -134,30 +137,74 @@ services:
     profiles:
       - test
     build:
-      context: .
-      dockerfile: tests/integration.Dockerfile
+      # Build from the monorepo root so the install sees the root lockfile,
+      # .yarnrc.yml and .yarn/ — required for a COMPLETE dependency tree
+      # (root-hoisted deps like bitcoinjs-lib are dropped by a package-local
+      # install). See tests/integration.Dockerfile.
+      context: ../..
+      dockerfile: packages/upload-service/tests/integration.Dockerfile
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
+        # Codebase requires Node 22 (@ar.io/sdk v4 is ESM-only; engines >=22.12).
+        # Literal (not ${...}) so the ambient .env can't change the test Node.
+        NODE_VERSION: "22.22.0"
+    # IMPORTANT: every value here is a LITERAL, not a ${VAR:-default}
+    # interpolation. Docker Compose auto-loads the project `.env` (here a symlink
+    # to the live repo-root .env) and substitutes it into ${...} references — which
+    # would leak the dev box's localhost infra pointers AND its MAINNET x402 config
+    # (real payTo, X402_NETWORK=base) into the test harness. Literals make the
+    # harness hermetic: the suite always talks to the in-compose services and never
+    # touches mainnet. This is the single source of truth for the docker test env.
     environment:
       DB_HOST: upload-service-pg
+      DB_USER: postgres
       DB_PASSWORD: postgres
       DB_PORT: 5432
-      DISABLE_LOGS: ${DISABLE_LOGS:-true}
-      NODE_ENV: ${NODE_ENV:-test}
-      ARWEAVE_GATEWAY: ${ARWEAVE_GATEWAY:-http://arlocal:1984}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin123}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      ELASTICACHE_HOST: ${ELASTICACHE_HOST:-redis}
-      ELASTICACHE_NO_CLUSTERING: ${ELASTICACHE_NO_CLUSTERING:-true}
-      # SQS variables removed - using BullMQ queues instead
-      REDIS_HOST: ${REDIS_HOST:-redis-queues}
-      REDIS_PORT_QUEUES: ${REDIS_PORT_QUEUES:-6381}
+      UPLOAD_DB_DATABASE: upload_service
+      DISABLE_LOGS: "false"
+      LOG_LEVEL: error
+      NODE_ENV: test
+      # Bundle-signing + raw-data-item signing wallets (stub test JWK), mirroring
+      # .env.test. Absolute paths so they resolve regardless of the process CWD
+      # (constants.ts reads TURBO_JWK_FILE at module load).
+      TURBO_JWK_FILE: /usr/src/app/packages/upload-service/tests/stubFiles/testWallet.json
+      RAW_DATA_ITEM_JWK_FILE: /usr/src/app/packages/upload-service/tests/stubFiles/testWallet.json
+      # Node 22.18+ enables native TS type-stripping, which intercepts .ts before
+      # ts-node (mocha .mocharc) can transpile testSetup.ts. Disable it so ts-node
+      # stays authoritative (same fix as the unit-test CI job).
+      NODE_OPTIONS: --no-experimental-strip-types
+      # x402 config so createServer()'s validateX402Config passes. TESTNET only —
+      # never mainnet/CDP from the harness. Dummy payTo (never moves funds).
+      X402_PAYMENT_ADDRESS: "0x0000000000000000000000000000000000000001"
+      X402_NETWORK: base-sepolia
+      X402_BASE_ENABLED: "false"
+      X402_BASE_TESTNET_ENABLED: "true"
+      X402_FACILITATOR_URL_BASE_TESTNET: https://x402.org/facilitator
+      # Infra: point at the in-compose service hostnames (NOT localhost).
+      ARWEAVE_GATEWAY: http://arlocal:1984
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin123
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      ELASTICACHE_HOST: redis
+      ELASTICACHE_NO_CLUSTERING: "true"
+      # BullMQ queues (SQS removed)
+      REDIS_HOST: redis-queues
+      REDIS_PORT_QUEUES: "6381"
       # MinIO (S3-compatible storage)
-      DATA_ITEM_BUCKET: ${DATA_ITEM_BUCKET:-raw-data-items}
-      DATA_ITEM_BUCKET_REGION: ${DATA_ITEM_BUCKET_REGION:-us-east-1}
-      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      DATA_ITEM_BUCKET: raw-data-items
+      DATA_ITEM_BUCKET_REGION: us-east-1
+      BACKUP_DATA_ITEM_BUCKET: backup-data-items
+      # Integration tests inject a STUBBED payment service into createServer and
+      # assert real balance-enforcement behavior (reserve/refund/reject), so
+      # balance checks must stay ON — SKIP_BALANCE_CHECKS=true would short-circuit
+      # the payment path and make rejection tests pass through. The stubbed
+      # paymentService means no real outbound calls are made. Optical bridging is
+      # OFF so receipts carry the expected fastFinalityIndexes=[] (the dedicated
+      # optical suite is the excluded e2e ario spec).
+      PAYMENT_SERVICE_BASE_URL: ""
+      SKIP_BALANCE_CHECKS: "false"
+      OPTICAL_BRIDGING_ENABLED: "false"
     depends_on:
       upload-service-pg:
         condition: service_started
@@ -165,8 +212,12 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
+      redis-queues:
+        condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
 volumes:
   upload-service-data:
