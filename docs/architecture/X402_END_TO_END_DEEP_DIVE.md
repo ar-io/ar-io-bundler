@@ -657,7 +657,38 @@ const response = await axios.post(
 
 ### 3. Database Schema
 
-**Two main tables**:
+> **Scope note:** The two tables below describe the **signed** x402 path, which
+> runs through the **payment-service** (`verifyAndSettleX402Payment` →
+> `finalizeX402Payment`). They carry the reservation / declared-vs-actual /
+> refund / fraud lifecycle because the payment-service trusts a client-declared
+> `Content-Length` up front and reconciles it on finalize.
+>
+> The **unsigned** path (`POST /v1/x402/upload/unsigned`,
+> `upload-service/src/routes/rawDataPost.ts`) is different: it is
+> **server-buffered** — the bundler buffers the request body and measures the
+> actual byte count itself, then signs the ANS-104 data item with its own
+> wallet. There is therefore **no declared-vs-actual reconciliation, no
+> `finalizeX402Payment` step, and no fraud/refund lifecycle** on the unsigned
+> path. It records each settled payment in a single flat ledger table in the
+> **upload-service** database (`x402_payments`), with no `status`/`mode`/
+> `actual_byte_count`/refund columns and no separate reservation table:
+>
+> ```sql
+> CREATE TABLE x402_payments (
+>   payment_id    UUID PRIMARY KEY,
+>   tx_hash       VARCHAR(66) NOT NULL,   -- Ethereum settlement tx hash
+>   network       VARCHAR(50) NOT NULL,   -- e.g. "base-sepolia", "base-mainnet"
+>   payer_address VARCHAR(42) NOT NULL,   -- Ethereum address that paid
+>   usdc_amount   VARCHAR(255) NOT NULL,  -- USDC atomic units (6 decimals)
+>   winc_amount   VARCHAR(255) NOT NULL,  -- Converted Winston amount
+>   data_item_id  VARCHAR(43),            -- Linked after data item creation
+>   byte_count    BIGINT NOT NULL,        -- Actual measured byte count
+>   created_at    TIMESTAMP NOT NULL DEFAULT now(),
+>   settled_at    TIMESTAMP NOT NULL DEFAULT now()
+> );
+> ```
+
+**Two main tables** (signed path, payment-service):
 
 **`x402_payment_transaction`** (payment-service):
 ```sql
