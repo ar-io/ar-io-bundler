@@ -95,6 +95,27 @@ export interface PostgresError {
 export const postgresInsertFailedPrimaryKeyNotUniqueCode = "23505";
 export const postgresTableRowsLockedUniqueCode = "55P03";
 
+/**
+ * SQLSTATE class 23 = integrity_constraint_violation. Covers check_violation
+ * (23514 — what "no partition of relation found for row" raises), not_null
+ * (23502), foreign_key (23503), unique (23505), exclusion (23P01). These are
+ * deterministic, row-specific failures: retrying the same row never helps, so the
+ * verify permanent-insert path dead-letters the offending row instead of stranding
+ * the whole bundle. Transient errors (deadlock, connection) are NOT class 23 and
+ * remain loud.
+ */
+export const postgresIntegrityConstraintViolationClass = "23";
+
+export function isPostgresIntegrityConstraintViolation(
+  error: unknown
+): error is PostgresError {
+  const code = (error as PostgresError)?.code;
+  return (
+    typeof code === "string" &&
+    code.startsWith(postgresIntegrityConstraintViolationClass)
+  );
+}
+
 export class BundlePlanExistsInAnotherStateWarning extends BaseError {
   constructor(planId: string, bundleId?: string) {
     super(

@@ -78,6 +78,7 @@ import {
   DataItemExistsWarning,
   MultiPartUploadNotFound,
   PostgresError,
+  isPostgresIntegrityConstraintViolation,
   postgresInsertFailedPrimaryKeyNotUniqueCode,
   postgresTableRowsLockedUniqueCode,
 } from "../../utils/errors";
@@ -358,9 +359,9 @@ export class PostgresDatabase implements Database {
       // Using a raw query here due to the db driver's behavior of returning uploaded_date in the "wrong" UTC timezone
       const fetchStartTimestamp = Date.now();
       const dbResult: (NewDataItemDBResult & { uploaded_date_utc: string })[] =
+        // Read from the writer to avoid stale reader/replica rows when the
+        // plan job loops repeatedly (PE-8989).
         (
-          // Read from the writer to avoid stale reader/replica rows when the
-          // plan job loops repeatedly (PE-8989).
           (await this.writer.raw(
             `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
               FROM ${tableNames.newDataItem}
@@ -805,29 +806,150 @@ export class PostgresDatabase implements Database {
       );
     }
 
-    return this.writer.transaction(async (dbTx) => {
-      const dataItems = await dbTx<PlannedDataItemDBResult>(
+    try {
+      // Fast path: promote the whole batch atomically in one transaction.
+      await this.writer.transaction(async (dbTx) => {
+        const dataItems = await dbTx<PlannedDataItemDBResult>(
+          tableNames.plannedDataItem
+        )
+          .whereIn(columnNames.dataItemId, dataItemIds)
+          .del()
+          .returning("*");
+
+        const permanentDataItemInserts: PermanentDataItemDBInsert[] =
+          dataItems.map((plannedDataItem) =>
+            plannedDataItemToPermanentInsert(
+              plannedDataItem,
+              blockHeight,
+              bundleId
+            )
+          );
+
+        await dbTx.batchInsert<PermanentDataItemDBResult>(
+          tableNames.permanentDataItems,
+          permanentDataItemInserts
+        );
+      });
+    } catch (error) {
+      // A single poison row (e.g. an unroutable partition → check_violation
+      // 23514) rolls back the ENTIRE batch, so nothing is deleted from
+      // planned_data_item and nothing inserted into permanent_data_items. Left to
+      // the caller this masquerades as job success and the bundle is re-selected
+      // and re-fails forever, silently stranding every item in the bundle.
+      //
+      // Only constraint violations are row-deterministic enough to isolate;
+      // transient errors (deadlock/connection) must stay loud so the job retries
+      // the whole batch.
+      if (!isPostgresIntegrityConstraintViolation(error)) {
+        throw error;
+      }
+
+      this.log.warn(
+        "Permanent-insert batch hit a constraint violation; isolating rows to commit the good ones and dead-letter the poison row(s)",
+        {
+          bundleId,
+          blockHeight,
+          code: (error as PostgresError).code,
+          dataItemIds,
+        }
+      );
+
+      await this.isolateAndPromoteDataItems(dataItemIds, blockHeight, bundleId);
+    }
+  }
+
+  /**
+   * Per-item fallback for {@link updateDataItemsAsPermanent}. Each item is moved
+   * from planned_data_item to permanent_data_items in ITS OWN transaction, so an
+   * item is never deleted from planned without being durably inserted into
+   * permanent (no data loss) and never present in both (no double count). Items
+   * whose insert fails with a constraint violation are dead-lettered to
+   * failed_data_item (again atomically) instead of failing their healthy siblings.
+   */
+  private async isolateAndPromoteDataItems(
+    dataItemIds: TransactionId[],
+    blockHeight: number,
+    bundleId: TransactionId
+  ): Promise<void> {
+    for (const dataItemId of dataItemIds) {
+      try {
+        await this.writer.transaction(async (dbTx) => {
+          const [plannedDataItem] = await dbTx<PlannedDataItemDBResult>(
+            tableNames.plannedDataItem
+          )
+            .where({ [columnNames.dataItemId]: dataItemId })
+            .del()
+            .returning("*");
+
+          // Already promoted/removed by a prior partial run — nothing to do.
+          if (!plannedDataItem) {
+            return;
+          }
+
+          await dbTx<PermanentDataItemDBResult>(
+            tableNames.permanentDataItems
+          ).insert(
+            plannedDataItemToPermanentInsert(
+              plannedDataItem,
+              blockHeight,
+              bundleId
+            )
+          );
+        });
+      } catch (error) {
+        if (!isPostgresIntegrityConstraintViolation(error)) {
+          // Transient/unexpected — let it bubble so the caller (and the verify
+          // job) treats the bundle as failed rather than silently dropping items.
+          throw error;
+        }
+        await this.deadLetterDataItemFailedPermanentInsert(
+          dataItemId,
+          bundleId,
+          error as PostgresError
+        );
+      }
+    }
+  }
+
+  /** Move a single data item to failed_data_item after its permanent insert hit a
+   * constraint violation. Atomic delete-from-planned + insert-into-failed so the
+   * item is never lost. */
+  private async deadLetterDataItemFailedPermanentInsert(
+    dataItemId: TransactionId,
+    bundleId: TransactionId,
+    error: PostgresError
+  ): Promise<void> {
+    this.log.error(
+      "Dead-lettering data item that could not be inserted as permanent",
+      { dataItemId, bundleId, code: error.code, detail: error.detail }
+    );
+
+    await this.writer.transaction(async (dbTx) => {
+      const [plannedDataItem] = await dbTx<PlannedDataItemDBResult>(
         tableNames.plannedDataItem
       )
-        .whereIn(columnNames.dataItemId, dataItemIds)
+        .where({ [columnNames.dataItemId]: dataItemId })
         .del()
         .returning("*");
 
-      const permanentDataItemInserts: PermanentDataItemDBInsert[] =
-        dataItems.map(({ signature: _, ...restOfPlannedDataItem }) => ({
-          ...restOfPlannedDataItem,
-          block_height: blockHeight,
-          deadline_height: restOfPlannedDataItem.deadline_height
-            ? +restOfPlannedDataItem.deadline_height
-            : null,
-          bundle_id: bundleId,
-        }));
+      if (!plannedDataItem) {
+        return;
+      }
 
-      await dbTx.batchInsert<PermanentDataItemDBResult>(
-        tableNames.permanentDataItems,
-        permanentDataItemInserts
-      );
+      const failedDataItemInsert: FailedDataItemDBInsert = {
+        ...plannedDataItem,
+        failed_reason: "permanent_insert_failed",
+      };
+      // Idempotent: a data item can legitimately re-enter the pipeline (e.g. a
+      // re-plan after an earlier failure), so overwrite any prior failed row for
+      // this id rather than letting the dead-letter itself throw on a PK clash.
+      await dbTx(tableNames.failedDataItem)
+        .insert(failedDataItemInsert)
+        .onConflict(columnNames.dataItemId)
+        .merge();
     });
+
+    MetricRegistry.verifyPermanentInsertDeadLettered.inc();
   }
 
   public async updateDataItemsToBeRePacked(
@@ -1441,9 +1563,7 @@ export class PostgresDatabase implements Database {
       .update({ data_item_id: dataItemId });
   }
 
-  async getX402PaymentsByPayer(
-    payerAddress: string
-  ): Promise<X402Payment[]> {
+  async getX402PaymentsByPayer(payerAddress: string): Promise<X402Payment[]> {
     const rows = await this.reader("x402_payments")
       .where({ payer_address: payerAddress })
       .orderBy("created_at", "desc");
@@ -1497,6 +1617,24 @@ function entityToInFlightMultiPartUpload(
     failedReason: isMultipartUploadFailedReason(entity.failed_reason)
       ? entity.failed_reason
       : undefined,
+  };
+}
+
+/** Map a planned_data_item row to its permanent_data_items insert shape. The
+ * permanent table has no signature column, and stores deadline_height as a
+ * numeric (planned keeps it as a string). */
+function plannedDataItemToPermanentInsert(
+  { signature: _signature, ...restOfPlannedDataItem }: PlannedDataItemDBResult,
+  blockHeight: number,
+  bundleId: TransactionId
+): PermanentDataItemDBInsert {
+  return {
+    ...restOfPlannedDataItem,
+    block_height: blockHeight,
+    deadline_height: restOfPlannedDataItem.deadline_height
+      ? +restOfPlannedDataItem.deadline_height
+      : null,
+    bundle_id: bundleId,
   };
 }
 

@@ -37,7 +37,8 @@ export type BlockHeight = number;
 export type BundleFailedReason = "not_found" | "failed_to_post";
 export type DataItemFailedReason =
   | "missing_from_object_store"
-  | "too_many_failures";
+  | "too_many_failures"
+  | "permanent_insert_failed";
 
 export type ContentType = string;
 

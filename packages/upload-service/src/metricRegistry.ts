@@ -181,6 +181,26 @@ export class MetricRegistry {
       help: "Count of primary key errors encountered on new data item batch insert",
     });
 
+  // Count of bundles whose permanent-insert batch failed in a way the verify job
+  // could NOT isolate (i.e. the bundle remains stuck in seeded_bundle and will be
+  // re-selected every run). This is the signal that used to be invisible: alert on
+  // any sustained nonzero rate.
+  public static verifyPermanentInsertFail = MetricRegistry.createCounter({
+    name: "verify_permanent_insert_fail_count",
+    help: "Count of bundles whose permanent-insert batch failed unexpectedly during verify (bundle left stuck in seeded_bundle)",
+  });
+
+  // Count of individual data items dead-lettered to failed_data_item because their
+  // permanent insert hit a constraint violation (e.g. an unroutable partition).
+  // Non-fatal — the rest of the batch is committed and the bundle still promotes —
+  // but a nonzero rate means data items are NOT being marked permanent and warrants
+  // investigation.
+  public static verifyPermanentInsertDeadLettered =
+    MetricRegistry.createCounter({
+      name: "verify_permanent_insert_dead_lettered_count",
+      help: "Count of data items moved to failed_data_item after a constraint violation during the verify permanent insert",
+    });
+
   public static newDataItemInsertBatchSizes = MetricRegistry.createHistogram({
     name: "new_data_item_insert_batch_size",
     help: "Size of the batch of new data items being inserted",

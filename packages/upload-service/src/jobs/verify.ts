@@ -32,6 +32,7 @@ import {
   txPermanentThreshold,
 } from "../constants";
 import defaultLogger from "../logger";
+import { MetricRegistry } from "../metricRegistry";
 import { PlannedDataItem } from "../types/dbTypes";
 import { ByteCount, TransactionId } from "../types/types";
 import { removeDataItemsFromCache } from "../utils/cacheServiceUtils";
@@ -97,6 +98,16 @@ export async function verifyBundleHandler({
     return;
   }
 
+  // Tracks bundles that failed their permanent insert in a way we could NOT
+  // isolate/recover. We finish processing every other bundle, then throw at the
+  // end so the BullMQ job is marked FAILED (engaging attempts/backoff + ops
+  // alerting) instead of silently reporting success while the bundle stays stuck
+  // in seeded_bundle and is re-selected — and re-failed — every run.
+  const bundlesStuckUnexpectedly: {
+    bundleId: TransactionId;
+    planId: string;
+  }[] = [];
+
   for (const bundle of seededBundles) {
     const {
       planId,
@@ -148,6 +159,7 @@ export async function verifyBundleHandler({
 
           // Start concurrent processes to check bundle header for data items and then update them in batches to permanent
           let batchFailedUnexpectedly = false;
+          let bundleNeedsReprocess = false;
           let dataItemsStillPending = false;
           const parallelLimit = pLimit(10);
           const promises = dataItemBatches.map((batch) =>
@@ -169,7 +181,6 @@ export async function verifyBundleHandler({
                   return;
                 }
 
-                batchFailedUnexpectedly = true;
                 logger.error("Error verifying data item batch!", {
                   bundleId,
                   planId,
@@ -178,6 +189,9 @@ export async function verifyBundleHandler({
                 });
 
                 if (error.code === "22P02") {
+                  // Known, self-healing condition: repair the NaN deadlines and
+                  // let the next run reprocess. Not counted as an unexpected
+                  // failure, so it does not (loudly) fail the job.
                   const dataItemIdsWithNaNDeadlineHeight = batch
                     .filter(
                       ({ deadlineHeight }) =>
@@ -195,15 +209,33 @@ export async function verifyBundleHandler({
                   await database.updatePlannedDataItemsToDefaultDeadlineHeight(
                     dataItemIdsWithNaNDeadlineHeight
                   );
+                  bundleNeedsReprocess = true;
+                  return;
                 }
+
+                // Constraint-violation poison rows are isolated/dead-lettered
+                // inside updateDataItemsAsPermanent, so reaching here means a
+                // genuinely unexpected (e.g. transient) failure. Make it loud.
+                batchFailedUnexpectedly = true;
               })
             )
           );
           await Promise.all(promises);
 
           if (batchFailedUnexpectedly) {
+            MetricRegistry.verifyPermanentInsertFail.inc();
+            bundlesStuckUnexpectedly.push({ bundleId, planId });
             logger.error(
-              "Batch failed unexpectedly, skipping permanent insert so job will re-run",
+              "Batch failed unexpectedly, skipping permanent insert; bundle stays in seeded_bundle and the job will be marked failed so it retries",
+              {
+                bundleId,
+                planId,
+              }
+            );
+            continue;
+          } else if (bundleNeedsReprocess) {
+            logger.warn(
+              "Some data items were repaired and need reprocessing, not yet marking bundle as permanent",
               {
                 bundleId,
                 planId,
@@ -240,6 +272,20 @@ export async function verifyBundleHandler({
         error,
       });
     }
+  }
+
+  if (bundlesStuckUnexpectedly.length > 0) {
+    // Fail the job so attempts/backoff and ops alerting engage. Previously this
+    // path returned normally, so the BullMQ job reported SUCCESS while the
+    // bundle(s) stayed stuck in seeded_bundle and re-failed every run — invisible
+    // to queue monitoring.
+    throw new Error(
+      `Verify bundle job: ${
+        bundlesStuckUnexpectedly.length
+      } bundle(s) failed permanent insert unexpectedly and remain in seeded_bundle: ${bundlesStuckUnexpectedly
+        .map(({ bundleId }) => bundleId)
+        .join(", ")}`
+    );
   }
 }
 
