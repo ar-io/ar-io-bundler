@@ -69,7 +69,7 @@ const fmtBytes = (b) => {
 const CFG = {
   mode: args.mode || "latency", // latency | throughput | soak | large | mixed
   uploadUrl: (args["upload-url"] || "http://localhost:3001").replace(/\/$/, ""),
-  gatewayUrl: (args["gateway-url"] || "https://perma.online").replace(/\/$/, ""),
+  gatewayUrl: (args["gateway-url"] || "http://localhost:3000").replace(/\/$/, ""),
   sizes: (args.sizes || "1KB,100KB,400KB").split(",").map(parseSize),
   concurrency: parseInt(args.concurrency || "1", 10),
   sweep: (args.sweep || "1,5,10,25,50,100").split(",").map((n) => parseInt(n, 10)),

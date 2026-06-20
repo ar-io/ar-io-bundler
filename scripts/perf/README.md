@@ -1,20 +1,84 @@
 # AR.IO Bundler — Performance Baseline Harness
 
-`baseline.mjs` measures the **latency and throughput of the live bundler+gateway
-deployment** (e.g. perma.online) across the full data-item lifecycle. It is a
-*measurement* tool, not a pass/fail test — the e2e suites verify correctness;
-this answers "how fast, and where's the ceiling."
+`baseline.mjs` measures the **latency and throughput of a bundler+gateway
+deployment** across the full data-item lifecycle. It's a *measurement* tool, not
+a pass/fail test — the e2e suites verify correctness; this answers "how fast, and
+where's the ceiling."
 
-It is **non-destructive**: it only uploads data items and reads
-status/gateway/metrics endpoints. It never tears down infra, wipes a DB, or
-deletes anything.
+**Non-destructive** — it only uploads data items and reads status/gateway/metrics
+endpoints; it never tears down infra, wipes a DB, or deletes anything. It
+**defaults to the local stack** (`http://localhost:3001` bundler +
+`http://localhost:3000` gateway), so on any box you can just run it — override
+`--upload-url` / `--gateway-url` to point at another environment.
 
+| File | Role |
+|---|---|
+| `baseline.mjs` | the harness — drives uploads, tracks each stage, reports |
+| `mock-arweave-node.mjs` | a "sink" Arweave node so posts cost **$0 AR** (see backends) |
+| `purge-gateway.mjs` | removes the throwaway test data from the gateway afterward |
+
+---
+
+## How to run (agents & operators — read this first)
+
+**Prereqs:** Node 22 on PATH, run from the **repo root**, a bundler + AR.IO
+gateway reachable (defaults assume the local stack).
+
+### Step 1 — pick a chain backend (this controls AR cost)
+The bundler's wallet pays AR **only when a bundle is mined**, so choose what the
+bundler's `ARWEAVE_UPLOAD_NODE` points at:
+
+| Backend | Cost | Gives you | Use for |
+|---|---|---|---|
+| **sink** (`mock-arweave-node.mjs`) | **$0** | upload→post latency + **throughput/ceiling** (can't bottleneck) | scale / max-throughput |
+| **ArLocal** (local testnet) | **$0** | the **full lifecycle incl. seed→verify→permanent**, realistic | steady/peak latency, end-to-end |
+| **real Arweave** | a few ¢ (small items) | the **real-network** confirmation time | one small run for the true permanence number |
+
+> The chain backend is a **bundler** config, not a harness flag — the harness just
+> drives whatever bundler is at `--upload-url`. Set the backend on the bundler,
+> restart it, then run the harness. **Do this on a dedicated/quiet box** — never
+> repoint a shared bundler others are using.
+
+### Step 2a — sink (throughput / ceiling, $0)
 ```bash
-# from repo root, node 22 on PATH
-node scripts/perf/baseline.mjs --mode latency
-node scripts/perf/baseline.mjs --mode throughput --sweep 1,5,10,25,50,100
-node scripts/perf/baseline.mjs --mode soak --rate 5 --duration 1800
-node scripts/perf/baseline.mjs --mode large --sizes 10MB,100MB,1GB
+node scripts/perf/mock-arweave-node.mjs --port 4555     # terminal 1: the sink
+
+# in the bundler's .env, then `./scripts/restart.sh`:
+#   ARWEAVE_UPLOAD_NODE=http://localhost:4555   # post → sink (0 AR)
+#   OPTICAL_BRIDGING_ENABLED=true               # headers → real gateway (measured)
+#   ARWEAVE_GATEWAY=http://localhost:3000       # anchor/price/verify reads
+
+node scripts/perf/baseline.mjs --mode throughput --sweep 5,10,25,50,100,250,500
+```
+
+### Step 2b — ArLocal (full lifecycle incl. permanence, $0)
+```bash
+cd packages/upload-service && yarn arlocal:up && cd ../..   # arlocal on :1984
+
+# in the bundler's .env, then `./scripts/restart.sh`:
+#   ARWEAVE_UPLOAD_NODE=http://localhost:1984   # post → arlocal (0 AR, real tx)
+#   ARWEAVE_GATEWAY=http://localhost:1984       # anchor/price/verify → arlocal
+#   OPTICAL_BRIDGING_ENABLED=true               # headers → real AR.IO gateway
+
+node scripts/perf/baseline.mjs --mode latency --sizes 1KB,100KB,400KB --count 30
+curl -s -X POST http://localhost:1984/mine   # arlocal mines on demand if needed
+```
+> Keep `--gateway-url` on the **AR.IO gateway** (`:3000`, the default) — that's
+> where access/index latency is measured. ArLocal is the *chain*; the AR.IO node
+> is the *index*; they're different services.
+
+### Step 3 — clean up the gateway (always)
+Either backend, optical bridging indexes throwaway items on the real gateway.
+Remove them by the exact ids the run recorded (dry-run first):
+```bash
+node scripts/perf/purge-gateway.mjs --results scripts/perf/results/baseline-X.json
+node scripts/perf/purge-gateway.mjs --results scripts/perf/results/baseline-X.json --confirm
+```
+
+### Other environments (Hetzner, perma.online, CI)
+```bash
+node scripts/perf/baseline.mjs --mode latency \
+  --upload-url https://upload.my-host --gateway-url https://my-gateway
 ```
 
 ---
@@ -139,10 +203,13 @@ node scripts/perf/mock-arweave-node.mjs --port 4555
 node scripts/perf/baseline.mjs --mode throughput --sweep 5,10,25,50,100,250,500
 ```
 
-The sink is **not** ArLocal — it doesn't emulate an Arweave node, it just ACKs
-the few endpoints arweave-js calls on post, so it never chokes under load.
-(For real seed→permanent timing, run a *handful* of small items against real
-Arweave — pennies.)
+**Sink vs ArLocal** — both are $0 and both work; pick by goal. The sink doesn't
+emulate an Arweave node (it just ACKs the post endpoints), so it can **never be
+the bottleneck** → use it for throughput/ceiling. ArLocal is a real local testnet,
+so it gives the **full lifecycle incl. seed→verify→permanent** → use it for
+realistic latency, though it can cap throughput at extreme scale. Both recipes are
+in "How to run" above. (For the real-*network* confirmation number, run a handful
+of small items against real Arweave — pennies.)
 
 Alternative dry-run: set the **gateway's** `PREFERRED_CHUNK_POST_NODE_URLS` to a
 sink (it defaults to `tip-1…5.arweave.xyz`) — accept-but-don't-propagate. Use a
