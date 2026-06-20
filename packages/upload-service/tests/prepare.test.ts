@@ -16,6 +16,7 @@
  */
 import Arweave from "arweave";
 import { expect } from "chai";
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { stub } from "sinon";
 
 import { stubCacheService } from "../src/arch/cacheServiceTypes";
@@ -45,14 +46,28 @@ describe("Prepare bundle job handler", () => {
   const planId = stubPlanId;
   const stubDataItemPath = "tests/stubFiles/stub1115ByteDataItem";
 
+  // prepareBundleHandler derives each data item's id from its db signature
+  // (stubDataItemBufferSignature -> this id), then assembles the bundle payload
+  // by fetching raw-data-item/<derivedId> from the object store. The committed
+  // fixture for that id (temp/raw-data-item/<id>) is excluded from the test
+  // image (.dockerignore strips **/temp), so seed it here from the stub file.
+  // cspell:disable-next-line
+  const derivedDataItemId = "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o";
+
   before(async function () {
     jwk = await Arweave.crypto.generateJWK();
 
     await writeStubRawDataItems(dataItemIds, stubDataItemPath);
+    mkdirSync("temp/raw-data-item", { recursive: true });
+    copyFileSync(
+      stubDataItemPath,
+      `temp/raw-data-item/${derivedDataItemId}`
+    );
   });
 
   after(async () => {
     deleteStubRawDataItems(dataItemIds);
+    rmSync(`temp/raw-data-item/${derivedDataItemId}`, { force: true });
   });
 
   beforeEach(async () => {

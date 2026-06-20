@@ -16,4 +16,10 @@ module.exports = {
   timeout: "7000",
   parallel: true,
   recursive: true,
+  // Force the process to exit once the run completes. The integration suite
+  // opens knex connection pools (tests/helpers/testHelpers.ts plus each
+  // createServer) that keep the event loop alive after the last test, so without
+  // this the test-runner container never exits and `docker compose up
+  // --exit-code-from test-runner` hangs instead of returning the exit code.
+  exit: true,
 };

@@ -16,6 +16,7 @@
  */
 import axios from "axios";
 import { expect } from "chai";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { stub } from "sinon";
 
 import { ArweaveGateway } from "../src/arch/arweaveGateway";
@@ -169,6 +170,14 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
   const dataItemIds = [stubTxId10, stubTxId11, stubTxId12];
 
   beforeEach(async () => {
+    // postBundleHandler reads the bundle tx from the (FileSystem) object store
+    // at temp/bundle/<bundleId>. Seed it from the stub bundle tx (1905 bytes).
+    mkdirSync("temp/bundle", { recursive: true });
+    copyFileSync(
+      "tests/stubFiles/bundleTxStub",
+      `temp/bundle/${validBundleIdOnFileSystem}`
+    );
+
     await dbTestHelper.insertStubNewBundle({
       bundleId,
       planId,

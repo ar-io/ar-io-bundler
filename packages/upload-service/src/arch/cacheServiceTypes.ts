@@ -44,6 +44,20 @@ export const stubCacheService: CacheService = {
   del: async (..._: string[]) => {
     return 0;
   },
+  // @ts-expect-error -- This is a stub: a no-op MULTI/pipeline supporting the
+  // chained .set()/.get()/.del().exec() calls in cacheServiceUtils. Without it,
+  // `cacheService.multi is not a function` is thrown under NODE_ENV=test (the
+  // only context where this stub is used; production uses the real ioredis
+  // client, which has multi()).
+  multi: () => {
+    const pipeline = {
+      set: () => pipeline,
+      get: () => pipeline,
+      del: () => pipeline,
+      exec: async () => [],
+    };
+    return pipeline;
+  },
   status: "ready",
   isCluster: false,
 };

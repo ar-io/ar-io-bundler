@@ -33,6 +33,8 @@ const expectedHeadersWithContentLength = (contentLength: number) => {
   return {
     "content-type": "text/plain; charset=utf-8",
     "content-length": `${contentLength}`,
-    connection: "close",
+    // Node 19+ enables HTTP keep-alive by default (server.keepAliveTimeout), so
+    // the connection header is now "keep-alive" rather than the pre-19 "close".
+    connection: "keep-alive",
   };
 };

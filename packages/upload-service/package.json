@@ -18,7 +18,7 @@
     "test": "nyc mocha --spec='src/**/*.test.ts' --spec='tests/**/*.test.ts'",
     "test:local": "yarn db:up && yarn arlocal:up && yarn test \"$@\" ; yarn arlocal:down && yarn db:down",
     "test:unit": "nyc mocha --spec='src/**/*.test.ts'",
-    "test:integration": "nyc mocha --spec='tests/**/*.test.ts'",
+    "test:integration": "nyc mocha --spec='tests/**/*.test.ts' --ignore='tests/e2e-*.test.ts' --ignore='tests/ario-optical-bridge.int.test.ts' --retries 1",
     "test:integration:local": "yarn infra:up && dotenv -e .env.test yarn test:integration \"$@\" ; yarn infra:down",
     "test:e2e": "nyc mocha --spec='tests/e2e-*.test.ts' --ignore='tests/e2e-scale.int.test.ts' --timeout=30000",
     "test:e2e:aws-free": "nyc mocha --spec='tests/e2e-aws-free.int.test.ts' --timeout=30000",

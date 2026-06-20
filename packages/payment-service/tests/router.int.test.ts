@@ -108,18 +108,42 @@ import {
 describe("Router tests", () => {
   let server: Server;
 
-  function closeServer() {
-    server.close();
+  // Await full socket release. server.close() only resolves once all sockets are
+  // gone; with Node 19+ keep-alive, idle kept-alive sockets keep it pending
+  // forever, so force them shut first. Without awaiting a real release, the next
+  // describe/file's createServer() can hit EADDRINUSE and silently not listen
+  // (ECONNREFUSED for every request).
+  async function closeServer() {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     logger.info("Server closed!");
   }
 
   const routerTestPromoCode = "routerTestPromoCode";
   const routerTestPromoCodeCatalogId = "routerTestPromoCodeCatalogId";
 
+  // The server (src/server.ts:82-83) resolves its JWT verification secret as
+  // `process.env.PRIVATE_ROUTE_SECRET ?? TEST_PRIVATE_ROUTE_SECRET`. tests/testSetup.ts
+  // sets PRIVATE_ROUTE_SECRET="test-secret-for-integration-tests", so the server does
+  // NOT fall back to TEST_PRIVATE_ROUTE_SECRET. Sign protected-route JWTs with the same
+  // resolved secret or koa-jwt rejects the token and ctx.state.user is never set.
+  const sharedRouteSecret =
+    process.env.PRIVATE_ROUTE_SECRET ?? TEST_PRIVATE_ROUTE_SECRET;
   const authHeaders = {
     headers: {
-      Authorization: `Bearer ${sign({}, TEST_PRIVATE_ROUTE_SECRET)}`,
+      Authorization: `Bearer ${sign({}, sharedRouteSecret)}`,
     },
+  } as const;
+
+  // The stripe webhook route reads the raw request stream itself via
+  // getRawBody(ctx.req) (src/routes/stripe/stripeRoute.ts:37) for signature
+  // verification. Both the form-urlencoded content-type fix middleware
+  // (src/server.ts:100-141) and koa-bodyparser (enableTypes json/form/text,
+  // src/server.ts:144-149) consume that stream first for their content-types,
+  // which then breaks the route's re-read. Posting with a content-type that
+  // neither intercepts (octet-stream) leaves the stream intact for the route.
+  const webhookPostConfig = {
+    headers: { "content-type": "application/octet-stream" },
   } as const;
 
   beforeEach(() => {
@@ -172,8 +196,8 @@ describe("Router tests", () => {
     );
   });
 
-  after(() => {
-    closeServer();
+  after(async () => {
+    await closeServer();
   });
 
   it("GET /health returns 'OK' in the body, a 200 status, and the correct content-length", async () => {
@@ -1761,7 +1785,11 @@ describe("Router tests", () => {
       stubEvent
     );
 
-    const { status, statusText, data } = await axios.post(`/v1/stripe-webhook`);
+    const { status, statusText, data } = await axios.post(
+      `/v1/stripe-webhook`,
+      undefined,
+      webhookPostConfig
+    );
 
     expect(status).to.equal(200);
     expect(statusText).to.equal("OK");
@@ -1850,7 +1878,11 @@ describe("Router tests", () => {
       stubEvent
     );
 
-    const { status, statusText, data } = await axios.post(`/v1/stripe-webhook`);
+    const { status, statusText, data } = await axios.post(
+      `/v1/stripe-webhook`,
+      undefined,
+      webhookPostConfig
+    );
 
     expect(status).to.equal(200);
     expect(statusText).to.equal("OK");
@@ -1928,7 +1960,11 @@ describe("Router tests", () => {
       stubEvent
     );
 
-    const { status, statusText, data } = await axios.post(`/v1/stripe-webhook`);
+    const { status, statusText, data } = await axios.post(
+      `/v1/stripe-webhook`,
+      undefined,
+      webhookPostConfig
+    );
 
     expect(status).to.equal(200);
     expect(statusText).to.equal("OK");
@@ -1996,7 +2032,11 @@ describe("Router tests", () => {
   it("POST /stripe-webhook returns 400 for invalid stripe requests", async () => {
     stub(stripe.webhooks, "constructEvent").throws(Error("bad"));
 
-    const { status, statusText, data } = await axios.post(`/v1/stripe-webhook`);
+    const { status, statusText, data } = await axios.post(
+      `/v1/stripe-webhook`,
+      undefined,
+      webhookPostConfig
+    );
 
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -2042,7 +2082,11 @@ describe("Router tests", () => {
       stubEvent
     );
 
-    const { status, statusText, data } = await axios.post(`/v1/stripe-webhook`);
+    const { status, statusText, data } = await axios.post(
+      `/v1/stripe-webhook`,
+      undefined,
+      webhookPostConfig
+    );
 
     expect(status).to.equal(200);
     expect(statusText).to.equal("OK");
@@ -2428,6 +2472,14 @@ describe("Router tests", () => {
       const finalWc = wc.times(turboInfraFeeMagnitude);
       const infraFeeReducedWc = finalWc.minus(wc);
 
+      // usd_equivalent backport: the route now records the best-effort USD value of
+      // the crypto amount (src/routes/addPendingPaymentTx.ts:136 ->
+      // pricing.getUsdPriceForCryptoAmount at pricing.ts:947-959, which is
+      // baseAmountToTokenAmount * usdPerToken rounded to 2 decimals).
+      const usdEquivalent = +baseAmountToTokenAmount(tokenAmount, token)
+        .times(expectedTokenPrices[tokenNameToCoinGeckoTokenName[token]].usd)
+        .toFixed(2);
+
       expect(status).to.equal(200);
       expect(statusText).to.equal("OK");
       expect(data).to.deep.equal({
@@ -2454,6 +2506,10 @@ describe("Router tests", () => {
           transactionId: testTxId,
           transactionQuantity: tokenAmount,
           tokenType: token,
+          // transactionSenderAddress + usdEquivalent are returned by the route
+          // (src/routes/addPendingPaymentTx.ts:135-136).
+          transactionSenderAddress,
+          usdEquivalent,
           winstonCreditAmount: finalWc.valueOf(),
         },
         message: "Transaction credited",
@@ -2497,6 +2553,11 @@ describe("Router tests", () => {
       const finalWc = wc.times(turboInfraFeeMagnitude);
       const infraFeeReducedWc = finalWc.minus(wc);
 
+      // usd_equivalent backport: see the 200/confirmed test above.
+      const usdEquivalent = +baseAmountToTokenAmount(tokenAmount, token)
+        .times(expectedTokenPrices[tokenNameToCoinGeckoTokenName[token]].usd)
+        .toFixed(2);
+
       expect(status).to.equal(202);
       expect(statusText).to.equal("Accepted");
       expect(data).to.deep.equal({
@@ -2522,6 +2583,10 @@ describe("Router tests", () => {
           tokenType: token,
           destinationAddress: transactionSenderAddress,
           destinationAddressType: token,
+          // transactionSenderAddress + usdEquivalent returned by the route
+          // (src/routes/addPendingPaymentTx.ts:135-136).
+          transactionSenderAddress,
+          usdEquivalent,
           winstonCreditAmount: finalWc.valueOf(),
         },
         message: "Transaction pending",
@@ -2615,6 +2680,11 @@ describe("Router tests", () => {
       transactionId: txId,
       transactionQuantity: "1",
       tokenType: "arweave",
+      // DB defaults from the backported columns: transaction_sender_address
+      // defaults to "" and usd_equivalent to 0 (src/database/migrator.ts:848-850,
+      // 892-894); the DB read isn't given these on insert above.
+      transactionSenderAddress: "",
+      usdEquivalent: 0,
       winstonCreditAmount: "0",
     });
   });
@@ -2653,6 +2723,9 @@ describe("Router tests", () => {
       transactionId: txId,
       transactionQuantity: "1",
       tokenType: "arweave",
+      // DB defaults from the backported columns (see confirmed test above).
+      transactionSenderAddress: "",
+      usdEquivalent: 0,
       winstonCreditAmount: "0",
     });
   });
@@ -2707,7 +2780,11 @@ describe("Router tests", () => {
 
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
-    expect(data).to.equal("Invalid JSON in request body");
+    // An empty POST is parsed by koa-bodyparser into an empty object `{}`, which
+    // is a valid object, so the route falls through to the tx_id check and
+    // returns "Missing tx_id in request body" (src/routes/addPendingPaymentTx.ts:57-58).
+    // There is no "Invalid JSON in request body" path in current source.
+    expect(data).to.equal("Missing tx_id in request body");
   });
 
   it("POST /account/balance/arweave returns 400 for missing tx_id", async () => {
@@ -3177,8 +3254,12 @@ describe("Router tests", () => {
 
   describe("POST /v1/arns/purchase/:intent/:name/:owner ", () => {
     it("rejects unauthorized access", async () => {
+      // getValidatedArNSPurchaseParams validates price params (which require a
+      // `type` for Buy-Name) BEFORE the signed-request auth check
+      // (src/utils/validators.ts:664-669 runs before :704-707). Provide a valid
+      // type so the request reaches — and is rejected by — the auth check.
       const { status, statusText, data } = await axios.post(
-        `/v1/arns/purchase/Buy-Name/testName`
+        `/v1/arns/purchase/Buy-Name/testName?type=permabuy`
       );
       expect(status).to.equal(401);
       expect(statusText).to.equal("Unauthorized");
@@ -3198,8 +3279,12 @@ describe("Router tests", () => {
     });
 
     it("rejects buy-name intent with no processId present", async () => {
+      // The `type` price param is validated before the purchase-specific
+      // processId check (src/utils/validators.ts:664-669 before :726-729), so a
+      // valid `type` must be supplied to actually exercise the missing-processId
+      // path (otherwise the request fails earlier on the missing type).
       const { status, statusText, data } = await axios.post(
-        `/v1/arns/purchase/buy-name/testName?token=ethereum`,
+        `/v1/arns/purchase/buy-name/testName?token=ethereum&type=permabuy`,
         "",
         {
           headers: await signedRequestHeadersFromEthWallet(testEthereumWallet),
@@ -3445,8 +3530,10 @@ describe("Caching behavior tests", () => {
   });
   const pricingService = new TurboPricingService({ tokenToFiatOracle });
 
-  function closeServer() {
-    server.close();
+  // Await full socket release (see note on the main Router-tests closeServer).
+  async function closeServer() {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     logger.info("Server closed!");
   }
 
@@ -3454,8 +3541,8 @@ describe("Caching behavior tests", () => {
     server = await createServer({ pricingService, stripe });
   });
 
-  after(() => {
-    closeServer();
+  after(async () => {
+    await closeServer();
   });
 
   it("GET /price/:currency/:value only calls the oracle once for many subsequent price calls", async () => {
