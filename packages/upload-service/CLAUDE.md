@@ -140,7 +140,7 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 | Queue (`jobLabel`) | Handler (`src/jobs/`) | Concurrency |
 |--------------------|-----------------------|-------------|
 | `new-data-item`    | `newDataItemBatchInsert.ts` | 5 |
-| `plan-bundle`      | `plan.ts`             | `PLAN_WORKER_CONCURRENCY` (5) |
+| `plan-bundle`      | `plan.ts`             | `PLAN_WORKER_CONCURRENCY` (**1**, overlap guard) |
 | `prepare-bundle`   | `prepare.ts`          | `PREPARE_WORKER_CONCURRENCY` (3) |
 | `post-bundle`      | `post.ts`             | `POST_WORKER_CONCURRENCY` (2) |
 | `seed-bundle`      | `seed.ts`             | 2 |
@@ -164,14 +164,29 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 - `unbundle-bdi.ts` unbundles nested bundle data items (BDIs).
 - `cleanup-fs.ts` runs the tiered-retention cleanup (see below).
 
-**Cron triggers (REQUIRED):** the pipeline needs two cron jobs that enqueue work:
-- `cron-trigger-plan.sh` (→ `trigger-plan.js`) enqueues `plan-bundle` — without it
-  no bundles are ever planned. Suggested schedule: `*/5 * * * *`.
-- `cron-trigger-cleanup.sh` (→ `trigger-cleanup.js`) enqueues `cleanup-fs`.
+**Internal job schedulers (no cron needed):** at startup the worker process
+(`src/workers/allWorkers.ts`) registers two BullMQ job schedulers via
+`upsertRepeatable()` (`src/arch/queues.ts`):
+- `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
+- `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
 
-Both live in this package's root (not a `scripts/` subdir). Cron runs with a
-minimal `PATH` (often no `node`, especially under nvm); pass
-`NODE_BIN=$(command -v node)` in the crontab line so the job can find Node.
+This replaced the external `cron-trigger-*.sh` crons, which were a silent-failure
+footgun (a cron never registered, or one that couldn't find `node` on cron's
+minimal PATH, meant nothing bundled). BullMQ dedupes each schedule by id in the
+shared queue Redis, so exactly one job fires per interval — no leader election
+needed even if the worker ever runs multi-instance/multi-box. Set a pattern to
+`""` to disable that schedule.
+
+- **Overlap guard:** `planBundleHandler` is a self-draining loop that can run up
+  to ~14 min (`plan.ts`). A fixed wall-clock tick can fire while a prior drain is
+  still active, so the `plan-bundle` worker runs at concurrency 1 (`PLAN_WORKER_CONCURRENCY`
+  default 1) — a queued tick waits its turn instead of scanning in parallel.
+- **Teardown:** schedulers persist in Redis. To stop one, set its
+  `*_SCHEDULE_CRON` to `""` and restart, or call
+  `getQueue(label).removeJobScheduler(id)` — reverting the code alone leaves the
+  schedule firing.
+- `cron-trigger-plan.sh` / `cron-trigger-cleanup.sh` (and their `trigger-*.js`)
+  remain as **manual** on-demand triggers; they no longer belong in crontab.
 
 ### Tiered data cleanup
 
@@ -185,7 +200,8 @@ beyond MINIO_CLEANUP_DAYS (90)            DELETE        DELETE
 ```
 
 Configure with `FILESYSTEM_CLEANUP_DAYS` and `MINIO_CLEANUP_DAYS`. The `cleanup-fs`
-job performs the deletions and is enqueued by `cron-trigger-cleanup.sh`.
+job performs the deletions and is enqueued by the internal `CLEANUP_SCHEDULE_CRON`
+scheduler (default daily 02:00); `cron-trigger-cleanup.sh` triggers it manually.
 
 ### Payment service integration
 

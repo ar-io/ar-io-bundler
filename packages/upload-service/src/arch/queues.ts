@@ -89,5 +89,48 @@ export const enqueueBatch = async <T extends QueueType>(
   );
 };
 
+/**
+ * Register (or update) a repeatable BullMQ job scheduler — the in-process
+ * replacement for the external `cron-trigger-*.sh` crons.
+ *
+ * Idempotent by `schedulerId`: BullMQ stores the schedule in the (shared) queue
+ * Redis and dedupes by id, so even if several worker processes/boxes that share
+ * the same queue Redis call this on startup, exactly ONE job is produced per
+ * interval. (Do NOT replace this with `setInterval` — that would double-fire
+ * per instance.)
+ *
+ * An empty/whitespace `pattern` is treated as "disabled": any existing scheduler
+ * with this id is removed and no new one is created, so ops can turn a schedule
+ * off via env (e.g. `PLAN_SCHEDULE_CRON=""`) without a code change.
+ *
+ * Teardown note: schedulers persist in Redis. To stop one for good (e.g. if this
+ * feature is reverted), call `getQueue(queueType).removeJobScheduler(id)` — or
+ * set the corresponding `*_SCHEDULE_CRON` env to "" and restart — otherwise the
+ * schedule keeps firing.
+ *
+ * @param pattern A cron expression (e.g. every-5-minutes), passed to BullMQ.
+ */
+export const upsertRepeatable = async <T extends QueueType>(
+  queueType: T,
+  schedulerId: string,
+  pattern: string,
+  data: QueueTypeToMessageType[T]
+): Promise<void> => {
+  const queue = getQueue(queueType);
+  const trimmed = pattern.trim();
+
+  if (trimmed === "") {
+    // Disabled: drop any previously-registered scheduler with this id.
+    await queue.removeJobScheduler(schedulerId);
+    return;
+  }
+
+  await queue.upsertJobScheduler(
+    schedulerId,
+    { pattern: trimmed },
+    { name: queueType, data }
+  );
+};
+
 // BullMQ workers will automatically acknowledge completed jobs
 // Workers are created in src/workers/ directory and managed via PM2

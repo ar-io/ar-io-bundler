@@ -1,7 +1,11 @@
 #!/bin/bash
-# Cron trigger for bundle planning job.
-# Add to crontab with: crontab -e
-# Example (every 5 min): */5 * * * * /path/to/cron-trigger-plan.sh >> /tmp/bundle-plan-cron.log 2>&1
+# MANUAL bundle-planning trigger (dev/ops convenience).
+#
+# NOTE: bundle planning is now scheduled IN-PROCESS by the always-running
+# upload-workers process (BullMQ job scheduler, default every 5 min; see
+# src/workers/allWorkers.ts, tunable via PLAN_SCHEDULE_CRON). You no longer
+# need a crontab entry — adding one just double-enqueues (the plan job is
+# idempotent, so harmless but wasteful). Use this to kick a plan run on demand.
 #
 # Portable: resolves its own directory and uses `node` from PATH.
 # Override the node binary if needed: NODE_BIN=/path/to/node ./cron-trigger-plan.sh

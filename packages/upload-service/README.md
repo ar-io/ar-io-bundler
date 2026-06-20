@@ -57,9 +57,11 @@ yarn start                              # or: yarn start:watch (hot reload)
 The API listens on `UPLOAD_SERVICE_PORT` (default 3001). Visit `/api-docs` for the
 OpenAPI documentation.
 
-> The BullMQ pipeline needs the bundle-planning cron (`cron-trigger-plan.sh`) and,
-> optionally, the cleanup cron (`cron-trigger-cleanup.sh`). See the root README,
-> step "Setup Bundle Planning Cron Job".
+> Bundle planning and tiered cleanup are scheduled automatically by the
+> `upload-workers` process (in-process BullMQ job schedulers; no crontab needed).
+> Tune via `PLAN_SCHEDULE_CRON` / `CLEANUP_SCHEDULE_CRON`. `cron-trigger-plan.sh`
+> / `cron-trigger-cleanup.sh` remain as manual on-demand triggers. See the root
+> README, step "Bundle Planning & Cleanup Schedules".
 
 ## Database
 
