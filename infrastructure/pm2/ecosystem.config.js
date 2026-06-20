@@ -29,6 +29,40 @@ const logsDir = path.join(repoRoot, "logs");
 const pkg = (name) => path.join(repoRoot, "packages", name);
 const log = (name) => path.join(logsDir, name);
 
+// Load .env at config-eval time. A bare `pm2 restart` does not re-apply env_file,
+// which left the gateway URLs below unset → falling back to arweave.net (429s →
+// pricing oracle fails → uploads 503). Parse the file directly (no module
+// dependency) so this can never crash on resolution; missing .env is fine.
+try {
+  for (const line of require("fs").readFileSync(envFile, "utf8").split("\n")) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+    if (m && process.env[m[1]] === undefined) {
+      let v = m[2];
+      if (
+        (v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))
+      )
+        v = v.slice(1, -1);
+      process.env[m[1]] = v;
+    }
+  }
+} catch {
+  /* no .env (e.g. CI/test) — fall back to env_file / app defaults */
+}
+const pick = (...keys) =>
+  Object.fromEntries(
+    keys.map((k) => [k, process.env[k]]).filter(([, v]) => v != null)
+  );
+// The endpoints that default to arweave.net when unset — pin them from .env so a
+// restart (bare or not) can never drop them. Values come from .env (portable);
+// only the var NAMES live in this file.
+const gatewayEnv = pick(
+  "PRICE_ORACLE_GATEWAY_URL",
+  "ARWEAVE_GATEWAY",
+  "ARWEAVE_UPLOAD_NODE",
+  "PUBLIC_ACCESS_GATEWAY"
+);
+
 module.exports = {
   apps: [
     // Payment Service - HTTP API
@@ -47,6 +81,7 @@ module.exports = {
         REDIS_QUEUE_PORT: "6381",
         DB_HOST: "localhost",
         DB_PORT: "5432",
+        ...gatewayEnv, // pin pricing oracle + gateway so a restart can't drop them
         // NOTE: wallet addresses and other secrets/host overrides come from
         // .env (loaded via env_file above), not from this config.
       },
@@ -78,6 +113,7 @@ module.exports = {
         REDIS_PORT_QUEUES: "6381",
         DB_HOST: "localhost",
         DB_PORT: "5432",
+        ...gatewayEnv,
       },
       error_file: log("upload-api-error.log"),
       out_file: log("upload-api-out.log"),
@@ -112,6 +148,7 @@ module.exports = {
         // (e.g. a LAN gateway) come from OPTIONAL_OPTICAL_BRIDGE_URLS in .env.
         OPTICAL_BRIDGING_ENABLED: "true",
         OPTICAL_BRIDGE_URL: "http://localhost:4000/ar-io/admin/queue-data-item",
+        ...gatewayEnv,
       },
       error_file: log("upload-workers-error.log"),
       out_file: log("upload-workers-out.log"),
@@ -142,6 +179,7 @@ module.exports = {
         REDIS_QUEUE_PORT: "6381",
         DB_HOST: "localhost",
         DB_PORT: "5432",
+        ...gatewayEnv,
       },
       error_file: log("payment-workers-error.log"),
       out_file: log("payment-workers-out.log"),
