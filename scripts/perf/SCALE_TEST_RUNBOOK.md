@@ -20,17 +20,21 @@ paths, S7 lifecycle, S5 faults) have the highest yield.
 A bundle tx only costs AR when it **mines on the real chain**. So **never let a test post to
 the real chain.** Every scenario uses a **$0 backend**:
 
-| Backend | Why it's $0 |
-|---|---|
-| **sink** (`mock-arweave-node.mjs`) | post/seed faked — nothing leaves the box |
-| **ArLocal** | local testnet — mines locally, no real AR |
-| **gateway `:4000` dry-run** (`ARWEAVE_POST_DRY_RUN=true`) | gateway accepts + indexes but **never broadcasts** |
+| Backend | $0? | Why |
+|---|---|---|
+| **sink** (`mock-arweave-node.mjs`) | ✅ | a mock — post/seed faked, nothing touches any chain |
+| **ArLocal** | ✅ | local testnet — mines locally, no real AR |
+| **gateway → ArLocal** (gateway's `TRUSTED_NODE_URL` + chunk-post targets pointed at ArLocal) | ✅ | gateway broadcasts to ArLocal, not real Arweave — full realistic path, $0 |
+| ~~gateway `:4000` "dry-run"~~ | ❌ **NOT $0** | `ARWEAVE_POST_DRY_RUN` only gates the chunk-POST + the *envoy*-routed `/tx`. The bundler posts the **tx header direct to core `:4000`, which still broadcasts → the tx mines → AR charged.** This burned ~30 AR before the tripwire caught it. **Never use it as a $0 backend.** |
 
-- **S7** (mining/confirmation lifecycle) uses the **ArLocal-fed gateway** variant ($0) — *not*
-  real mainnet. The real-mainnet confirmation number is **optional, off by default**; only
-  with explicit sign-off and **≤ a handful of tiny items**.
-- **AR balance tripwire:** snapshot the wallet balance before, and **re-check it is unchanged
-  after every run** (§4). If AR moved, a tx broadcast → **abort + investigate** before continuing.
+- **S7** (mining/confirmation lifecycle) uses the **gateway → ArLocal** setup ($0) — *not* real
+  mainnet, *not* gateway-dry-run. Real-mainnet confirmation is optional, off by default, ≤ a
+  handful of tiny items, explicit sign-off only.
+- **EMPIRICAL $0 PROOF (mandatory).** Never trust a backend's name. Before any run: post **one**
+  bundle, then verify **(a)** it gets **no real `block_height`** (`curl :3000/tx/<bundleId>/status`)
+  and **(b)** the wallet balance is **unchanged**. Only then drive load.
+- **AR balance tripwire:** snapshot the balance before, re-check unchanged after every run (§4).
+  If AR moved → **abort + investigate** immediately.
 
 ## 2. Lighter guardrails (dev/test box)
 
@@ -71,10 +75,12 @@ curl -s "http://localhost:3000/wallet/$ADDR/balance" | tee /tmp/ar-balance-befor
 ### 4.3 AR-safety assertion — gate the run (ABORT if it fails)
 ```bash
 pm2 jlist | node -e 'JSON.parse(require("fs").readFileSync(0)).filter(p=>p.name=="upload-workers").forEach(p=>console.log("UPLOAD_NODE="+p.pm2_env.ARWEAVE_UPLOAD_NODE))'
-docker exec ar-io-node-core-1 sh -c 'echo DRY_RUN=$ARWEAVE_POST_DRY_RUN'
-# REQUIRE: UPLOAD_NODE is :4555 (sink) or :1984 (arlocal), OR (:4000 AND DRY_RUN=true).
-# If the backend is the real chain, or :4000 with DRY_RUN=false → STOP. Do not drive load.
+# REQUIRE: UPLOAD_NODE is :4555 (sink) or :1984 (ArLocal), OR the gateway with its
+# TRUSTED_NODE/chunk-post targets pointed at ArLocal. "gateway :4000 + dry-run" is NOT safe
+# (it broadcasts the tx header → mines → AR). If unsure → STOP.
 ```
+Then **prove it empirically** (post one bundle; confirm no real `block_height` + balance
+unchanged) before driving load — see §1.
 
 ### 4.4 Run (off-box) + 4.5 Observe
 Run the scenario's harness command from the off-box generator; capture the plan-§7
@@ -86,15 +92,18 @@ instrumentation + results JSON. Watch live for findings (§6).
 
 Per plan §9, with backend + the bug each is most likely to surface:
 
-1. **§4 pool audit** — read-only.
-2. **S1 real-bundle** (gateway dry-run) — *the S3-fix use case under real full bundles.*
-3. **S2 multipart / large** (gateway dry-run) — *untested code path → high yield.*
-4. **S6 upload-path coverage** (gateway dry-run) — *x402-unsigned, sig types, BDI.*
-5. **S7 optimistic→confirmed** (**ArLocal-fed gateway, $0**) + gateway agent — *reconciliation / partition-gap.*
-6. **S5 failure/recovery** (gateway dry-run, fault injection) — *hard-gate + recovery bugs.*
-7. **S3 ceiling** (sink, off-box).
+1. **§4 pool audit** — read-only. *(Already found the DB over-subscription bug.)*
+2. **S1 real-bundle** (**sink**) — *the S3-fix use case under real full bundles.*
+3. **S2 multipart / large** (**sink**) — *untested code path → high yield.*
+4. **S6 upload-path coverage** (**sink**) — *x402-unsigned, sig types, BDI.*
+5. **S3 ceiling** (**sink**, off-box).
+6. **S5 failure/recovery** (**sink**, fault injection) — *hard-gate + recovery bugs.*
+7. **S7 optimistic→confirmed** (**gateway → ArLocal, $0**) + gateway agent — *reconciliation / partition-gap; the only one needing the gateway, and it must be ArLocal-fed.*
 8. **S4 soak** (ArLocal, hours/overnight) — *leaks / backlog.*
 9. **S8 gateway reads** — with gateway agent.
+
+> Bundler-side scenarios all run on the **sink** ($0, definitive). Only S7 (and the gateway-side
+> S8) need the gateway — and S7 must be **gateway → ArLocal**, never gateway-dry-run.
 
 ## 6. When we find a bug / gap / limit  *(the point of this)*
 

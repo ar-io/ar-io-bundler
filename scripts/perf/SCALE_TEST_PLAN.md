@@ -83,25 +83,28 @@ Point `--upload-url` at:
 - the public front (`perma.online`) — only to capture end-to-end *client* latency (incl. nginx/TLS).
 
 **Axis 2 — chain backend (`ARWEAVE_UPLOAD_NODE`, where bundles post/seed).** The real
-question, answered **per scenario**. The **production path is through the local gateway in
-dry-run** (prod runs `ARWEAVE_UPLOAD_NODE=:4000`):
+question, answered **per scenario**. Prod runs `ARWEAVE_UPLOAD_NODE=:4000` (the real gateway, which
+broadcasts), so $0 testing uses the sink (bundler-side) or gateway→ArLocal (integrated):
 
 | Backend | Exercises | $0? | Used by |
 |---|---|---|---|
-| **Local gateway `:4000` (dry-run)** | the **real prod topology** — optimistic-tx + **chunk-ingest** + broadcast leg | ✅ (dry-run never mines) | **S1, S2, S5, S6** (production-representative) |
-| **Sink** | post/seed faked → isolates the **bundler ingest ceiling** (chain can't confound) | ✅ | **S3** (ceiling hunt) |
-| **ArLocal** | real tx **lifecycle incl. verify→permanent**, but a *different* backend than prod | ✅ | **S4** (endurance/lifecycle) |
-| **Real mainnet** *or* **ArLocal-fed gateway** (`TRUSTED_NODE`→ArLocal) | **mining → confirmation**: optimistic→`stable` promotion ("marked as mined"), which dry-run can't reach | ¢ / ✅ | **S7** + the true confirmation number |
+| **Sink** (`mock-arweave-node.mjs`) | a mock — post/seed faked, nothing touches any chain; isolates **bundler ingest/bundling** | ✅ | **S1, S2, S3, S5, S6** |
+| **ArLocal** | real tx **lifecycle incl. verify→permanent** | ✅ | **S4** |
+| **Gateway → ArLocal** (gateway `TRUSTED_NODE_URL` + chunk-post → ArLocal) | the **full realistic gateway path** — optimistic-tx + chunk-ingest + broadcast — but to **ArLocal**, so it mines locally → **the S7 confirmation lifecycle, $0** | ✅ | **S7** |
+| ~~Gateway `:4000` "dry-run"~~ | — | ❌ **NOT $0** | **never** — see warning |
 
-**So: not all-ArLocal.** The production-representative runs go **through the local gateway
-(dry-run)** — the only way to scale-test the gateway's chunk-ingest and the
-bundler↔gateway↔MinIO interplay vertical integration is built on. ArLocal is a **$0
-shortcut for permanence only** (dry-run never confirms). The sink isolates the bundler ceiling.
+> ⚠️ **`ARWEAVE_POST_DRY_RUN` is NOT a $0 backend.** It gates the chunk-POST and the
+> *envoy*-routed `/tx`, but the bundler posts the **tx header direct to core `:4000`, which
+> still broadcasts → the tx mines → AR is charged.** This burned ~30 AR before the balance
+> tripwire caught it. The bundler-side scenarios therefore run on the **sink** (no chain at
+> all), and the *gateway-integrated* path must point the gateway at **ArLocal**, not dry-run.
+
+**Empirical $0 rule:** never trust a backend's name. Before any chain-touching run, post one
+bundle and confirm it gets **no real `block_height`** and the **wallet balance is unchanged**.
 
 **The gateway is always partly in the loop** regardless of backend — optical indexing
-(`OPTICAL_BRIDGE_URL`) fires per item and serving comes from MinIO; the backend only
-changes the post/seed/chunk-ingest leg. ⚠️ Gateway-dry-run runs require
-`ARWEAVE_POST_DRY_RUN=true`; **restore it to `false` (recreate core) afterward** (§6).
+(`OPTICAL_BRIDGE_URL`) fires per item and serving comes from MinIO; the backend only changes
+the post/seed/chunk-ingest leg.
 
 ---
 
@@ -129,14 +132,14 @@ Each: **Objective · Setup · Drive · Measure · Pass.** Scenario IDs are stabl
 
 ### S1 — Real-bundle stress  *(HIGHEST — the S3 fix's untested use case)*
 - **Objective:** bundling holds under realistic *full-size* bundles with payment on — where S3 + DB pools are hit hardest.
-- **Setup:** funded wallet (payment on); `OVERDUE` + `MAX_BUNDLE_SIZE` at production values; **backend = local gateway dry-run** (§3); off-box clients; pools per §4.
+- **Setup:** funded wallet (payment on); `OVERDUE` + `MAX_BUNDLE_SIZE` at production values; **backend = sink** (§3, $0); off-box clients; pools per §4.
 - **Drive:** sustained mixed 100 KB–1 MB at a rate that packs multiple full bundles back-to-back, ≥30 min.
 - **Measure:** prepare-bundle failures (target **0** "Failed to fetch"); S3 socket + DB connection saturation; plan→prepare→post→seed latency for *large* bundles; queue backlogs.
 - **Pass:** 0 prepare failures; bundles seed; no unbounded backlog; pools below saturation at ≥ target (§1).
 
 ### S2 — Multipart / large items  *(untested code path)*
 - **Objective:** exercise the multipart path (>90 MB) + large singles end-to-end.
-- **Setup:** as S1 (gateway dry-run).
+- **Setup:** as S1 (sink).
 - **Drive:** 100 MB, 500 MB, 1 GB, ~5 GB, ~10 GB (`MAX_DATA_ITEM_SIZE`) — a few each, then a concurrent batch.
 - **Measure:** multipart create→chunk→finalize latency + reliability; MinIO write throughput; per-process RSS; bundle path for large items.
 - **Pass:** every size uploads + bundles + seeds; no OOM; multipart finalize reliable under concurrency.
@@ -156,14 +159,14 @@ Each: **Objective · Setup · Drive · Measure · Pass.** Scenario IDs are stabl
 
 ### S5 — Failure & recovery  *(proves the hard gates)*
 - **Objective:** graceful degradation + recovery; **no data loss, money integrity preserved.**
-- **Setup:** gateway dry-run (§3); inject one fault at a time.
+- **Setup:** sink (§3); inject one fault at a time.
 - **Cases:** MinIO slow/restart; payment-service down (breaker opens); gateway down; Redis full/restart; Postgres connection exhaustion; disk pressure.
 - **Measure:** does ingest **fail safe** (reject, never silently drop)? does the pipeline recover when the dependency returns? any data loss? any charge-without-credit?
 - **Pass:** zero data loss; defined degradation behavior; automatic recovery; money integrity intact.
 
 ### S6 — Upload-path, signature-type & payment-tier coverage  *(every distinct code path, under load)*
 - **Objective:** confirm *every distinct upload path* holds under load and characterize relative cost — not just signed-eth.
-- **Setup:** gateway dry-run (§3); payment on.
+- **Setup:** sink (§3); payment on.
 - **Paths:** `/v1/tx` (signed) · `/x402/upload/signed` · **`/x402/upload/unsigned`** (raw → bundler signs, `rawDataPost`) · **multipart** · sig types **ethereum / arweave / solana(ed25519) / kyve** · tiers **funded (reserve→refund) / free-limit (~505 KB) / x402** (incl. ERC-1271) · **BDI** (`unbundle-bdi`).
 - **Measure:** acceptance + per-path latency/cost; payment **reserve→refund correctness on failed uploads**; no path leaks/stalls under concurrency.
 - **Pass:** every path accepts + bundles; payment integrity intact (no charge-without-credit; refunds on failure); relative costs documented.
