@@ -33,8 +33,6 @@ import {
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { ConfiguredRetryStrategy } from "@aws-sdk/util-retry";
-import { NodeHttpHandler } from "@smithy/node-http-handler";
-import * as https from "https";
 import { Readable } from "multistream";
 import pLimit from "p-limit";
 import winston from "winston";
@@ -55,6 +53,7 @@ import {
   MultiPartUploadNotFound,
 } from "../utils/errors";
 import { streamToBuffer } from "../utils/streamToBuffer";
+import { buildS3RequestHandler } from "./s3AgentConfig";
 import {
   MoveObjectParams,
   ObjectStore,
@@ -128,13 +127,7 @@ const regionsToClients: Record<BucketRegion, S3Client> = {};
     if (!region) return;
     if (!regionsToClients[region]) {
       regionsToClients[region] = new S3Client({
-        requestHandler: new NodeHttpHandler({
-          httpsAgent: new https.Agent({
-            keepAlive: true,
-            timeout: 60_000,
-          }),
-          connectionTimeout: 5_000,
-        }),
+        requestHandler: buildS3RequestHandler(),
         region,
         retryStrategy: defaultRetryStrategy,
         ...(endpoint
@@ -169,13 +162,7 @@ if (process.env.BACKUP_DATA_ITEM_BUCKET) {
 }
 
 const defaultS3Client = new S3Client({
-  requestHandler: new NodeHttpHandler({
-    httpsAgent: new https.Agent({
-      keepAlive: true,
-      timeout: 60_000,
-    }),
-    connectionTimeout: 5_000,
-  }),
+  requestHandler: buildS3RequestHandler(),
   retryStrategy: defaultRetryStrategy,
   region: s3Region,
   ...(endpoint
