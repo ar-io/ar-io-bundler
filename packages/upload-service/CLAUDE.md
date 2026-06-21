@@ -158,6 +158,13 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 - `plan.ts` groups pending data items into bundle plans by size/feature type.
 - `prepare.ts` assembles the ANS-104 bundle from object storage.
 - `post.ts` posts the bundle to Arweave; `seed.ts` seeds it; `verify.ts` confirms.
+  > ⚠️ **AR-spend hazard:** `post.ts`'s `postBundleTx` broadcasts the bundle tx to
+  > **`ARWEAVE_GATEWAY`** (= `gatewayUrl`), **NOT `ARWEAVE_UPLOAD_NODE`** (that's only the
+  > chunk-seed target). If `ARWEAVE_GATEWAY` is a real gateway, **every bundle broadcasts and
+  > mines → real AR** — and `ARWEAVE_POST_DRY_RUN` does NOT stop this (it gates chunk-POST +
+  > the envoy route only). For $0 testing, point **`ARWEAVE_GATEWAY`** at a sink/ArLocal and
+  > verify by waiting a full block. A 2026-06-21 scale test burned ~51 AR on this exact
+  > mistake — see `scripts/perf/SCALE_TEST_RUNBOOK.md` §10.
 - `optical-post.ts` posts data-item headers to the AR.IO Gateway optical bridge
   for optimistic caching (`OPTICAL_BRIDGE_URL`).
 - `putOffsets.ts` writes data-item offsets to PostgreSQL (for retrieval).

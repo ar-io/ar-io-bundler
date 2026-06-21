@@ -17,24 +17,37 @@ paths, S7 lifecycle, S5 faults) have the highest yield.
 
 ## 1. The hard constraint — $0 AR
 
-A bundle tx only costs AR when it **mines on the real chain**. So **never let a test post to
-the real chain.** Every scenario uses a **$0 backend**:
+A bundle tx costs AR only when it **mines on the real chain**. The single most important fact,
+learned by burning ~51 AR (see the postmortem, §10):
 
-| Backend | $0? | Why |
-|---|---|---|
-| **sink** (`mock-arweave-node.mjs`) | ✅ | a mock — post/seed faked, nothing touches any chain |
-| **ArLocal** | ✅ | local testnet — mines locally, no real AR |
-| **gateway → ArLocal** (gateway's `TRUSTED_NODE_URL` + chunk-post targets pointed at ArLocal) | ✅ | gateway broadcasts to ArLocal, not real Arweave — full realistic path, $0 |
-| ~~gateway `:4000` "dry-run"~~ | ❌ **NOT $0** | `ARWEAVE_POST_DRY_RUN` only gates the chunk-POST + the *envoy*-routed `/tx`. The bundler posts the **tx header direct to core `:4000`, which still broadcasts → the tx mines → AR charged.** This burned ~30 AR before the tripwire caught it. **Never use it as a $0 backend.** |
+> ### ⛔ The tx-broadcast knob is `ARWEAVE_GATEWAY` — NOT `ARWEAVE_UPLOAD_NODE`.
+> `postBundleTx` posts the bundle tx to `gatewayUrl` = **`ARWEAVE_GATEWAY`** (`constants.ts`,
+> `post.ts`). **`ARWEAVE_UPLOAD_NODE` is only the chunk-seed target** and is *not used* by the
+> tx post. So pointing `ARWEAVE_UPLOAD_NODE` at a sink does **nothing** — if `ARWEAVE_GATEWAY`
+> is the real gateway (`:3000`/`:4000`), **every bundle broadcasts and mines → real AR.**
+> Neither does `ARWEAVE_POST_DRY_RUN=true` help (it gates only the chunk-POST + the *envoy*
+> route; the direct tx post still broadcasts).
 
-- **S7** (mining/confirmation lifecycle) uses the **gateway → ArLocal** setup ($0) — *not* real
-  mainnet, *not* gateway-dry-run. Real-mainnet confirmation is optional, off by default, ≤ a
-  handful of tiny items, explicit sign-off only.
-- **EMPIRICAL $0 PROOF (mandatory).** Never trust a backend's name. Before any run: post **one**
-  bundle, then verify **(a)** it gets **no real `block_height`** (`curl :3000/tx/<bundleId>/status`)
-  and **(b)** the wallet balance is **unchanged**. Only then drive load.
-- **AR balance tripwire:** snapshot the balance before, re-check unchanged after every run (§4).
-  If AR moved → **abort + investigate** immediately.
+**For $0, `ARWEAVE_GATEWAY` MUST point at a non-broadcasting target. Set BOTH vars:**
+
+| Mode | `ARWEAVE_GATEWAY` | `ARWEAVE_UPLOAD_NODE` | $0? | Use |
+|---|---|---|---|---|
+| **sink** | `http://localhost:4555` | `http://localhost:4555` | ✅ | bundler-side (S1/S2/S3/S5/S6). The sink serves `/tx`, `/tx_anchor`, `/price`. |
+| **ArLocal** | `http://localhost:1984` | `http://localhost:1984` | ✅ | lifecycle (S4) |
+| **gateway → ArLocal** | the gateway, *with the gateway's OWN broadcast targets pointed at ArLocal* | — | ✅ | S7 only (gateway-side config) |
+| ~~real gateway `:3000`/`:4000`~~ | — | — | ❌ **broadcasts → AR** | never |
+| ~~gateway "dry-run"~~ | — | — | ❌ **still broadcasts the tx header** | never |
+
+**EMPIRICAL $0 PROOF (mandatory — and it MUST wait for mining):**
+1. Post **one** bundle.
+2. **Wait the full Arweave block window (~10–15 min).** An instant balance/status check is a
+   **FALSE NEGATIVE** — the broadcast tx hasn't mined yet, so it looks $0, then drains minutes later.
+3. Then confirm the bundle tx has **no real `block_height`** (`curl :3000/tx/<id>/status` → not found / null)
+   **and** the wallet balance is **unchanged**. Only then drive load.
+
+**AR balance tripwire:** snapshot before; re-check after every run; if it ever drops →
+**freeze (`pm2 stop upload-workers`) and investigate.** Caveat: the balance also keeps drifting
+as *earlier* broadcasts confirm, so a drop may be the tail of a prior leak — investigate, don't assume the current run is clean *or* dirty.
 
 ## 2. Lighter guardrails (dev/test box)
 
@@ -74,13 +87,14 @@ curl -s "http://localhost:3000/wallet/$ADDR/balance" | tee /tmp/ar-balance-befor
 
 ### 4.3 AR-safety assertion — gate the run (ABORT if it fails)
 ```bash
-pm2 jlist | node -e 'JSON.parse(require("fs").readFileSync(0)).filter(p=>p.name=="upload-workers").forEach(p=>console.log("UPLOAD_NODE="+p.pm2_env.ARWEAVE_UPLOAD_NODE))'
-# REQUIRE: UPLOAD_NODE is :4555 (sink) or :1984 (ArLocal), OR the gateway with its
-# TRUSTED_NODE/chunk-post targets pointed at ArLocal. "gateway :4000 + dry-run" is NOT safe
-# (it broadcasts the tx header → mines → AR). If unsure → STOP.
+# Check ARWEAVE_GATEWAY — the TX-BROADCAST knob (NOT ARWEAVE_UPLOAD_NODE, which is chunks only).
+pm2 jlist | node -e 'JSON.parse(require("fs").readFileSync(0)).filter(p=>p.name=="upload-workers").forEach(p=>console.log("ARWEAVE_GATEWAY="+p.pm2_env.ARWEAVE_GATEWAY+"  ARWEAVE_UPLOAD_NODE="+p.pm2_env.ARWEAVE_UPLOAD_NODE))'
+# REQUIRE: ARWEAVE_GATEWAY is :4555 (sink) or :1984 (ArLocal). It is NOT enough for
+# ARWEAVE_UPLOAD_NODE to be the sink — the tx post ignores that var.
+# If ARWEAVE_GATEWAY is the real gateway (:3000 / :4000) → STOP. You WILL spend AR.
 ```
-Then **prove it empirically** (post one bundle; confirm no real `block_height` + balance
-unchanged) before driving load — see §1.
+Then **prove $0 empirically with the mining wait** (post one bundle; wait ~10–15 min; confirm
+no real `block_height` + balance unchanged) — see §1. An instant check is a false negative.
 
 ### 4.4 Run (off-box) + 4.5 Observe
 Run the scenario's harness command from the off-box generator; capture the plan-§7
@@ -138,6 +152,36 @@ worst case re-init infra (`yarn infra:up` + `yarn db:migrate`).
 - **Other agents:** yield the shared stack.
 - **Gateway agent:** dry-run flips, S7/S8 (ArLocal-fed sync), gateway-side findings.
 - **You:** go/no-go; relay to the gateway agent.
+
+---
+
+## 10. Postmortem — the ~51 AR incident (2026-06-21)
+
+**What happened:** a scale-test session drained the bundler wallet from **~53 AR → ~2 AR**.
+Test bundles broadcast to the **real** chain and mined, each charging its reward.
+
+**Root cause:** the bundle tx broadcast target is **`ARWEAVE_GATEWAY`** (`postBundleTx` →
+`gatewayUrl` = `ARWEAVE_GATEWAY`). To make runs "$0" the operator repeatedly set
+**`ARWEAVE_UPLOAD_NODE`** to a sink — but that var is only the **chunk-seed** target and the
+tx post never uses it. `ARWEAVE_GATEWAY` stayed at the real gateway (`:3000`), so every bundle
+broadcast and mined. The sink received **zero `POST /tx`** the whole time — the smoking gun.
+
+**Three compounding errors (each individually sufficient to catch it):**
+1. **Wrong knob** — guarded `ARWEAVE_UPLOAD_NODE` instead of `ARWEAVE_GATEWAY`.
+2. **Misread `ARWEAVE_POST_DRY_RUN`** — it gates the chunk-POST + envoy route, *not* the
+   direct tx broadcast. Believing it was "$0" cost the first ~30 AR.
+3. **Timing-blind verification** — checked the balance *instantly* after posting, before the
+   broadcast tx had mined (~minutes). It looked unchanged, then drained. A false negative.
+
+**What's now enforced above to prevent recurrence:**
+- §1: the tx-broadcast knob is **`ARWEAVE_GATEWAY`**; $0 requires *it* (and `ARWEAVE_UPLOAD_NODE`)
+  to point at sink/ArLocal; the empirical proof **must wait the full mining window**.
+- §4.3: the pre-run assertion checks **`ARWEAVE_GATEWAY`**.
+- §2/§8: a funded wallet + any chain-touching test is a standing hazard — prefer an **unfunded
+  wallet / isolated env**; the balance tripwire is a backstop, not a primary control.
+
+**One-line takeaway:** *On this stack, the bundle tx goes wherever `ARWEAVE_GATEWAY` points —
+verify that, and verify $0 by waiting for a block, before you ever drive load.*
 
 ---
 
