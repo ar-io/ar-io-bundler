@@ -317,6 +317,45 @@ export class MetricRegistry {
     help: "Number of times the service failure to post to the ardrive gateway optical bridge",
   });
 
+  // --- Optimistic surface 2: best-effort optimistic L1 tx-header push ---
+  // Until now this surface (postBundleTxToOptimisticTxQueue) had ZERO metrics, so
+  // silent failure was invisible. Mirror surface 1's observability:
+  //  - result="indexed"  : the gateway accepted the optimistic tx header
+  //  - result="error"    : the POST threw / was rejected (swallowed, best-effort)
+  //  - result="disabled" : OPTIMISTIC_TX_BRIDGE_ENABLED was not "true"
+  //  - result="skipped"  : enabled but unconfigured (missing key/URL, or the
+  //                        endpoint could not be derived)
+  public static optimisticTxPost = MetricRegistry.createCounter({
+    name: "optimistic_tx_post_total",
+    help: "Count of optimistic bundle-tx header pushes to the gateway by result",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["indexed", "error", "disabled", "skipped"],
+    },
+  });
+
+  public static optimisticTxPostDurationSeconds =
+    MetricRegistry.createHistogram({
+      name: "optimistic_tx_post_duration_seconds",
+      help: "Duration of optimistic bundle-tx header pushes to the gateway in seconds",
+      buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    });
+
+  // --- Optimistic surface 4: best-effort chunk push to the gateway cache ---
+  // Env-gated (CHUNK_CACHE_BRIDGE_ENABLED, default OFF), detached, never affects
+  // seeding to ARWEAVE_UPLOAD_NODE.
+  //  - result="cached"   : chunks pushed to the gateway cache
+  //  - result="error"    : the push failed (swallowed, best-effort)
+  //  - result="disabled" : CHUNK_CACHE_BRIDGE_ENABLED was not "true"
+  public static chunkCacheBridge = MetricRegistry.createCounter({
+    name: "chunk_cache_bridge_total",
+    help: "Count of best-effort bundle chunk pushes to the gateway cache by result",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["cached", "error", "disabled"],
+    },
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
   }

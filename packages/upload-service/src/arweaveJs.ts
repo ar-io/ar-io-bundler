@@ -26,8 +26,13 @@ import { pipeline } from "stream/promises";
 import winston from "winston";
 
 import { ArweaveGateway } from "./arch/arweaveGateway";
-import { arweaveUploadNode, gatewayUrl } from "./constants";
+import {
+  arweaveUploadNode,
+  chunkCacheBridgeEnabled,
+  gatewayUrl,
+} from "./constants";
 import logger from "./logger";
+import { MetricRegistry } from "./metricRegistry";
 import { JWKInterface } from "./types/jwkTypes";
 import { TxAttributes } from "./types/types";
 import { filterKeysFromObject } from "./utils/common";
@@ -119,6 +124,61 @@ export class ArweaveInterface {
       bundleId,
       durationsMs,
     });
+  }
+
+  /**
+   * Optimistic surface 3: best-effort push of a seeded bundle's chunks to the
+   * READ gateway's `/chunk` cache (`ARWEAVE_GATEWAY`), warming it before the tx
+   * mines. Distinct from seeding — seeding always targets `ARWEAVE_UPLOAD_NODE`
+   * (a real Arweave node) so on-chain landing never depends on the gateway
+   * supporting `/chunk` or being healthy. Env-gated via `CHUNK_CACHE_BRIDGE_ENABLED`
+   * (default OFF). STRICTLY best-effort: it re-reads the payload and re-uploads
+   * the prepared `bundleTx.chunks` to the gateway; any failure is swallowed and
+   * NEVER affects seeding. Caller should fire this DETACHED (not awaited).
+   *
+   * Requires `bundleTx.chunks` to already be prepared (it is, after
+   * `uploadChunksFromPayloadStream`).
+   */
+  public async pushChunksToGatewayCache(
+    getPayloadStream: () => Promise<Readable>,
+    bundleTx: Transaction
+  ): Promise<void> {
+    const bundleId = bundleTx.id;
+    if (!chunkCacheBridgeEnabled) {
+      MetricRegistry.chunkCacheBridge.inc({ result: "disabled" });
+      return;
+    }
+    const startMs = Date.now();
+    this.log.debug("Pushing bundle chunks to gateway cache (best-effort)..", {
+      bundleId,
+      gateway: `${gatewayUrl.protocol}//${gatewayUrl.host}`,
+    });
+    try {
+      if (!bundleTx.chunks) {
+        bundleTx.chunks = await pipeline(
+          await getPayloadStream(),
+          generateTransactionChunksAsync()
+        );
+      }
+      // Re-upload the prepared chunks against the READ gateway. Uses this.arweaveJs
+      // (configured for gatewayUrl), separate from this.arweaveJsUpload (the seed
+      // node), so this can never disturb the seed path.
+      await pipeline(
+        await getPayloadStream(),
+        uploadTransactionAsync(bundleTx, this.arweaveJs, false)
+      );
+      MetricRegistry.chunkCacheBridge.inc({ result: "cached" });
+      this.log.debug("Pushed bundle chunks to gateway cache.", {
+        bundleId,
+        durationMs: Date.now() - startMs,
+      });
+    } catch (error) {
+      MetricRegistry.chunkCacheBridge.inc({ result: "error" });
+      this.log.warn("Best-effort chunk-cache push to gateway failed.", {
+        bundleId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
   }
 
   public async createTransactionFromPayloadStream(

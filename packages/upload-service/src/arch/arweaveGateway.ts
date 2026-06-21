@@ -345,33 +345,56 @@ export class ArweaveGateway implements Gateway {
     bundleTx: Transaction
   ): Promise<void> {
     if (process.env.OPTIMISTIC_TX_BRIDGE_ENABLED !== "true") {
+      MetricRegistry.optimisticTxPost.inc({ result: "disabled" });
       return;
     }
     const adminKey = process.env.AR_IO_ADMIN_KEY;
     const opticalBridgeUrl = process.env.OPTICAL_BRIDGE_URL;
-    if (adminKey === undefined || opticalBridgeUrl === undefined) {
+    if (adminKey === undefined) {
       logger.warn(
-        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY or OPTICAL_BRIDGE_URL is missing; skipping optimistic-tx post."
+        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY is missing; skipping optimistic-tx post."
       );
+      MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
       return;
     }
-    // The optimistic-tx admin endpoint lives next to the optical data-item queue
-    // on the same gateway: .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
-    const optimisticTxUrl = opticalBridgeUrl.replace(
-      /queue-data-item\/?$/,
-      "queue-optimistic-tx"
-    );
-    if (optimisticTxUrl === opticalBridgeUrl) {
-      logger.error(
-        "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive the optimistic-tx endpoint. Skipping optimistic-tx post.",
-        { opticalBridgeUrl }
+    // Prefer the explicit OPTIMISTIC_TX_BRIDGE_URL when configured. Otherwise fall
+    // back to deriving it from the optical data-item queue, which lives next to the
+    // optimistic-tx admin endpoint on the same gateway:
+    //   .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
+    // The explicit env exists because the suffix-replace silently disables itself
+    // for a validly-spelled-but-different optical URL.
+    // Read at call time (mirrors how AR_IO_ADMIN_KEY/OPTICAL_BRIDGE_URL are read
+    // here) so config changes/tests don't depend on module-load order.
+    let optimisticTxUrl: string | undefined =
+      process.env.OPTIMISTIC_TX_BRIDGE_URL;
+    if (optimisticTxUrl === undefined) {
+      if (opticalBridgeUrl === undefined) {
+        logger.warn(
+          "OPTIMISTIC_TX_BRIDGE_ENABLED is set but neither OPTIMISTIC_TX_BRIDGE_URL nor OPTICAL_BRIDGE_URL is set; skipping optimistic-tx post."
+        );
+        MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
+        return;
+      }
+      const derived = opticalBridgeUrl.replace(
+        /queue-data-item\/?$/,
+        "queue-optimistic-tx"
       );
-      return;
+      if (derived === opticalBridgeUrl) {
+        logger.error(
+          "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive a distinct optimistic-tx endpoint. Set OPTIMISTIC_TX_BRIDGE_URL explicitly. Skipping optimistic-tx post.",
+          { opticalBridgeUrl }
+        );
+        MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
+        return;
+      }
+      optimisticTxUrl = derived;
     }
     logger.debug("Posting bundle tx to optimistic-tx queue...", {
       bundleTxId: bundleTx.id,
       optimisticTxUrl,
     });
+    const endTimer =
+      MetricRegistry.optimisticTxPostDurationSeconds.startTimer();
     try {
       // Single attempt, short timeout — no retryStrategy. Retrying a best-effort
       // pre-mine index is pointless (it races the actual mine) and could pile up
@@ -382,11 +405,15 @@ export class ArweaveGateway implements Gateway {
         },
         timeout: 5000,
       });
+      MetricRegistry.optimisticTxPost.inc({ result: "indexed" });
     } catch (error) {
       logger.error("Error posting bundle tx to optimistic-tx queue", {
         bundleTxId: bundleTx.id,
         error: error instanceof Error ? error.message : "Unknown error",
       });
+      MetricRegistry.optimisticTxPost.inc({ result: "error" });
+    } finally {
+      endTimer();
     }
   }
 }
