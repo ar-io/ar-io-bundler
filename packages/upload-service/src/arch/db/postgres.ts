@@ -1058,6 +1058,118 @@ export class PostgresDatabase implements Database {
     });
   }
 
+  /**
+   * Returns posted_bundle rows whose seed has not completed within `olderThanMs`
+   * (i.e. posted_date is older than now - threshold). These are bundles whose
+   * seed-bundle job may have exhausted its BullMQ attempts and would otherwise
+   * be stranded in posted_bundle forever. Mirrors getSeededBundles: locks the
+   * selected rows FOR UPDATE NOWAIT so two concurrent re-drivers can't contend.
+   */
+  public async getStalePostedBundles(
+    olderThanMs: number,
+    limit = 50
+  ): Promise<PostedBundle[]> {
+    this.log.debug("Getting stale posted bundles from database...", {
+      olderThanMs,
+      limit,
+    });
+
+    try {
+      const postedDbResult = await this.writer<PostedBundleDBResult>(
+        tableNames.postedBundle
+      )
+        .where(
+          columnNames.postedDate,
+          "<",
+          this.writer.raw(`now() - (? * interval '1 millisecond')`, [
+            olderThanMs,
+          ])
+        )
+        .orderBy(columnNames.postedDate)
+        .limit(limit)
+        .forUpdate() // locks relevant rows
+        .noWait(); // don't wait for locked rows; throws on lock contention
+
+      if (postedDbResult.length === 0) {
+        return [];
+      }
+
+      return postedDbResult.map(postedBundleDbResultToPostedBundleMap);
+    } catch (error) {
+      if ((error as PostgresError).code === postgresTableRowsLockedUniqueCode) {
+        this.log.warn("Table rows are locked by another execution...skipping");
+        return [];
+      }
+      this.log.error("Failed to fetch stale posted bundles from database.", {
+        error,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Atomically bumps (creating on first call) the re-drive attempt counter for a
+   * posted bundle and returns the new count. Used by the re-driver to decide
+   * when a bundle has been re-driven enough times to be demoted to failed.
+   */
+  public async incrementPostedBundleRedrive(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<number> {
+    const [row] = await this.writer
+      .raw(
+        `INSERT INTO ${tableNames.postedBundleRedrive}
+           (${columnNames.bundleId}, ${columnNames.planId}, ${columnNames.seedRedrives})
+         VALUES (?, ?, 1)
+         ON CONFLICT (${columnNames.bundleId})
+         DO UPDATE SET ${columnNames.seedRedrives} =
+           ${tableNames.postedBundleRedrive}.${columnNames.seedRedrives} + 1
+         RETURNING ${columnNames.seedRedrives}`,
+        [bundleId, planId]
+      )
+      .then((result: { rows: { seed_redrives: number }[] }) => result.rows);
+
+    return Number(row.seed_redrives);
+  }
+
+  /**
+   * Demotes a stranded posted_bundle to failed_bundle: repacks its planned data
+   * items back to new_data_item (so a fresh bundle can be planned) and moves the
+   * bundle row from posted_bundle into failed_bundle with failedToSeed. Also
+   * clears any re-drive tracking row. Mirrors updateNewBundleToFailedToPost.
+   */
+  public async updatePostedBundleToFailed(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<void> {
+    this.log.info("Inserting failed-to-seed bundle...", { bundleId, planId });
+    await this.rePackDataItemsForPlanId(planId, bundleId);
+    await this.writer.transaction(async (dbTx) => {
+      const postedBundleDbResult = (
+        await dbTx<PostedBundleDBResult>(tableNames.postedBundle)
+          .where({ bundle_id: bundleId })
+          .del()
+          .returning("*")
+      )[0];
+
+      if (postedBundleDbResult) {
+        const failedBundleDbInsert: FailedBundleDbInsert = {
+          ...postedBundleDbResult,
+          // seeded_date is non-nullable on failed_bundle but this bundle never
+          // seeded; stub it from posted_date (same approach as the
+          // failed-to-post path which stubs from planned_date).
+          seeded_date: postedBundleDbResult.posted_date,
+          failed_reason: failedReasons.failedToSeed,
+        };
+        await dbTx(tableNames.failedBundle).insert(failedBundleDbInsert);
+      }
+
+      await dbTx(tableNames.postedBundleRedrive)
+        .where({ bundle_id: bundleId })
+        .del();
+    });
+  }
+
   /** For a given plan Id, move data items from planned_data_item to new_data_item for repacking in plan job */
   private async rePackDataItemsForPlanId(
     planId: PlanId,

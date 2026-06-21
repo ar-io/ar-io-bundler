@@ -26,6 +26,7 @@ export const tableNames = {
   plannedDataItem: "planned_data_item",
   failedDataItem: "failed_data_item",
   postedBundle: "posted_bundle",
+  postedBundleRedrive: "posted_bundle_redrive",
   seededBundle: "seeded_bundle",
   /** @deprecated */
   seedResult: "seed_result",
@@ -55,6 +56,7 @@ export const columnNames = {
   plannedDate: "planned_date",
   postedDate: "posted_date",
   reward: "reward",
+  seedRedrives: "seed_redrives",
   seededDate: "seeded_date",
   signature: "signature",
   signatureType: "signature_type",
