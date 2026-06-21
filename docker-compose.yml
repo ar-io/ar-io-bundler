@@ -4,6 +4,13 @@ services:
     image: postgres:16.1
     container_name: ar-io-bundler-postgres
     restart: unless-stopped
+    # Connection-cap rule: max_connections >= (max processes with a DB pool ×
+    # DB_POOL_MAX) + overhead. Processes = upload-api×API_INSTANCES +
+    # payment-service×API_INSTANCES + upload-workers + payment-workers +
+    # admin-dashboard. Default PG max_connections is 100, which is exceeded under
+    # load (e.g. API_INSTANCES=8 → ~19 pools × DB_POOL_MAX). Re-check this number
+    # whenever API_INSTANCES or DB_POOL_MAX changes.
+    command: ["postgres", "-c", "max_connections=500", "-c", "shared_buffers=256MB"]
     environment:
       POSTGRES_USER: ${DB_USER:-turbo_admin}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
