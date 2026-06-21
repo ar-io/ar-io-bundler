@@ -46,6 +46,7 @@ type QueueTypeToMessageType = {
   [jobLabels.newDataItem]: EnqueuedNewDataItem;
   [jobLabels.putOffsets]: EnqueuedOffsetsBatch;
   [jobLabels.cleanupFs]: Record<string, never>;
+  [jobLabels.redrivePosted]: Record<string, never>;
 };
 
 export type QueueType = keyof QueueTypeToMessageType;

@@ -46,6 +46,7 @@ import { planBundleHandler } from "../jobs/plan";
 import { postBundleHandler } from "../jobs/post";
 import { prepareBundleHandler } from "../jobs/prepare";
 import { putOffsetsHandler } from "../jobs/putOffsets";
+import { redrivePostedHandler } from "../jobs/redrive-posted";
 import { seedBundleHandler } from "../jobs/seed";
 import { verifyBundleHandler } from "../jobs/verify";
 import { newDataItemBatchInsertHandler } from "../jobs/newDataItemBatchInsert";
@@ -205,6 +206,18 @@ const cleanupWorker = createWorker(
   { concurrency: 1 }
 );
 
+// Redrive Posted Worker - Re-drives bundles stranded in posted_bundle (seed
+// exhausted its attempts). Concurrency 1 is the overlap guard, mirroring the
+// plan worker: getStalePostedBundles uses FOR UPDATE NOWAIT, so an overlapping
+// run selects nothing rather than double-driving the same rows.
+const redrivePostedWorker = createWorker(
+  jobLabels.redrivePosted,
+  async () => {
+    await redrivePostedHandler({ database });
+  },
+  { concurrency: 1 }
+);
+
 const allWorkers = [
   planWorker,
   prepareWorker,
@@ -217,6 +230,7 @@ const allWorkers = [
   unbundleWorker,
   finalizeWorker,
   cleanupWorker,
+  redrivePostedWorker,
 ];
 
 setupGracefulShutdown(allWorkers, logger);
@@ -241,6 +255,8 @@ logger.info("All BullMQ workers started successfully", {
 // ---------------------------------------------------------------------------
 const PLAN_SCHEDULE_CRON = process.env.PLAN_SCHEDULE_CRON ?? "*/5 * * * *";
 const CLEANUP_SCHEDULE_CRON = process.env.CLEANUP_SCHEDULE_CRON ?? "0 2 * * *";
+const POSTED_REDRIVE_SCHEDULE_CRON =
+  process.env.POSTED_REDRIVE_SCHEDULE_CRON ?? "*/10 * * * *";
 
 async function registerJobSchedulers() {
   // planId is cosmetic — planBundleHandler ignores job data and scans the DB.
@@ -256,9 +272,18 @@ async function registerJobSchedulers() {
     CLEANUP_SCHEDULE_CRON,
     {}
   );
+  // Re-driver for bundles stranded in posted_bundle (seed exhausted attempts).
+  // redrivePostedHandler ignores job data and scans the DB itself.
+  await upsertRepeatable(
+    jobLabels.redrivePosted,
+    "redrive-posted-scheduler",
+    POSTED_REDRIVE_SCHEDULE_CRON,
+    {}
+  );
   logger.info("Registered BullMQ job schedulers", {
     planBundle: PLAN_SCHEDULE_CRON || "(disabled)",
     cleanupFs: CLEANUP_SCHEDULE_CRON || "(disabled)",
+    redrivePosted: POSTED_REDRIVE_SCHEDULE_CRON || "(disabled)",
   });
 }
 

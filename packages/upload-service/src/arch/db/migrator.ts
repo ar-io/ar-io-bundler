@@ -1172,6 +1172,49 @@ export class ConfigTableMigrator extends Migrator {
   }
 }
 
+export class PostedBundleRedriveMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+  private noTimeZone = { useTz: false };
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to posted bundle redrive tracking",
+      operation: async () => {
+        // Tracking table (rather than a column on posted_bundle) so the
+        // existing spread-based inserts that copy whole posted_bundle rows into
+        // seeded_bundle / failed_bundle are not affected by an extra column.
+        // Keyed by bundle_id; rows are created lazily by the re-driver and are
+        // garbage-collected when their posted_bundle row leaves the table.
+        await this.knex.schema.createTable(
+          tableNames.postedBundleRedrive,
+          (table) => {
+            table.string(columnNames.bundleId, 43).primary();
+            table.string(columnNames.planId).notNullable().index();
+            table.integer(columnNames.seedRedrives).notNullable().defaultTo(0);
+            table
+              .timestamp(columnNames.createdAt, this.noTimeZone)
+              .notNullable()
+              .defaultTo(this.knex.fn.now());
+          }
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from posted bundle redrive tracking",
+      operation: async () => {
+        await this.knex.schema.dropTableIfExists(
+          tableNames.postedBundleRedrive
+        );
+      },
+    });
+  }
+}
+
 export class X402PaymentsMigrator extends Migrator {
   constructor(private readonly knex: Knex) {
     super();
@@ -1191,8 +1234,14 @@ export class X402PaymentsMigrator extends Migrator {
           table.string("winc_amount", 255).notNullable(); // Winston amount
           table.string("data_item_id", 43).nullable().index(); // Linked after data item creation
           table.bigInteger("byte_count").notNullable(); // Declared byte count
-          table.timestamp("created_at", this.noTimeZone).defaultTo(this.knex.fn.now()).notNullable();
-          table.timestamp("settled_at", this.noTimeZone).defaultTo(this.knex.fn.now()).notNullable();
+          table
+            .timestamp("created_at", this.noTimeZone)
+            .defaultTo(this.knex.fn.now())
+            .notNullable();
+          table
+            .timestamp("settled_at", this.noTimeZone)
+            .defaultTo(this.knex.fn.now())
+            .notNullable();
 
           // Composite index for queries by payer and time
           table.index(["payer_address", "created_at"]);

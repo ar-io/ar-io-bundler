@@ -129,6 +129,31 @@ export interface Database {
     bundleId: TransactionId
   ): Promise<void>;
 
+  /**
+   * Returns posted_bundle rows whose seed has not completed within `olderThanMs`
+   * (posted_date older than now - threshold), FOR UPDATE NOWAIT. These are
+   * candidates for re-driving the seed-bundle job (or demotion to failed).
+   */
+  getStalePostedBundles(
+    olderThanMs: number,
+    limit?: number
+  ): Promise<PostedBundle[]>;
+
+  /** Bumps (creating on first call) the re-drive counter and returns its new value. */
+  incrementPostedBundleRedrive(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<number>;
+
+  /**
+   * Demotes a stranded posted_bundle to failed_bundle (failedToSeed), repacking
+   * its planned data items back to new_data_item.
+   */
+  updatePostedBundleToFailed(
+    planId: PlanId,
+    bundleId: TransactionId
+  ): Promise<void>;
+
   /** Gets latest status of a data item from the database */
   getDataItemInfo(dataItemId: TransactionId): Promise<
     | {
@@ -212,7 +237,9 @@ export interface Database {
   getX402PaymentsByPayer(payerAddress: string): Promise<X402Payment[]>;
 
   /** Check if data item IDs already exist in the database (across all tables) */
-  getExistingDataItemIds(dataItemIds: TransactionId[]): Promise<Set<TransactionId>>;
+  getExistingDataItemIds(
+    dataItemIds: TransactionId[]
+  ): Promise<Set<TransactionId>>;
 
   updatePlannedDataItemsToDefaultDeadlineHeight(
     dataItemIds: DataItemId[]

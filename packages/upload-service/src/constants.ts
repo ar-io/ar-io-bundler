@@ -139,9 +139,34 @@ export const octetStreamContentType = "application/octet-stream";
 export const failedReasons = {
   failedToPost: "failed_to_post",
   notFound: "not_found",
+  failedToSeed: "failed_to_seed",
 } as const;
 
 export const msPerMinute = 60_000;
+
+// ---------------------------------------------------------------------------
+// posted_bundle re-driver (pipeline reliability)
+//
+// A bundle whose seed-bundle job exhausts its BullMQ attempts is otherwise
+// stranded in posted_bundle forever (tx header on chain, chunks never seeded,
+// nothing re-scans it). The re-driver scans stale posted_bundle rows on a
+// schedule and re-enqueues seed-bundle; after MAX_SEED_REDRIVES it demotes the
+// bundle to failed_bundle (items repacked to new_data_item) — loudly.
+//
+// POSTED_REDRIVE_SCHEDULE_CRON is read in workers/allWorkers.ts; set it to ""
+// to disable the schedule.
+// ---------------------------------------------------------------------------
+export const maxSeedRedrives = process.env.MAX_SEED_REDRIVES
+  ? +process.env.MAX_SEED_REDRIVES
+  : 5;
+
+// How old (ms since posted_date) a posted_bundle row must be before the
+// re-driver considers it stale enough to re-enqueue. Default 30 minutes — well
+// beyond the seed job's 3-attempt exponential backoff window, so a bundle that
+// is merely mid-retry is not prematurely re-driven.
+export const postedStaleThresholdMs = process.env.POSTED_STALE_THRESHOLD_MS
+  ? +process.env.POSTED_STALE_THRESHOLD_MS
+  : 30 * 60_000;
 
 export const signatureTypeLength = 2;
 export const emptyTargetLength = 1;
@@ -315,6 +340,7 @@ export const jobLabels = {
   verifyBundle: "verify-bundle",
   cleanupFs: "cleanup-fs",
   putOffsets: "put-offsets",
+  redrivePosted: "redrive-posted",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 

@@ -201,6 +201,28 @@ export class MetricRegistry {
       help: "Count of data items moved to failed_data_item after a constraint violation during the verify permanent insert",
     });
 
+  // Count of posted_bundle re-drive attempts, labelled by outcome:
+  //   result="reenqueued" — seed-bundle re-enqueued for a stale bundle
+  //   result="demoted"    — bundle exhausted MAX_SEED_REDRIVES and was failed
+  //   result="error"      — re-drive of a single bundle threw (isolated)
+  // Alert on any sustained "demoted"/"error" rate: it means bundles were stuck.
+  public static postedBundleRedrive = MetricRegistry.createCounter({
+    name: "posted_bundle_redrive_total",
+    help: "Count of posted_bundle re-drive outcomes (reenqueued/demoted/error)",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["reenqueued", "demoted", "error"],
+    },
+  });
+
+  // Count of bundles demoted to failed_bundle because seeding never completed
+  // (stranded in posted_bundle past MAX_SEED_REDRIVES). Any nonzero value is a
+  // loud signal that a bundle's tx header is on chain but its chunks never landed.
+  public static postedBundleFailedToSeed = MetricRegistry.createCounter({
+    name: "posted_bundle_failed_to_seed_total",
+    help: "Count of bundles demoted to failed_bundle after exhausting seed re-drives",
+  });
+
   public static newDataItemInsertBatchSizes = MetricRegistry.createHistogram({
     name: "new_data_item_insert_batch_size",
     help: "Size of the batch of new data items being inserted",

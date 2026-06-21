@@ -169,6 +169,18 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 `upsertRepeatable()` (`src/arch/queues.ts`):
 - `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
 - `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
+- `redrive-posted` — `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+
+**`posted_bundle` recovery (`redrive-posted.ts`):** the bundle pipeline's one
+dead-end was `posted_bundle` — a bundle whose tx header posted but whose
+`seed-bundle` job then exhausted its retries had no re-driver (unlike
+`seeded_bundle`, which `verify` re-scans every tick). The `redrive-posted`
+scheduler re-enqueues seeding for `posted_bundle` rows older than
+`POSTED_STALE_THRESHOLD_MS` (default 30 min, past the seed job's own backoff);
+after `MAX_SEED_REDRIVES` (default 5) it demotes the bundle to `failed_bundle`
+(items repacked to `new_data_item`) and emits `posted_bundle_failed_to_seed_total`
+so the stall is loud, not silent. Attempt counts live in the `posted_bundle_redrive`
+table.
 
 This replaced the external `cron-trigger-*.sh` crons, which were a silent-failure
 footgun (a cron never registered, or one that couldn't find `node` on cron's
