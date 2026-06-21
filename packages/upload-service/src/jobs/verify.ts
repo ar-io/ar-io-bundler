@@ -18,7 +18,7 @@ import pLimit from "p-limit";
 import winston from "winston";
 
 import { defaultArchitecture } from "../arch/architecture";
-import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
+import { Gateway, MultiGatewayArweaveGateway } from "../arch/arweaveGateway";
 import { CacheService } from "../arch/cacheServiceTypes";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
@@ -28,7 +28,7 @@ import { BundleHeaderInfo } from "../bundles/assembleBundleHeader";
 import {
   batchingSize,
   dropBundleTxThresholdNumberOfBlocks,
-  gatewayUrl,
+  permanenceConfirmationSources,
   txPermanentThreshold,
 } from "../constants";
 import defaultLogger from "../logger";
@@ -54,6 +54,69 @@ interface VerifyBundleJobArch {
   logger?: winston.Logger;
   batchSize?: number;
   cacheService?: CacheService;
+}
+
+/**
+ * The number of independent sources that must confirm a bundle before it is
+ * promoted to permanent. Capped at the number of configured gateways so a
+ * single-gateway deployment (one entry in `arweaveGatewayUrls`) collapses to 1
+ * and never stalls — matching today's behavior — while a multi-gateway deployment
+ * honors `PERMANENCE_CONFIRMATION_SOURCES` (default 2).
+ */
+export function requiredPermanenceSources(arweaveGateway: Gateway): number {
+  const gatewayCount =
+    arweaveGateway instanceof MultiGatewayArweaveGateway
+      ? arweaveGateway.gatewayCount
+      : 1;
+  return Math.max(1, Math.min(permanenceConfirmationSources, gatewayCount));
+}
+
+/**
+ * Counts how many INDEPENDENT sources confirm the bundle tx is permanent:
+ *  - each gateway reporting `found` with >= txPermanentThreshold confirmations
+ *    counts as one source (via countConfirmingSources), and
+ *  - a (second-gateway) GQL index hit counts as one additional source.
+ * Returns the total source count and whether GQL indexing was confirmed (persisted
+ * as `indexed_on_gql`). For a plain single `ArweaveGateway` (no multi capability)
+ * this returns exactly 1 source — preserving legacy single-source behavior.
+ */
+export async function countPermanenceSources(
+  arweaveGateway: Gateway,
+  bundleId: TransactionId,
+  logger: winston.Logger,
+  // The number of sources the caller actually needs (the capped requirement).
+  // The GQL second-source lookup is skipped once gateway status alone meets it.
+  requiredSources: number = permanenceConfirmationSources
+): Promise<{ sources: number; indexedOnGQL: boolean }> {
+  if (!(arweaveGateway instanceof MultiGatewayArweaveGateway)) {
+    // Legacy path: the single getTransactionStatus already established `found`
+    // with >= threshold confirmations, so exactly one source confirms.
+    return { sources: 1, indexedOnGQL: false };
+  }
+
+  const confirmingGateways = await arweaveGateway.countConfirmingSources(
+    bundleId,
+    txPermanentThreshold
+  );
+
+  // Only consult GQL as an extra source if we still need one (a second gateway
+  // not yet at threshold). Avoids an unnecessary GQL round-trip when quorum is
+  // already met by status alone.
+  let indexedOnGQL = false;
+  if (confirmingGateways < requiredSources) {
+    indexedOnGQL = await arweaveGateway
+      .isTransactionIndexedOnGQL(bundleId)
+      .catch((error) => {
+        logger.warn("GQL index check threw during permanence gate", {
+          bundleId,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+        return false;
+      });
+  }
+
+  const sources = confirmingGateways + (indexedOnGQL ? 1 : 0);
+  return { sources, indexedOnGQL };
 }
 
 async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
@@ -83,7 +146,7 @@ async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
 export async function verifyBundleHandler({
   database = new PostgresDatabase(),
   objectStore = getS3ObjectStore(),
-  arweaveGateway = new ArweaveGateway({ endpoint: gatewayUrl }),
+  arweaveGateway = new MultiGatewayArweaveGateway(),
   logger = defaultLogger.child({ job: "verify-bundle-job" }),
   batchSize = batchingSize,
   cacheService = getElasticacheService(),
@@ -253,16 +316,49 @@ export async function verifyBundleHandler({
             continue;
           }
 
-          const isLastDataItemIndexedOnGQL = false; // TBD: Depends on which gateway
+          // Multi-source permanence gate: do not irreversibly promote (and thus
+          // make the off-chain copy eligible for tiered cleanup) on one gateway's
+          // word. Require >= PERMANENCE_CONFIRMATION_SOURCES independent sources to
+          // confirm. The first source is the getTransactionStatus above; the rest
+          // come from other gateways agreeing on >= txPermanentThreshold confs, or
+          // a second gateway's GQL index of the bundle tx.
+          const requiredSources = requiredPermanenceSources(arweaveGateway);
+          const { sources, indexedOnGQL } = await countPermanenceSources(
+            arweaveGateway,
+            bundleId,
+            logger,
+            requiredSources
+          );
+
+          if (sources < requiredSources) {
+            logger.warn(
+              "Bundle confirmed by fewer independent sources than required; not yet promoting to permanent",
+              {
+                planId,
+                bundleId,
+                block_height,
+                sources,
+                requiredSources,
+                indexedOnGQL,
+              }
+            );
+            continue;
+          }
+
+          MetricRegistry.permanenceConfirmationSourcesUsed.inc({
+            sources: String(sources),
+          });
           logger.info("Updating bundle as permanent", {
             planId,
             block_height,
-            isLastDataItemIndexedOnGQL,
+            sources,
+            requiredSources,
+            isLastDataItemIndexedOnGQL: indexedOnGQL,
           });
           await database.updateBundleAsPermanent(
             planId,
             block_height,
-            isLastDataItemIndexedOnGQL
+            indexedOnGQL
           );
         }
       }
