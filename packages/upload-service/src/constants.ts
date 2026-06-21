@@ -18,7 +18,9 @@ import * as fs from "fs";
 
 import { PublicArweaveAddress, SigInfo, SignatureConfig } from "./types/types";
 
-export const port = process.env.UPLOAD_SERVICE_PORT ? +process.env.UPLOAD_SERVICE_PORT : 3001;
+export const port = process.env.UPLOAD_SERVICE_PORT
+  ? +process.env.UPLOAD_SERVICE_PORT
+  : 3001;
 
 export const receiptVersion = "0.2.0";
 
@@ -37,12 +39,16 @@ export const allowListPublicAddresses: PublicArweaveAddress[] =
   injectedAllowListAddresses;
 
 // Function to get the raw data item wallet address (computed lazily)
-export function getRawDataItemWalletAddress(): PublicArweaveAddress | undefined {
+export function getRawDataItemWalletAddress():
+  | PublicArweaveAddress
+  | undefined {
   return rawDataItemWalletAddress;
 }
 
 // Function to set the raw data item wallet address and add to allowlist
-export function setRawDataItemWalletAddress(address: PublicArweaveAddress): void {
+export function setRawDataItemWalletAddress(
+  address: PublicArweaveAddress
+): void {
   rawDataItemWalletAddress = address;
   if (!allowListPublicAddresses.includes(address)) {
     allowListPublicAddresses.push(address);
@@ -92,6 +98,36 @@ export const publicAccessGatewayUrl = new URL(
 export const arweaveUploadNode = new URL(
   process.env.ARWEAVE_UPLOAD_NODE || "https://arweave.net:443"
 );
+
+/**
+ * Optimistic surfaces — three independent, strictly best-effort pushes that warm
+ * the AR.IO gateway BEFORE a bundle mines. None of them may block or fail the
+ * upload or the on-chain bundle post. Each is its own env gate (see
+ * `.env.sample` and CLAUDE.md for the enable-matrix):
+ *
+ *  1. data-item headers (optical bridge)  — OPTICAL_BRIDGING_ENABLED (default ON)
+ *  2. bundle-tx header  (optimistic-tx)   — OPTIMISTIC_TX_BRIDGE_ENABLED (default OFF)
+ *  3. bundle chunks     (chunk cache)     — CHUNK_CACHE_BRIDGE_ENABLED  (default OFF)
+ */
+
+/**
+ * Surface 2 endpoint: `OPTIMISTIC_TX_BRIDGE_URL`. Explicit override for the
+ * optimistic-tx admin endpoint, read at call time in
+ * `ArweaveGateway.postBundleTxToOptimisticTxQueue` (mirroring how it reads
+ * `AR_IO_ADMIN_KEY` / `OPTICAL_BRIDGE_URL`). When unset, the endpoint is derived
+ * from `OPTICAL_BRIDGE_URL` (…/queue-data-item → …/queue-optimistic-tx); set this
+ * explicitly when the optical URL doesn't follow that convention so the surface
+ * doesn't silently disable itself.
+ */
+
+/**
+ * Surface 3 gate. Best-effort push of a seeded bundle's chunks to the gateway's
+ * `/chunk` cache (the gateway used for reads, `ARWEAVE_GATEWAY`), warming it
+ * before the tx mines. Default OFF; failure NEVER affects seeding to
+ * `ARWEAVE_UPLOAD_NODE`.
+ */
+export const chunkCacheBridgeEnabled =
+  process.env.CHUNK_CACHE_BRIDGE_ENABLED === "true";
 
 export const dataCaches = process.env.DATA_CACHES?.split(",") ?? [
   publicAccessGatewayUrl.host,

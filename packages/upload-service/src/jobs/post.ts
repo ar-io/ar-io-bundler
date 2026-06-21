@@ -81,10 +81,16 @@ export async function postBundleHandler(
     // unavailable gateway can never block or slow the on-chain bundle post.
     void arweaveGateway.postBundleTxToOptimisticTxQueue(bundleTx);
 
-    const [transactionPostResponseData] = await Promise.all([
-      arweaveGateway.postBundleTx(bundleTx),
-      arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
-    ]);
+    // The admin "queue-bundle" push is non-essential gateway warming and runs the
+    // full retry strategy internally; awaiting it (it used to be inside the
+    // Promise.all below) added gateway-retry latency to the critical post path.
+    // It already swallows its own errors, so fire it DETACHED like the
+    // optimistic-tx push — it must never slow or block the on-chain bundle post.
+    void arweaveGateway.postBundleTxToAdminQueue(bundleTx.id);
+
+    const transactionPostResponseData = await arweaveGateway.postBundleTx(
+      bundleTx
+    );
 
     // fetch AR rate - but don't throw on failure
     const usdToArRate = await paymentService
