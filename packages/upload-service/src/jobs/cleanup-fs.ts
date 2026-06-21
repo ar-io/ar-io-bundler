@@ -42,6 +42,17 @@ const DEFAULT_START_DATE = "2025-03-17T00:00:00";
 const FILESYSTEM_CLEANUP_DAYS = +(process.env.FILESYSTEM_CLEANUP_DAYS || 7);
 const MINIO_CLEANUP_DAYS = +(process.env.MINIO_CLEANUP_DAYS || 90);
 
+// Multi-source permanence gating for cleanup: only delete a data item's off-chain
+// (FS/MinIO) copy once its parent bundle is in `permanent_bundle`. The bundle only
+// lands there after the verify job's multi-source permanence gate passes, so this
+// guarantees we never delete the only off-chain copy on a single gateway's word.
+// Default ON; set CLEANUP_REQUIRE_PERMANENT_BUNDLE=false to restore the prior
+// (ungated) behavior. Note that for single-gateway deployments
+// (PERMANENCE_CONFIRMATION_SOURCES=1) the bundle row already exists by the time
+// items are permanent, so this gate is effectively a no-op there.
+const CLEANUP_REQUIRE_PERMANENT_BUNDLE =
+  process.env.CLEANUP_REQUIRE_PERMANENT_BUNDLE !== "false";
+
 let heartbeatTimer: NodeJS.Timeout | null = null;
 type PermanentDataItem = Pick<
   PermanentDataItemDBResult,
@@ -87,10 +98,24 @@ async function getNextBatch(
   cursor: Cursor,
   cutoffTime: Date
 ): Promise<PermanentDataItem[]> {
-  return knexClient<PermanentDataItem>(tableNames.permanentDataItems)
+  const query = knexClient<PermanentDataItem>(tableNames.permanentDataItems)
     .select(columnNames.dataItemId, columnNames.uploadedDate)
     .where(columnNames.uploadedDate, ">=", cursor.uploadedAt)
-    .andWhere(columnNames.uploadedDate, "<=", cutoffTime.toISOString())
+    .andWhere(columnNames.uploadedDate, "<=", cutoffTime.toISOString());
+
+  if (CLEANUP_REQUIRE_PERMANENT_BUNDLE) {
+    // Only eligible if the item's parent bundle reached (multi-source) permanence.
+    const permanentBundleExists = knexClient
+      .select(knexClient.raw("1"))
+      .from(tableNames.permanentBundle)
+      .whereRaw(
+        `${tableNames.permanentBundle}.${columnNames.bundleId} = ` +
+          `${tableNames.permanentDataItems}.${columnNames.bundleId}`
+      );
+    void query.whereExists(permanentBundleExists);
+  }
+
+  return query
     .orderBy(columnNames.uploadedDate)
     .orderBy(columnNames.dataItemId)
     .limit(QUERY_BATCH_SIZE);

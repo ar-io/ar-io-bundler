@@ -18,7 +18,9 @@ import * as fs from "fs";
 
 import { PublicArweaveAddress, SigInfo, SignatureConfig } from "./types/types";
 
-export const port = process.env.UPLOAD_SERVICE_PORT ? +process.env.UPLOAD_SERVICE_PORT : 3001;
+export const port = process.env.UPLOAD_SERVICE_PORT
+  ? +process.env.UPLOAD_SERVICE_PORT
+  : 3001;
 
 export const receiptVersion = "0.2.0";
 
@@ -37,12 +39,16 @@ export const allowListPublicAddresses: PublicArweaveAddress[] =
   injectedAllowListAddresses;
 
 // Function to get the raw data item wallet address (computed lazily)
-export function getRawDataItemWalletAddress(): PublicArweaveAddress | undefined {
+export function getRawDataItemWalletAddress():
+  | PublicArweaveAddress
+  | undefined {
   return rawDataItemWalletAddress;
 }
 
 // Function to set the raw data item wallet address and add to allowlist
-export function setRawDataItemWalletAddress(address: PublicArweaveAddress): void {
+export function setRawDataItemWalletAddress(
+  address: PublicArweaveAddress
+): void {
   rawDataItemWalletAddress = address;
   if (!allowListPublicAddresses.includes(address)) {
     allowListPublicAddresses.push(address);
@@ -81,6 +87,53 @@ export const freeUploadLimitBytes = +(
 export const allowArFSData = process.env.ALLOW_ARFS_DATA === "true";
 export const gatewayUrl = new URL(
   process.env.ARWEAVE_GATEWAY || "https://arweave.net:443"
+);
+
+/**
+ * Ordered list of Arweave gateways used for redundant core reads (price,
+ * last_tx, tx status, block height, anchor, balance) and tx-header POSTs.
+ *
+ * Comma-separated via `ARWEAVE_GATEWAYS`. If unset, falls back to the single
+ * `ARWEAVE_GATEWAY` (`gatewayUrl`) so a single-gateway deployment behaves
+ * EXACTLY as before. The first entry is treated as the primary; the rest are
+ * failover targets, tried in order.
+ */
+export const arweaveGatewayUrls: URL[] = (() => {
+  const raw = process.env.ARWEAVE_GATEWAYS;
+  if (!raw) {
+    return [gatewayUrl];
+  }
+  const urls = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => new URL(s));
+  return urls.length > 0 ? urls : [gatewayUrl];
+})();
+
+/**
+ * Number of INDEPENDENT sources that must confirm a bundle is permanent (>=
+ * `txPermanentThreshold` confirmations, or a GQL index confirmation) before it
+ * is irreversibly promoted to `permanent_bundle` and its off-chain copies become
+ * eligible for tiered cleanup.
+ *
+ * Default 1 (legacy single-source behavior — no change unless opted in).
+ * Multi-source permanence is OPT-IN: set `PERMANENCE_CONFIRMATION_SOURCES=2`
+ * (with >= 2 genuinely INDEPENDENT gateways in `ARWEAVE_GATEWAYS`) to require
+ * agreement before irreversibly promoting + deleting off-chain copies.
+ *
+ * Why opt-in: requiring N sources erring safe (never wrongly delete) has a
+ * degradation mode — if you configure N gateways and one is down for a long
+ * time, bundles can't reach quorum, so they stay in `seeded_bundle` and their
+ * local/MinIO copies are never cleaned (storage grows until the gateway
+ * recovers; self-heals, no data loss). Default 1 avoids surprising operators
+ * with that trade until they've deliberately enabled it with independent
+ * gateways. The effective requirement is also capped at the number of
+ * configured gateways, so it can never stall a single-gateway deployment.
+ */
+export const permanenceConfirmationSources = Math.max(
+  1,
+  +(process.env.PERMANENCE_CONFIRMATION_SOURCES || 1)
 );
 
 export const publicAccessGatewayUrl = new URL(

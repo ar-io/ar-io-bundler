@@ -277,6 +277,31 @@ export class MetricRegistry {
     help: "Number of times a data item failed to be quarantined from the object store successfully",
   });
 
+  // Counts multi-gateway read attempts that had to fall back past the primary
+  // gateway. `result=success` means a later gateway in the list answered after an
+  // earlier one failed/timed out; `result=exhausted` means every gateway failed
+  // and the read threw. A nonzero success rate is the redundancy doing its job; a
+  // rising exhausted rate means ALL gateways are unhealthy.
+  public static gatewayReadFallback = MetricRegistry.createCounter({
+    name: "gateway_read_fallback_total",
+    help: "Count of multi-gateway core reads that fell back past the primary gateway, by outcome",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["success", "exhausted"],
+    },
+  });
+
+  // Counts how many independent sources confirmed a bundle as permanent at
+  // promotion time. `sources` is the number that agreed (e.g. "1", "2"). With
+  // PERMANENCE_CONFIRMATION_SOURCES>=2 a value of "1" should never reach
+  // promotion; it is exposed so a regression (single-source promotion) is visible.
+  public static permanenceConfirmationSourcesUsed =
+    MetricRegistry.createCounter({
+      name: "permanence_confirmation_sources_total",
+      help: "Count of bundle permanence promotions by the number of independent sources that confirmed",
+      labelNames: ["sources"],
+    });
+
   public static goldskyOpticalFailure = MetricRegistry.createCounter({
     name: "goldsky_optical_failure_count",
     help: "Number of times the service failure to post to the goldsky optical bridge",

@@ -19,11 +19,11 @@ import { Tracer } from "@opentelemetry/api";
 import knex from "knex";
 import winston from "winston";
 
-import { gatewayUrl, migrateOnStartup } from "../constants";
+import { migrateOnStartup } from "../constants";
 import globalLogger from "../logger";
 import { getArweaveWallet, getRawDataItemWallet } from "../utils/getArweaveWallet";
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
-import { ArweaveGateway } from "./arweaveGateway";
+import { ArweaveGateway, MultiGatewayArweaveGateway } from "./arweaveGateway";
 import { CacheService } from "./cacheServiceTypes";
 import { Database } from "./db/database";
 import { DataItemOffsetsDB } from "./db/dataItemOffsets";
@@ -64,7 +64,8 @@ export const defaultArchitecture: Architecture = {
   logger: globalLogger,
   getArweaveWallet: () => getArweaveWallet(),
   getRawDataItemWallet: () => getRawDataItemWallet(),
-  arweaveGateway: new ArweaveGateway({
-    endpoint: gatewayUrl,
-  }),
+  // Multi-gateway by default: redundant core reads + tx-header POST across the
+  // `ARWEAVE_GATEWAYS` list. With that env unset the list is just [ARWEAVE_GATEWAY],
+  // so this behaves exactly like a single ArweaveGateway.
+  arweaveGateway: new MultiGatewayArweaveGateway(),
 };
