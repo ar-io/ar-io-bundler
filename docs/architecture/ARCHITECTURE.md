@@ -1,7 +1,16 @@
 # AR.IO Bundler Architecture
 
-**Version:** 1.0.0
-**Last Updated:** 2025-10-28
+**Version:** 1.2.0
+**Last Updated:** 2026-06
+
+> ⚠️ **Partial / older snapshot.** This document was last *fully* verified at
+> version 1.0.0 (2025-10) and has since received only targeted corrections. Some
+> sections (especially the API reference and the AWS-migration appendix) lag the
+> codebase. For authoritative, current information defer to:
+> - **CLAUDE.md** (architecture overview, kept in sync with code)
+> - **docs/api/README.md** (authoritative REST API reference)
+> - **docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md** (authoritative deployment runbook)
+> - the source code itself (the ultimate source of truth)
 
 ## Table of Contents
 
@@ -29,7 +38,7 @@ The AR.IO Bundler is a complete ANS-104 data bundling platform for Arweave with 
 
 ### Core Functionality
 
-- **Data Upload**: Accept single and multipart data item uploads (up to 10GB per item)
+- **Data Upload**: Accept single and multipart data item uploads (single-item default cap 4 GiB; up to 10 GiB per item via multipart)
 - **Payment Processing**:
   - **x402 Protocol (Primary)**: Instant USDC payments via Coinbase's HTTP 402 standard (EIP-3009, EIP-712)
   - **Cryptocurrency**: Traditional on-chain payments (Arweave, Ethereum, Solana, MATIC, KYVE, Base-ETH)
@@ -183,7 +192,7 @@ Purpose: BullMQ job queues
 Healthcheck: redis-cli -p 6381 ping
 ```
 
-Dedicated Redis instance for all BullMQ queues (11 queues total).
+Dedicated Redis instance for all BullMQ queues (12 queues total).
 
 #### MinIO
 ```yaml
@@ -221,20 +230,31 @@ Located in `infrastructure/pm2/ecosystem.config.js`:
       port: 3001
     },
     {
+      name: "payment-workers",
+      instances: 1,            // hardcoded — never scaled (avoids duplicate credit processing)
+      exec_mode: "fork",
+      script: "./lib/workers/index.js"
+    },
+    {
       name: "upload-workers",
       instances: WORKER_INSTANCES || 1,
       exec_mode: "fork",
-      script: "./lib/workers/allWorkers.js"
+      script: "./lib/workers/allWorkers.js"   // 12 BullMQ queues
     },
     {
-      name: "bull-board",
+      name: "admin-dashboard",   // admin stats + embedded Bull Board
       instances: 1,
       exec_mode: "fork",
+      script: "./server.js",     // packages/admin-service/server.js
       port: 3002
     }
   ]
 }
 ```
+
+There are **5** PM2 processes: `payment-service`, `upload-api` (cluster),
+`payment-workers`, `upload-workers`, `admin-dashboard` (fork). There is no
+separate `bull-board` process — Bull Board is embedded in `admin-dashboard`.
 
 **Execution Modes**:
 - **Cluster**: APIs leverage multiple CPU cores, load balancing across instances
@@ -582,7 +602,7 @@ Handles all data upload operations including:
 - Block height tracking
 
 **Workers** (`src/workers/allWorkers.ts`):
-- 11 BullMQ workers processing async jobs
+- 12 BullMQ workers processing async jobs
 - Each worker handles specific job type
 - Graceful shutdown support
 
@@ -593,7 +613,7 @@ Handles all data upload operations including:
 | `/v1/tx` | POST | Upload single data item |
 | `/v1/tx/:id` | POST | Upload signed data item |
 | `/v1/tx/:id/status` | GET | Get data item status |
-| `/v1/tx/:id/offset` | GET | Get data item offset information |
+| `/v1/tx/:id/offsets` | GET | Get data item offset information |
 | `/v1/upload` | POST | Create multipart upload |
 | `/v1/upload/:id/:chunkIndex` | PUT | Upload chunk |
 | `/v1/upload/:id` | POST | Finalize multipart upload |
@@ -901,8 +921,11 @@ BACKUP_DATA_ITEM_BUCKET=backup-data-items
    └─ Enable optimistic caching
 
 8. Worker → verifyBundle (delayed)
-   ├─ Check Arweave confirmation
-   ├─ When confirmed (≥18 blocks):
+   ├─ Check Arweave confirmation (queries the gateway(s) in ARWEAVE_GATEWAYS,
+   │  with read failover and GATEWAY_READ_TIMEOUT_MS per request)
+   ├─ When confirmed (≥18 blocks) by the required number of independent sources
+   │  (PERMANENCE_CONFIRMATION_SOURCES, default 1 — opt in to multi-source
+   │  permanence by setting it to ≥2):
    │  └─ Update to permanent_bundle + permanent_data_item
    └─ If failed: retry or mark as failed_bundle
 
@@ -968,7 +991,7 @@ USDC_CONTRACT_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
    ├─ Smart detection: Check first 2 bytes for ANS-104 signature type
    ├─ If not ANS-104: Treat as raw data
    ├─ Parse request (binary + headers OR JSON envelope)
-   ├─ Validate size (max 10GB)
+   ├─ Validate size (single data item: MAX_DATA_ITEM_SIZE, default 4 GiB; up to 10 GiB via multipart)
    └─ Return 402 Payment Required with x402 requirements
 
 2. Client → POST /v1/tx (raw data + X-PAYMENT header)
@@ -1401,7 +1424,7 @@ Get data item status.
 }
 ```
 
-#### GET /v1/tx/:id/offset
+#### GET /v1/tx/:id/offsets
 Get data item offset information for retrieval.
 
 **Response**:
@@ -1791,8 +1814,10 @@ S3_SECRET_ACCESS_KEY=<secret-key>
 ├── upload-api-out.log
 ├── upload-workers-error.log
 ├── upload-workers-out.log
-├── bull-board-error.log
-└── bull-board-out.log
+├── payment-workers-error.log
+├── payment-workers-out.log
+├── admin-dashboard-error.log
+└── admin-dashboard-out.log
 ```
 
 **Log Rotation**: Configure via PM2 or logrotate
@@ -1863,9 +1888,9 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_USER=turbo_admin
 DB_PASSWORD=postgres
-DB_DATABASE=upload_service      # or payment_service
-PAYMENT_DB_NAME=payment_service
-UPLOAD_DB_NAME=upload_service
+# Per-service database name (there is no shared DB_DATABASE / *_DB_NAME var):
+PAYMENT_DB_DATABASE=payment_service   # payment service
+UPLOAD_DB_DATABASE=upload_service     # upload service
 ```
 
 #### Redis
@@ -1900,6 +1925,17 @@ BACKUP_DATA_ITEM_BUCKET=backup-data-items
 ARWEAVE_GATEWAY=https://arweave.net
 TURBO_JWK_FILE=./wallet.json
 PUBLIC_ACCESS_GATEWAY=https://arweave.net
+
+# Multi-gateway read/post failover (PR #41). Comma-separated; tried in order
+# for both reads and posting. The verify-permanence flow queries these.
+ARWEAVE_GATEWAYS=https://arweave.net,https://other-gateway.example
+GATEWAY_READ_TIMEOUT_MS=10000
+# Independent sources that must confirm permanence before a bundle is marked
+# permanent. Default 1 (single source). Opt in to multi-source by setting >= 2.
+PERMANENCE_CONFIRMATION_SOURCES=1
+# Require the bundle row to be permanent before the tiered cleanup deletes its
+# underlying objects.
+CLEANUP_REQUIRE_PERMANENT_BUNDLE=true
 ```
 
 #### AR.IO Gateway Integration
@@ -1916,8 +1952,8 @@ ALLOW_LISTED_ADDRESSES=addr1,addr2,addr3
 SKIP_BALANCE_CHECKS=false
 
 # Size limits
-MAX_DATA_ITEM_SIZE=10737418240  # 10GB
-MAX_BUNDLE_SIZE=2147483648      # 2GB
+MAX_DATA_ITEM_SIZE=4294967296   # 4 GiB (default; single data-item ingest cap)
+MAX_BUNDLE_SIZE=2147483648      # 2 GiB (default; target bundle packing size)
 MAX_DATA_ITEM_LIMIT=10000
 FREE_UPLOAD_LIMIT=517120        # ~505 KiB
 
@@ -2356,6 +2392,12 @@ mc admin replicate add minio1/bucket minio2/bucket
 
 ## Migration from AWS
 
+> **Historical context.** This section documents the one-time de-AWS migration of
+> ArDrive's upstream Turbo. It is background, not current operational guidance —
+> the live architecture (BullMQ, PM2, PostgreSQL, MinIO) is described above. Any
+> doc/comment/env var implying SQS/Lambda/DynamoDB/Secrets-Manager as *live*
+> behavior is legacy framing.
+
 This system has been completely migrated from AWS to open-source infrastructure.
 
 ### Previous AWS Services
@@ -2387,7 +2429,7 @@ This system has been completely migrated from AWS to open-source infrastructure.
 - Batch size increased from 25 (DynamoDB limit) to 500 (PostgreSQL batch insert)
 
 **Queue Migration**:
-- SQS queues → BullMQ queues (11 queues)
+- SQS queues → BullMQ queues (12 queues)
 - Lambda handlers → Worker functions in `src/workers/`
 - Message format preserved for compatibility
 - Job concurrency configurable per worker
@@ -2485,7 +2527,7 @@ ar-io-bundler/
 │       │   │   ├── unbundle-bdi.ts   # BDI unbundling
 │       │   │   └── putOffsets.ts     # Offset storage
 │       │   ├── workers/              # BullMQ workers
-│       │   │   └── allWorkers.ts     # All 11 workers
+│       │   │   └── allWorkers.ts     # All 12 workers
 │       │   ├── bundles/              # ANS-104 bundling
 │       │   ├── migrations/           # Database migrations
 │       │   └── constants.ts          # Configuration
@@ -2538,7 +2580,7 @@ multipartDefaultChunkSize = 25 MB
 
 ---
 
-**Document Version**: 1.0.0
-**Generated**: 2025-10-24
+**Document Version**: 1.2.0
+**Fully verified at**: 1.0.0 (2025-10-24); 1.2.0 = targeted corrections only (see banner at top)
 **Author**: Claude Code (AI Assistant)
-**Status**: Complete
+**Status**: Partial snapshot — defer to CLAUDE.md, docs/api/README.md, and the runbook for current details

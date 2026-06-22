@@ -633,7 +633,7 @@ Accepts data item uploads and manages asynchronous fulfillment of data delivery 
 
 **Features:**
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (11 queues)
+- Asynchronous job processing via BullMQ (12 queues)
 - ANS-104 bundle creation and posting
 - MinIO object storage integration
 - PostgreSQL offset storage for data retrieval
@@ -821,8 +821,8 @@ ss -tlnp | grep -E ":3000|:3001|:4000|:4001"
 **Problem**: `relation does not exist` or `Cloud Database Unavailable`
 
 **Solution**: Verify correct database configuration:
-- Payment service: `DB_DATABASE=payment_service`
-- Upload service: `DB_DATABASE=upload_service`
+- Payment service: `PAYMENT_DB_DATABASE=payment_service`
+- Upload service: `UPLOAD_DB_DATABASE=upload_service`
 - Run migrations: `yarn db:migrate:latest`
 
 ### Wallet Not Found

@@ -106,11 +106,10 @@ nano .env
 **Critical variables to configure** (see [Configuration Reference](#configuration-reference)):
 - `PRIVATE_ROUTE_SECRET` - Inter-service authentication (MUST match in both services)
 - `JWT_SECRET` - Token signing
-- `UPLOAD_SERVICE_TURBO_JWK_FILE` - Path to bundle signing wallet (absolute path)
-- `PAYMENT_SERVICE_DB_DATABASE=payment_service`
-- `UPLOAD_SERVICE_DB_DATABASE=upload_service`
-- `UPLOAD_SERVICE_X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments
-- `PAYMENT_SERVICE_X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments
+- `TURBO_JWK_FILE` - Path to bundle signing wallet (absolute path)
+- `PAYMENT_DB_DATABASE=payment_service`
+- `UPLOAD_DB_DATABASE=upload_service`
+- `X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments (set in both service env scopes)
 
 #### 3. Add Arweave Wallet
 
@@ -122,7 +121,7 @@ cp /path/to/your/arweave-wallet.json ./wallet.json
 chmod 600 wallet.json
 
 # Configure path in .env (MUST be absolute)
-# UPLOAD_SERVICE_TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
+# TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
 ```
 
 #### 4. Build All Packages
@@ -222,14 +221,19 @@ pm2 logs
 
 ## Configuration Reference
 
-The bundler uses a single root `.env` file with service-prefixed variables. Each service reads its own prefixed variables.
+The bundler uses a single root `.env` file. Environment variable names are
+**unprefixed** — the code reads e.g. `TURBO_JWK_FILE`, `X402_PAYMENT_ADDRESS`,
+`UPLOAD_DB_DATABASE` directly. There is no `UPLOAD_SERVICE_` / `PAYMENT_SERVICE_`
+prefix scheme (the only exceptions are `UPLOAD_SERVICE_PORT`,
+`UPLOAD_SERVICE_PUBLIC_URL`, and `PAYMENT_SERVICE_PORT`, which are genuinely
+prefixed). When both services need the same value (e.g. `X402_PAYMENT_ADDRESS`),
+set the same unprefixed variable in each service's environment. See `.env.sample`
+for the authoritative variable list.
 
 ### Configuration File Locations
 
 - **Root**: `.env` (all service configs in one file)
-- **Payment Service Prefix**: `PAYMENT_SERVICE_`
-- **Upload Service Prefix**: `UPLOAD_SERVICE_`
-- **Shared Variables**: No prefix (used by both services)
+- Variable names are unprefixed; the same name is shared by whichever service reads it.
 
 ### Required Configuration
 
@@ -245,14 +249,13 @@ JWT_SECRET=<generate with: openssl rand -hex 32>
 
 ```bash
 # UPLOAD SERVICE: Bundle signing wallet (MUST be absolute path)
-UPLOAD_SERVICE_TURBO_JWK_FILE=/full/path/to/wallet.json
+TURBO_JWK_FILE=/full/path/to/wallet.json
 
-# Optional: Raw data item signing wallet
-UPLOAD_SERVICE_RAW_DATA_ITEM_JWK_FILE=/full/path/to/wallet.json
+# Optional: Raw data item signing wallet (for unsigned x402 uploads)
+RAW_DATA_ITEM_JWK_FILE=/full/path/to/wallet.json
 
-# Wallet addresses (must match wallet.json)
-UPLOAD_SERVICE_ARWEAVE_ADDRESS=your-arweave-address
-PAYMENT_SERVICE_ARIO_ADDRESS=your-arweave-address
+# Payment service: AR.IO/Arweave address (must match wallet.json)
+ARIO_ADDRESS=your-arweave-address
 ```
 
 #### Database Configuration
@@ -265,8 +268,8 @@ DB_USER=turbo_admin
 DB_PASSWORD=postgres
 
 # Database names (CRITICAL: Must match service)
-PAYMENT_SERVICE_DB_DATABASE=payment_service
-UPLOAD_SERVICE_DB_DATABASE=upload_service
+PAYMENT_DB_DATABASE=payment_service
+UPLOAD_DB_DATABASE=upload_service
 
 # Connection pooling
 DB_POOL_MIN=2
@@ -313,40 +316,37 @@ S3_SECRET_ACCESS_KEY=minioadmin123
 UPLOAD_SERVICE_PUBLIC_URL=https://upload.yourdomain.com
 
 # Payment service URL (NO protocol prefix!)
-UPLOAD_SERVICE_PAYMENT_SERVICE_BASE_URL=localhost:4001
+PAYMENT_SERVICE_BASE_URL=localhost:4001
 
 # Or for external payment service
-# UPLOAD_SERVICE_PAYMENT_SERVICE_BASE_URL=payment.yourdomain.com:4001
+# PAYMENT_SERVICE_BASE_URL=payment.yourdomain.com:4001
 ```
 
 #### x402 Payment Protocol
 
 ```bash
-# Payment address (EVM wallet for receiving USDC)
-PAYMENT_SERVICE_X402_PAYMENT_ADDRESS=0xYourEthereumAddress
-UPLOAD_SERVICE_X402_PAYMENT_ADDRESS=0xYourEthereumAddress
+# Payment address (EVM wallet for receiving USDC) — set in both service scopes
+X402_PAYMENT_ADDRESS=0xYourEthereumAddress
 
 # Coinbase CDP credentials (REQUIRED for mainnet)
-PAYMENT_SERVICE_CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=your-secret
+CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
+CDP_API_KEY_SECRET=your-secret
 
 # Network configuration
-PAYMENT_SERVICE_X402_BASE_ENABLED=true
-PAYMENT_SERVICE_X402_BASE_RPC_URL=https://mainnet.base.org
+X402_BASE_ENABLED=true
 
 # Facilitator URL (Coinbase mainnet)
-PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://facilitator.base.coinbasecloud.net
+X402_FACILITATOR_URLS_BASE=https://facilitator.base.coinbasecloud.net
 
 # For testnet (no CDP credentials needed)
-# PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
-# PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://x402.org/facilitator
+# X402_BASE_TESTNET_ENABLED=true
+# X402_FACILITATOR_URLS_BASE_TESTNET=https://x402.org/facilitator
 
-# Fee percentage (your profit margin)
-UPLOAD_SERVICE_X402_FEE_PERCENT=15
-PAYMENT_SERVICE_X402_FEE_PERCENT=15
+# Fee percentage (your profit margin) — set in both service scopes
+X402_FEE_PERCENT=15
 
-# Minimum payment (USDC atomic units, 6 decimals)
-PAYMENT_SERVICE_X402_MINIMUM_PAYMENT_USDC=0.001
+# Minimum payment (USDC, decimal dollars)
+X402_MINIMUM_PAYMENT_USDC=0.001
 ```
 
 #### AR.IO Gateway Integration
@@ -368,27 +368,26 @@ OPTIONAL_OPTICAL_BRIDGE_URLS=http://other-gateway:4000/ar-io/admin/queue-data-it
 #### Stripe Payments
 
 ```bash
-PAYMENT_SERVICE_STRIPE_SECRET_KEY=sk_live_xxx
-PAYMENT_SERVICE_STRIPE_WEBHOOK_SECRET=whsec_xxx
+STRIPE_SECRET_KEY=sk_live_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
 
 # Optional: Automatic tax calculation
-# PAYMENT_SERVICE_STRIPE_AUTOMATIC_TAX_ENABLED=true
+# ENABLE_AUTO_STRIPE_TAX=true
 ```
 
 #### Cryptocurrency Monitoring
 
 ```bash
 # Ethereum
-PAYMENT_SERVICE_ETHEREUM_RPC_ENDPOINT=https://eth-mainnet.g.alchemy.com/v2/your-key
-PAYMENT_SERVICE_ETHEREUM_ADDRESS=0xYourEthAddress
-PAYMENT_SERVICE_ETHEREUM_CONFIRMATIONS=12
+ETHEREUM_MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/your-key
+ETHEREUM_ADDRESS=0xYourEthAddress
+ETHEREUM_MIN_CONFIRMATIONS=12
 
 # Solana
-PAYMENT_SERVICE_SOLANA_RPC_ENDPOINT=https://api.mainnet-beta.solana.com
-PAYMENT_SERVICE_SOLANA_ADDRESS=YourSolanaAddress
-PAYMENT_SERVICE_SOLANA_CONFIRMATIONS=32
+SOLANA_GATEWAY=https://api.mainnet-beta.solana.com
+SOLANA_ADDRESS=YourSolanaAddress
 
-# Similar for: MATIC, KYVE, BASE_ETH
+# Similar address / RPC / *_MIN_CONFIRMATIONS vars exist for: MATIC, KYVE, BASE_ETH
 ```
 
 ### Optional Configuration
@@ -397,23 +396,24 @@ PAYMENT_SERVICE_SOLANA_CONFIRMATIONS=32
 
 ```bash
 # Allow-listed addresses (comma-separated)
-UPLOAD_SERVICE_ALLOW_LISTED_ADDRESSES=addr1,addr2,addr3
+ALLOW_LISTED_ADDRESSES=addr1,addr2,addr3
 
 # Skip balance checks (DANGEROUS - for development only)
-UPLOAD_SERVICE_SKIP_BALANCE_CHECKS=false
+SKIP_BALANCE_CHECKS=false
 
-# Free upload limit (bytes)
-UPLOAD_SERVICE_FREE_UPLOAD_LIMIT=517120  # 505 KB
+# Free upload limit (bytes) — default 505 KiB
+FREE_UPLOAD_LIMIT=517120  # 505 KiB
 ```
 
 #### Size Limits
 
 ```bash
-# Single data item max size
-UPLOAD_SERVICE_MAX_DATA_ITEM_SIZE=10737418240  # 10 GB
+# Single data item max size (default 4 GiB). Larger payloads must use the
+# multipart upload flow, which supports up to 10 GiB.
+MAX_DATA_ITEM_SIZE=4294967296  # 4 GiB (default)
 
-# Bundle max size
-UPLOAD_SERVICE_MAX_BUNDLE_SIZE=262144000  # 250 MB
+# Target max bundle size for packing (default 2 GiB)
+MAX_BUNDLE_SIZE=2147483648  # 2 GiB (default)
 ```
 
 #### Logging & Monitoring
@@ -448,7 +448,8 @@ For all 137 environment variables, see `./scripts/setup-bundler.sh --advanced` o
 
 ## Service Management
 
-The bundler runs 7 PM2 processes across two microservices.
+The bundler runs 5 PM2 processes across the services (canonical config:
+`infrastructure/pm2/ecosystem.config.js`).
 
 ### Service Overview
 
@@ -457,8 +458,8 @@ The bundler runs 7 PM2 processes across two microservices.
 | `payment-service` | 2 | cluster | Payment API |
 | `payment-workers` | 1 | fork | Background jobs (pending tx, credits) |
 | `upload-api` | 2 | cluster | Upload API |
-| `upload-workers` | 1 | fork | Bundling pipeline (11 queues) |
-| `bull-board` | 1 | fork | Queue monitoring dashboard |
+| `upload-workers` | 1 | fork | Bundling pipeline (12 queues) |
+| `admin-dashboard` | 1 | fork | Admin stats + embedded Bull Board (:3002) |
 
 ### Quick Commands
 
@@ -654,7 +655,7 @@ yarn db:migrate:latest
 **With explicit environment:**
 ```bash
 cd packages/upload-service
-DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres DB_DATABASE=upload_service yarn db:migrate:latest
+DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres UPLOAD_DB_DATABASE=upload_service yarn db:migrate:latest
 ```
 
 ### Creating Migrations
@@ -761,8 +762,8 @@ LIMIT 10;"
 **"relation does not exist":**
 ```bash
 # Verify database name matches service
-# Payment service: DB_DATABASE=payment_service
-# Upload service: DB_DATABASE=upload_service
+# Payment service: PAYMENT_DB_DATABASE=payment_service
+# Upload service: UPLOAD_DB_DATABASE=upload_service
 
 # Run migrations
 yarn db:migrate:latest
@@ -831,18 +832,19 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 - Job delays
 - Worker health
 
-**11 Upload Service Queues:**
+**12 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
 1. `new-data-item` - New uploads
 2. `plan-bundle` - Bundle planning
 3. `prepare-bundle` - Bundle preparation
 4. `post-bundle` - Arweave posting
-5. `verify-bundle` - Post verification
-6. `optical-post` - AR.IO Gateway caching
-7. `unbundle-bdi` - Nested bundle processing
-8. `put-offsets` - Offset storage
-9. `cleanup-fs` - Filesystem cleanup
-10. `cleanup-bdi` - BDI cleanup
-11. `multipart-cleanup` - Multipart upload cleanup
+5. `seed-bundle` - Seed bundle to the network
+6. `verify-bundle` - Post/permanence verification
+7. `optical-post` - AR.IO Gateway optimistic caching
+8. `unbundle-bdi` - Nested (BDI) bundle processing
+9. `put-offsets` - Offset storage
+10. `finalize-upload` - Multipart upload finalization
+11. `cleanup-fs` - Tiered filesystem/object cleanup
+12. `redrive-posted` - Redrive posted-but-unverified bundles
 
 **Payment Service Queues:**
 1. `pending-tx` - Cryptocurrency payment monitoring
@@ -1050,8 +1052,8 @@ yarn db:migrate:status
 **Solution:**
 ```bash
 # 1. Verify correct database name in .env
-# Payment: DB_DATABASE=payment_service
-# Upload: DB_DATABASE=upload_service
+# Payment: PAYMENT_DB_DATABASE=payment_service
+# Upload: UPLOAD_DB_DATABASE=upload_service
 
 # 2. Run migrations
 yarn db:migrate:latest
@@ -1067,7 +1069,7 @@ docker compose logs postgres --tail 50
 **Solution:**
 ```bash
 # Use ABSOLUTE path in .env
-UPLOAD_SERVICE_TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
+TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
 
 # Verify file exists and is readable
 ls -la /home/user/ar-io-bundler/wallet.json
@@ -1150,12 +1152,12 @@ curl https://facilitator.base.coinbasecloud.net/health
 **Solution:**
 ```bash
 # 1. For mainnet, get CDP credentials from https://portal.cdp.coinbase.com/
-PAYMENT_SERVICE_CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=your-secret
+CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
+CDP_API_KEY_SECRET=your-secret
 
 # 2. For testnet, use public facilitator (no CDP needed)
-PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
-PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://x402.org/facilitator
+X402_BASE_TESTNET_ENABLED=true
+X402_FACILITATOR_URLS_BASE_TESTNET=https://x402.org/facilitator
 
 # 3. Verify payment address is valid EVM address
 # Must start with 0x and be 42 characters
@@ -1364,17 +1366,13 @@ For production deployments requiring HA/DR:
 
 ### Fee Configuration
 
-The bundler's default fee configuration subsidizes uploads at a 23.4% loss. Adjust for profitability:
+Fees are **not** configured via an env var (there is no `FEE_MULTIPLIER`). They
+are stored as database-driven adjustment rules in the payment service's
+`payment_adjustment_catalog` table, applied as markups/discounts on top of the
+base Arweave network cost. This allows changing fees without code or restarts.
 
-**See:** `docs/operations/FEE_CONFIGURATION_GUIDE.md`
-
-**Quick adjustment:**
-```bash
-# .env - Adjust fee multiplier
-FEE_MULTIPLIER=1.0  # No markup (break-even)
-FEE_MULTIPLIER=1.2  # 20% markup
-FEE_MULTIPLIER=0.766  # Default (23.4% loss)
-```
+**See:** `docs/operations/FEE_CONFIGURATION_GUIDE.md` for the full procedure
+(inspecting current adjustments and inserting a new markup rule).
 
 ### Custom Domain Setup
 
@@ -1446,7 +1444,7 @@ SKIP_BALANCE_CHECKS=false  # Never true in production!
 NODE_ENV=staging
 LOG_LEVEL=info
 # Use testnet for x402
-PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
+X402_BASE_TESTNET_ENABLED=true
 ```
 
 **Production:**
@@ -1454,9 +1452,9 @@ PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
 NODE_ENV=production
 LOG_LEVEL=info
 # Use mainnet
-PAYMENT_SERVICE_X402_BASE_ENABLED=true
-PAYMENT_SERVICE_CDP_API_KEY_ID=xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=xxx
+X402_BASE_ENABLED=true
+CDP_API_KEY_ID=xxx
+CDP_API_KEY_SECRET=xxx
 ```
 
 ---

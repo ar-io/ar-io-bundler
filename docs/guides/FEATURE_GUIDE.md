@@ -1,7 +1,7 @@
 # AR.IO Bundler - Comprehensive Feature Guide
 
-**Version:** 1.0.0
-**Last Updated:** October 2025
+**Version:** 1.2.0
+**Last Updated:** June 2026
 **Status:** Production Ready
 
 ---
@@ -46,7 +46,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 **Enterprise Features:**
 - ✅ **Microservice Architecture** - Separate payment and upload services
 - ✅ **Horizontal Scaling** - PM2 cluster mode for APIs
-- ✅ **Async Job Processing** - 11 BullMQ queues for fulfillment pipeline
+- ✅ **Async Job Processing** - 12 BullMQ queues for fulfillment pipeline
 - ✅ **Circuit Breakers** - Resilience against service failures
 - ✅ **Comprehensive Monitoring** - Prometheus metrics, Winston logging, OpenTelemetry tracing
 - ✅ **Multi-Region Support** - PostgreSQL, Redis, MinIO S3-compatible storage
@@ -97,7 +97,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 │  │                    Infrastructure Layer                               │  │
 │  │                                                                       │  │
 │  │  PostgreSQL (2 DBs)  •  Redis (Cache + Queues)  •  MinIO (S3)       │  │
-│  │  BullMQ (11 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
+│  │  BullMQ (12 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │                                      │                                       │
@@ -122,8 +122,8 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 - **Responsibilities:** Data upload, ANS-104 bundling, Arweave posting, optical caching
 - **Database:** `upload_service` (PostgreSQL)
 - **API Port:** 3001
-- **Workers:** 11 asynchronous job processors
-- **Queues:** 11 BullMQ queues
+- **Workers:** 12 asynchronous job processors
+- **Queues:** 12 BullMQ queues
 
 **Communication Pattern:** Upload Service → Payment Service (HTTP REST with JWT authentication)
 
@@ -966,7 +966,7 @@ ARDRIVE_ADMIN_KEY_ARDRIVE_GATEWAY=ardrive-admin-key
 - Cache-Control: 1 day for permanent, 15 seconds for pending
 
 **Data Item Offsets:**
-- Endpoint: `GET /v1/tx/:id/offset`
+- Endpoint: `GET /v1/tx/:id/offsets`
 - Returns:
   - `id`: Data item ID
   - `bundleId`: Root bundle ID
@@ -987,7 +987,7 @@ ARDRIVE_ADMIN_KEY_ARDRIVE_GATEWAY=ardrive-admin-key
 
 **API Reference:**
 - `GET /v1/tx/:id` - Get status (packages/upload-service/src/routes/status.ts:25)
-- `GET /v1/tx/:id/offset` - Get offsets (packages/upload-service/src/routes/offsets.ts:21)
+- `GET /v1/tx/:id/offsets` - Get offsets (packages/upload-service/src/routes/offsets.ts:21)
 - `GET /v1/info` - Get service info (packages/upload-service/src/routes/info.ts)
 
 ### 4.8 Premium Bundle Features
@@ -1102,13 +1102,13 @@ SKIP_BALANCE_CHECKS=false  # Development only, bypasses all checks
 4. **upload-workers** (Fork, 1 instance) **CRITICAL**
    - Mode: Fork (MUST be 1 to avoid duplicate job execution)
    - Script: `./packages/upload-service/lib/workers/allWorkers.js`
-   - Workers: 11 BullMQ workers
+   - Workers: 12 BullMQ workers
    - Kill timeout: 30 seconds (graceful shutdown)
 
-5. **bull-board** (Fork, 1 instance)
+5. **admin-dashboard** (Fork, 1 instance)
    - Port: 3002
-   - Script: `./packages/upload-service/bull-board-server.js`
-   - Dashboard: http://localhost:3002/admin/queues
+   - Script: `./packages/admin-service/server.js`
+   - Admin stats dashboard with embedded Bull Board: http://localhost:3002/admin/queues
 
 **PM2 Commands:**
 ```bash
@@ -1149,7 +1149,9 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_USER=turbo_admin
 DB_PASSWORD=your-password
-DB_DATABASE=payment_service  # or upload_service
+# Per-service database name (no shared DB_DATABASE var):
+PAYMENT_DB_DATABASE=payment_service   # payment service
+UPLOAD_DB_DATABASE=upload_service     # upload service
 
 # Optional: Separate reader/writer endpoints (Aurora compatibility)
 DB_WRITER_ENDPOINT=writer.db.internal
@@ -1188,24 +1190,25 @@ yarn db:migrate:make NAME # Create new migration
 - Cache instance: Port 6379
 - Queue instance: Port 6381 (separate from cache)
 
-**13 Total Queues:**
+**14 Total Queues:**
 
-**Upload Service (11 queues):**
-1. `upload-plan-bundle` - Bundle planning (concurrency: 1)
-2. `upload-prepare-bundle` - Bundle assembly (concurrency: 3)
-3. `upload-post-bundle` - Arweave posting (concurrency: 2)
-4. `upload-seed-bundle` - Chunk seeding (concurrency: 2)
-5. `upload-verify-bundle` - Verification (concurrency: 3)
-6. `upload-put-offsets` - Offset storage (concurrency: 5)
-7. `upload-new-data-item` - Batch DB insert (concurrency: 5)
-8. `upload-optical-post` - Optical posting (concurrency: 5)
-9. `upload-unbundle-bdi` - BDI unbundling (concurrency: 2)
-10. `upload-finalize-upload` - Multipart finalization (concurrency: 3)
-11. `upload-cleanup-fs` - Filesystem cleanup (concurrency: 1)
+**Upload Service (12 queues)** — labels per `jobLabels` in `packages/upload-service/src/constants.ts`:
+1. `plan-bundle` - Bundle planning (concurrency: 1)
+2. `prepare-bundle` - Bundle assembly (concurrency: 3)
+3. `post-bundle` - Arweave posting (concurrency: 2)
+4. `seed-bundle` - Chunk seeding (concurrency: 2)
+5. `verify-bundle` - Verification (concurrency: 3)
+6. `put-offsets` - Offset storage (concurrency: 5)
+7. `new-data-item` - Batch DB insert (concurrency: 5)
+8. `optical-post` - Optical posting (concurrency: 5)
+9. `unbundle-bdi` - BDI unbundling (concurrency: 2)
+10. `finalize-upload` - Multipart finalization (concurrency: 3)
+11. `cleanup-fs` - Filesystem cleanup (concurrency: 1)
+12. `redrive-posted` - Redrive posted-but-unverified bundles
 
 **Payment Service (2 queues):**
-1. `payment-pending-tx` - Crypto payment confirmation
-2. `payment-admin-credit` - Admin credit operations
+1. `pending-tx` - Crypto payment confirmation
+2. `admin-credit` - Admin credit operations
 
 **Queue Features:**
 - Retry: 3 attempts with exponential backoff (5s, 25s, 125s)
@@ -2047,7 +2050,7 @@ Permanent Storage on Arweave + AR.IO Gateway
 - `GET /v1/multipart/:uploadId` - Get upload info
 - `GET /v1/multipart/:uploadId/status` - Get upload status
 - `GET /v1/tx/:id` - Get data item status
-- `GET /v1/tx/:id/offset` - Get offset metadata
+- `GET /v1/tx/:id/offsets` - Get offset metadata
 - `GET /v1/info` - Get service info
 
 **Payment Service Endpoints:**
@@ -2329,7 +2332,7 @@ http://localhost:9001           # MinIO Console
 | | PostgreSQL (2 databases) | ✅ Supported |
 | | Redis (cache + queues) | ✅ Supported |
 | | MinIO S3-compatible storage | ✅ Supported |
-| | BullMQ (13 queues) | ✅ Supported |
+| | BullMQ (14 queues: 12 upload + 2 payment) | ✅ Supported |
 | **Monitoring** | Winston logging | ✅ Supported |
 | | Prometheus metrics | ✅ Supported |
 | | OpenTelemetry tracing | ✅ Optional |

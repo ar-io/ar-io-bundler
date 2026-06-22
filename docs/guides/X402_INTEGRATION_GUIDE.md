@@ -1537,8 +1537,9 @@ curl -X POST http://localhost:3001/v1/tx/raw \
 
 **Step 4: Verify Payment**
 ```bash
-# Check PostgreSQL
-psql -d upload_service -c "SELECT * FROM x402_payment_transaction ORDER BY paid_at DESC LIMIT 1;"
+# Check PostgreSQL (the x402_payment_transaction ledger lives in payment_service;
+# the upload_service DB has the flat x402_payments table instead)
+psql -d payment_service -c "SELECT * FROM x402_payment_transaction ORDER BY paid_at DESC LIMIT 1;"
 
 # Check on BaseScan
 https://sepolia.basescan.org/tx/0xYourTxHash

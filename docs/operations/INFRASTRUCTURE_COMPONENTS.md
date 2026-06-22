@@ -17,7 +17,7 @@ This document lists all infrastructure components and how they're managed by our
    
 3. **Redis Queues** (port 6381)
    - Container: `ar-io-bundler-redis-queues`
-   - Used for: BullMQ job queues (11 queues)
+   - Used for: BullMQ job queues (12 queues)
    - Healthcheck: `redis-cli -p 6381 ping`
    
 4. **MinIO** (ports 9000-9001)
@@ -64,13 +64,13 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
    - Process name: `upload-workers`
    - Instances: 1 (fork mode - IMPORTANT: must be single instance)
    - Script: `packages/upload-service/lib/workers/allWorkers.js`
-   - Handles 11 BullMQ job queues
+   - Handles 12 BullMQ job queues
 
-5. **Bull Board** (port 3002)
-   - Process name: `bull-board`
+5. **Admin Dashboard** (port 3002)
+   - Process name: `admin-dashboard`
    - Instances: 1 (fork mode)
-   - Script: `packages/upload-service/bull-board-server.js`
-   - Provides web UI for monitoring all 11 BullMQ queues
+   - Script: `packages/admin-service/server.js`
+   - Admin stats dashboard with embedded Bull Board for monitoring all 12 BullMQ queues
    - Access at: http://localhost:3002/admin/queues
 
 ## Script Coverage
@@ -81,7 +81,7 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
 - ✅ Runs MinIO initialization (creates buckets)
 - ✅ Runs database migrations (payment + upload)
 - ✅ Checks for builds, wallet, .env files
-- ✅ Starts all PM2 services via ecosystem.config.js (payment-service, payment-workers, upload-api, upload-workers, bull-board)
+- ✅ Starts all PM2 services via ecosystem.config.js (payment-service, payment-workers, upload-api, upload-workers, admin-dashboard)
 
 ### ./scripts/stop.sh
 **Stops all components:**
