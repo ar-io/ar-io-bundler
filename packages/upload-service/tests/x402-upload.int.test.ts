@@ -289,13 +289,36 @@ describe("x402 Upload Integration Tests", function () {
         userBalanceInWinc: W("0"),
       });
 
+      // The insufficient-balance path now returns a 402 with x402 payment
+      // requirements sourced from getX402PriceQuote. Stub it so we don't hit the
+      // real (empty-URL) payment service and 503. See dataItemPost.ts ~L449-518.
+      const priceQuoteStub = stub(
+        paymentService,
+        "getX402PriceQuote"
+      ).resolves({
+        x402Version: 1,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "base-sepolia",
+            maxAmountRequired: "1000",
+            asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            payTo: "0x0000000000000000000000000000000000000000",
+            timeout: { validBefore: Math.floor(Date.now() / 1000) + 300 },
+            extra: { name: "USD Coin", version: "2" },
+          },
+        ],
+      });
+
       const signer = new ArweaveSigner(testArweaveJWK);
       const dataItem = createData("test data without x402", signer);
       await dataItem.sign(signer);
       const dataItemBuffer = dataItem.getRaw();
 
-      try {
-        await axios.post(`${localTestUrl}/v1/tx`, dataItemBuffer, {
+      const response = await axios.post(
+        `${localTestUrl}/v1/tx`,
+        dataItemBuffer,
+        {
           headers: {
             "Content-Type": octetStreamContentType,
             "Content-Length": dataItemBuffer.length.toString(),
@@ -303,21 +326,23 @@ describe("x402 Upload Integration Tests", function () {
           },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-        });
-      } catch (error: any) {
-        // Expected to fail due to insufficient balance
-        expect(error.response.status).to.equal(402);
-      }
+          validateStatus: () => true,
+        }
+      );
+
+      // Expected to fail due to insufficient balance -> 402 with x402 reqs
+      expect(response.status).to.equal(402);
 
       // Verify traditional balance check was used, not x402
       expect(checkBalanceStub.called).to.be.true;
 
       checkBalanceStub.restore();
+      priceQuoteStub.restore();
     });
   });
 
   describe("Fraud detection in x402 finalization", () => {
-    it("rejects upload when declared size significantly differs from actual size", async () => {
+    it("rejects upload with 402 when finalizeX402Payment flags fraud (size mismatch)", async () => {
       // Stub x402 verification to succeed
       const verifyStub = stub(
         paymentService,
@@ -344,20 +369,32 @@ describe("x402 Upload Integration Tests", function () {
       await dataItem.sign(signer);
       const dataItemBuffer = dataItem.getRaw();
 
-      try {
-        await axios.post(`${localTestUrl}/v1/tx`, dataItemBuffer, {
+      // Fraud is determined by the payment service's finalizeX402Payment result
+      // (stubbed above to "fraud_penalty"), not by the route recomputing sizes.
+      // The Content-Length must match the body so the data item streams/parses
+      // cleanly (a mismatched Content-Length truncates the in-memory buffer or
+      // stalls the FS-backup write). With the stub returning fraud, the route
+      // quarantines and responds 402. See dataItemPost.ts ~L645-675.
+      const response = await axios.post(
+        `${localTestUrl}/v1/tx`,
+        dataItemBuffer,
+        {
           headers: {
             "Content-Type": octetStreamContentType,
-            "Content-Length": "100", // Declared 100 bytes
+            "Content-Length": dataItemBuffer.length.toString(),
             "X-PAYMENT": validPaymentHeader,
           },
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-        });
-        expect.fail("Should have rejected fraudulent upload");
-      } catch (error: any) {
-        expect(error.response.status).to.equal(402);
-        expect(error.response.data.error).to.include("fraud");
+          validateStatus: () => true,
+        }
+      );
+
+      try {
+        expect(response.status).to.equal(402);
+        // errorResponse sets the message on statusMessage (no JSON body), so the
+        // fraud reason surfaces in statusText / the raw response data string.
+        expect(`${response.statusText}${response.data}`).to.include("Fraud");
       } finally {
         verifyStub.restore();
         finalizeStub.restore();

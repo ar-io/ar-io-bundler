@@ -259,11 +259,15 @@ async function trackItem(rec) {
           timeout: 8000,
           validateStatus: () => true,
         });
-        const st = (s.data?.info || s.data?.status || "").toString().toLowerCase();
-        if (st.includes("planned") || st.includes("prepar")) mark("plan");
-        if (st.includes("seed")) { mark("plan"); mark("seed"); }
-        if (st.includes("permanent")) { mark("plan"); mark("seed"); mark("permanent"); }
-        if (st.includes("fail")) { seen.failed = Date.now() - start; break; }
+        // Real bundler vocab (data-item /status): info = new → pending(+bundleId)
+        // → permanent | failed. The data-item endpoint can't split plan/post/seed
+        // (all are "pending" once bundled), so bundleId/pending marks plan+seed.
+        const info = (s.data?.info || "").toString().toLowerCase();
+        const bundled = !!s.data?.bundleId;
+        if (info.includes("planned") || info.includes("prepar") || bundled) mark("plan");
+        if (info === "pending" || info.includes("seed") || bundled) { mark("plan"); mark("seed"); }
+        if (info === "permanent" || info.includes("permanent")) { mark("plan"); mark("seed"); mark("permanent"); }
+        if (info === "failed" || info.includes("fail")) { seen.failed = Date.now() - start; break; }
       } catch {}
     }
     // 2) optimistic ACCESS via the gateway (data served)

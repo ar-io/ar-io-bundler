@@ -18,7 +18,9 @@ import * as fs from "fs";
 
 import { PublicArweaveAddress, SigInfo, SignatureConfig } from "./types/types";
 
-export const port = process.env.UPLOAD_SERVICE_PORT ? +process.env.UPLOAD_SERVICE_PORT : 3001;
+export const port = process.env.UPLOAD_SERVICE_PORT
+  ? +process.env.UPLOAD_SERVICE_PORT
+  : 3001;
 
 export const receiptVersion = "0.2.0";
 
@@ -37,12 +39,16 @@ export const allowListPublicAddresses: PublicArweaveAddress[] =
   injectedAllowListAddresses;
 
 // Function to get the raw data item wallet address (computed lazily)
-export function getRawDataItemWalletAddress(): PublicArweaveAddress | undefined {
+export function getRawDataItemWalletAddress():
+  | PublicArweaveAddress
+  | undefined {
   return rawDataItemWalletAddress;
 }
 
 // Function to set the raw data item wallet address and add to allowlist
-export function setRawDataItemWalletAddress(address: PublicArweaveAddress): void {
+export function setRawDataItemWalletAddress(
+  address: PublicArweaveAddress
+): void {
   rawDataItemWalletAddress = address;
   if (!allowListPublicAddresses.includes(address)) {
     allowListPublicAddresses.push(address);
@@ -83,6 +89,53 @@ export const gatewayUrl = new URL(
   process.env.ARWEAVE_GATEWAY || "https://arweave.net:443"
 );
 
+/**
+ * Ordered list of Arweave gateways used for redundant core reads (price,
+ * last_tx, tx status, block height, anchor, balance) and tx-header POSTs.
+ *
+ * Comma-separated via `ARWEAVE_GATEWAYS`. If unset, falls back to the single
+ * `ARWEAVE_GATEWAY` (`gatewayUrl`) so a single-gateway deployment behaves
+ * EXACTLY as before. The first entry is treated as the primary; the rest are
+ * failover targets, tried in order.
+ */
+export const arweaveGatewayUrls: URL[] = (() => {
+  const raw = process.env.ARWEAVE_GATEWAYS;
+  if (!raw) {
+    return [gatewayUrl];
+  }
+  const urls = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => new URL(s));
+  return urls.length > 0 ? urls : [gatewayUrl];
+})();
+
+/**
+ * Number of INDEPENDENT sources that must confirm a bundle is permanent (>=
+ * `txPermanentThreshold` confirmations, or a GQL index confirmation) before it
+ * is irreversibly promoted to `permanent_bundle` and its off-chain copies become
+ * eligible for tiered cleanup.
+ *
+ * Default 1 (legacy single-source behavior — no change unless opted in).
+ * Multi-source permanence is OPT-IN: set `PERMANENCE_CONFIRMATION_SOURCES=2`
+ * (with >= 2 genuinely INDEPENDENT gateways in `ARWEAVE_GATEWAYS`) to require
+ * agreement before irreversibly promoting + deleting off-chain copies.
+ *
+ * Why opt-in: requiring N sources erring safe (never wrongly delete) has a
+ * degradation mode — if you configure N gateways and one is down for a long
+ * time, bundles can't reach quorum, so they stay in `seeded_bundle` and their
+ * local/MinIO copies are never cleaned (storage grows until the gateway
+ * recovers; self-heals, no data loss). Default 1 avoids surprising operators
+ * with that trade until they've deliberately enabled it with independent
+ * gateways. The effective requirement is also capped at the number of
+ * configured gateways, so it can never stall a single-gateway deployment.
+ */
+export const permanenceConfirmationSources = Math.max(
+  1,
+  +(process.env.PERMANENCE_CONFIRMATION_SOURCES || 1)
+);
+
 export const publicAccessGatewayUrl = new URL(
   process.env.PUBLIC_ACCESS_GATEWAY || "https://arweave.net:443"
 );
@@ -92,6 +145,36 @@ export const publicAccessGatewayUrl = new URL(
 export const arweaveUploadNode = new URL(
   process.env.ARWEAVE_UPLOAD_NODE || "https://arweave.net:443"
 );
+
+/**
+ * Optimistic surfaces — three independent, strictly best-effort pushes that warm
+ * the AR.IO gateway BEFORE a bundle mines. None of them may block or fail the
+ * upload or the on-chain bundle post. Each is its own env gate (see
+ * `.env.sample` and CLAUDE.md for the enable-matrix):
+ *
+ *  1. data-item headers (optical bridge)  — OPTICAL_BRIDGING_ENABLED (default ON)
+ *  2. bundle-tx header  (optimistic-tx)   — OPTIMISTIC_TX_BRIDGE_ENABLED (default OFF)
+ *  3. bundle chunks     (chunk cache)     — CHUNK_CACHE_BRIDGE_ENABLED  (default OFF)
+ */
+
+/**
+ * Surface 2 endpoint: `OPTIMISTIC_TX_BRIDGE_URL`. Explicit override for the
+ * optimistic-tx admin endpoint, read at call time in
+ * `ArweaveGateway.postBundleTxToOptimisticTxQueue` (mirroring how it reads
+ * `AR_IO_ADMIN_KEY` / `OPTICAL_BRIDGE_URL`). When unset, the endpoint is derived
+ * from `OPTICAL_BRIDGE_URL` (…/queue-data-item → …/queue-optimistic-tx); set this
+ * explicitly when the optical URL doesn't follow that convention so the surface
+ * doesn't silently disable itself.
+ */
+
+/**
+ * Surface 3 gate. Best-effort push of a seeded bundle's chunks to the gateway's
+ * `/chunk` cache (the gateway used for reads, `ARWEAVE_GATEWAY`), warming it
+ * before the tx mines. Default OFF; failure NEVER affects seeding to
+ * `ARWEAVE_UPLOAD_NODE`.
+ */
+export const chunkCacheBridgeEnabled =
+  process.env.CHUNK_CACHE_BRIDGE_ENABLED === "true";
 
 export const dataCaches = process.env.DATA_CACHES?.split(",") ?? [
   publicAccessGatewayUrl.host,
@@ -139,9 +222,34 @@ export const octetStreamContentType = "application/octet-stream";
 export const failedReasons = {
   failedToPost: "failed_to_post",
   notFound: "not_found",
+  failedToSeed: "failed_to_seed",
 } as const;
 
 export const msPerMinute = 60_000;
+
+// ---------------------------------------------------------------------------
+// posted_bundle re-driver (pipeline reliability)
+//
+// A bundle whose seed-bundle job exhausts its BullMQ attempts is otherwise
+// stranded in posted_bundle forever (tx header on chain, chunks never seeded,
+// nothing re-scans it). The re-driver scans stale posted_bundle rows on a
+// schedule and re-enqueues seed-bundle; after MAX_SEED_REDRIVES it demotes the
+// bundle to failed_bundle (items repacked to new_data_item) — loudly.
+//
+// POSTED_REDRIVE_SCHEDULE_CRON is read in workers/allWorkers.ts; set it to ""
+// to disable the schedule.
+// ---------------------------------------------------------------------------
+export const maxSeedRedrives = process.env.MAX_SEED_REDRIVES
+  ? +process.env.MAX_SEED_REDRIVES
+  : 5;
+
+// How old (ms since posted_date) a posted_bundle row must be before the
+// re-driver considers it stale enough to re-enqueue. Default 30 minutes — well
+// beyond the seed job's 3-attempt exponential backoff window, so a bundle that
+// is merely mid-retry is not prematurely re-driven.
+export const postedStaleThresholdMs = process.env.POSTED_STALE_THRESHOLD_MS
+  ? +process.env.POSTED_STALE_THRESHOLD_MS
+  : 30 * 60_000;
 
 export const signatureTypeLength = 2;
 export const emptyTargetLength = 1;
@@ -315,6 +423,7 @@ export const jobLabels = {
   verifyBundle: "verify-bundle",
   cleanupFs: "cleanup-fs",
   putOffsets: "put-offsets",
+  redrivePosted: "redrive-posted",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 

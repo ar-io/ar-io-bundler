@@ -43,12 +43,16 @@ function getAdminKeyFromEnv(keyName: string): string {
     return adminKeysCache.get(keyName)!;
   }
 
-  const envVarName = `ARDRIVE_ADMIN_KEY_${keyName.toUpperCase().replace(/-/g, '_')}`;
+  const envVarName = `ARDRIVE_ADMIN_KEY_${keyName
+    .toUpperCase()
+    .replace(/-/g, "_")}`;
   const key = process.env[envVarName];
 
   if (!key) {
-    logger.warn(`Admin key ${keyName} not found in environment variable ${envVarName}`);
-    return '';
+    logger.warn(
+      `Admin key ${keyName} not found in environment variable ${envVarName}`
+    );
+    return "";
   }
 
   adminKeysCache.set(keyName, key);
@@ -80,12 +84,15 @@ const canaryOpticalSampleRate = Number.parseInt(
 const optionalOpticalUrls =
   process.env.OPTIONAL_OPTICAL_BRIDGE_URLS?.split(",");
 
+// Each pair is "url|adminKeyName"; adminKeyName is looked up via
+// getAdminKeyFromEnv (ARDRIVE_ADMIN_KEY_<NAME>). The "|name" part is an
+// env-var key reference now — it was an AWS SSM parameter name in the original
+// (pre-de-AWS) code, hence the historical "ssmParamName" framing.
 const arDriveGatewayOpticalUrlAndApiKeyPairs =
   process.env.ARDRIVE_GATEWAY_OPTICAL_URLS?.split(",")
     ?.map((pair) => {
-      // eslint-disable-next-line prefer-const
-      let [url, ssmParamName] = pair.split("|");
-      return { url, ssmParamName };
+      const [url, adminKeyName] = pair.split("|");
+      return { url, adminKeyName };
     })
     ?.filter(({ url }) => !!url) ?? [];
 
@@ -213,9 +220,11 @@ export const opticalPostHandler = async ({
     if (dataItemStringifiedHeadersToSendToArDriveOptical.length !== 0) {
       for (const {
         url,
-        ssmParamName,
+        adminKeyName,
       } of arDriveGatewayOpticalUrlAndApiKeyPairs) {
-        const apiKey = ssmParamName ? getAdminKeyFromEnv(ssmParamName) : undefined;
+        const apiKey = adminKeyName
+          ? getAdminKeyFromEnv(adminKeyName)
+          : undefined;
         void breakerForOpticalUrl(url)
           .fire(async () => {
             return getAxios().post(url, arDrivePostBody, {

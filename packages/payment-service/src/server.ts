@@ -29,6 +29,7 @@ import {
   migrateOnStartup,
   x402Networks,
 } from "./constants";
+import { BadRequest } from "./database/errors";
 import { PostgresDatabase } from "./database/postgres";
 import { MandrillEmailProvider } from "./emailProvider";
 import {
@@ -88,6 +89,31 @@ export async function createServer(
   if (!STRIPE_SECRET_KEY) {
     throw new Error("Stripe secret key or webhook secret not set");
   }
+
+  // Outermost error handler: map domain errors that propagate out of a route
+  // to proper HTTP status codes. Several routes (e.g. x402) validate input and
+  // `throw new BadRequest(...)` BEFORE their own try/catch, so without this they
+  // surfaced as Koa's default 500 instead of a 4xx. Routes that set ctx.status
+  // explicitly or catch their own errors are unaffected — this only sees what
+  // escapes them.
+  app.use(async (ctx: KoaContext, next: Next) => {
+    try {
+      await next();
+    } catch (error) {
+      if (error instanceof BadRequest) {
+        ctx.status = 400;
+        ctx.body = { error: error.message };
+      } else {
+        logger.error("Unhandled route error", {
+          method: ctx.method,
+          path: ctx.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        ctx.status = 500;
+        ctx.body = { error: "Internal server error" };
+      }
+    }
+  });
 
   app.use(loggerMiddleware);
 

@@ -37,7 +37,9 @@ describe("Knex connected to postgreSQL database", () => {
     const { rows, rowCount } = await listTables(knex);
     expect(rowCount).to.equal(rowCountBefore + 1);
     expect(rows.length).to.equal(rowCountBefore + 1);
-    expect(rows[rows.length - 1].table_name).to.equal("test_table");
+    // listTables orders by table_name; assert membership rather than position so
+    // the test doesn't break as new tables (e.g. x402_payments) shift ordering.
+    expect(rows.map((r) => r.table_name)).to.include("test_table");
 
     await knex.schema.dropTable("test_table");
 

@@ -26,30 +26,62 @@ services:
   payment-service-pg:
     image: postgres:13.8
     environment:
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-      POSTGRES_DB: ${DB_DATABASE:-payment-postgres}
-      PGPORT: ${DB_PORT:-5432}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Create the DB under the name the app's knex actually uses
+      # (PAYMENT_DB_DATABASE default = payment_service). The old default
+      # "payment-postgres" never matched, so migrations hit a missing DB.
+      POSTGRES_DB: payment_service
+      PGPORT: 5432
     ports:
-      - "${DB_PORT:-5432}:${DB_PORT:-5432}"
+      - "5432:5432"
     volumes:
       - payment-service-data:/var/lib/postgresql/data
 
   test-runner:
     profiles: ["test"]
     build:
-      context: .
-      dockerfile: tests/Dockerfile.integration
+      # Build from the monorepo root so the install sees the root lockfile,
+      # .yarnrc.yml and .yarn/ — root-only `resolutions` and the corepack pin
+      # mean a package-local install resolves a different tree. See
+      # tests/Dockerfile.integration.
+      context: ../..
+      dockerfile: packages/payment-service/tests/Dockerfile.integration
       args:
-        NODE_VERSION: ${NODE_VERSION:-18.17.0}
+        # Literal (not ${...}) so the ambient env can't change the test Node.
+        NODE_VERSION: "22.22.0"
+    # Literal values (not ${VAR} interpolation) keep the harness hermetic and
+    # self-documenting — the single source of truth for the docker test env.
     environment:
       DB_HOST: payment-service-pg
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      DB_PORT: ${DB_PORT:-5432}
-      PORT: ${PORT:-3000}
-      NODE_ENV: ${NODE_ENV:-test}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-test}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-test}
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_PORT: 5432
+      # Must match POSTGRES_DB above (knex reads PAYMENT_DB_DATABASE).
+      PAYMENT_DB_DATABASE: payment_service
+      PORT: 4000
+      # The test client (tests/helpers/testHelpers.ts) targets http://localhost:$PORT,
+      # but the server listens on PAYMENT_SERVICE_PORT (default 4001). Pin them to
+      # the same port or every request gets ECONNREFUSED (error.response undefined).
+      PAYMENT_SERVICE_PORT: 4000
+      NODE_ENV: test
+      DISABLE_LOGS: "true"
+      # Node 22.18+ enables native TS type-stripping, which intercepts .ts before
+      # ts-node can transpile testSetup.ts. Disable so ts-node stays authoritative.
+      NODE_OPTIONS: --no-experimental-strip-types
+      # Solana pubkey for gateway/pricing init (System Program); .mocharc also
+      # sets this, but provide it for any pre-mocha module load. Never a real key.
+      SOLANA_ADDRESS: "11111111111111111111111111111111"
+      # Stripe test placeholders (no real keys).
+      STRIPE_SECRET_KEY: test
+      STRIPE_WEBHOOK_SECRET: test
+      # x402 config for the x402 integration tests. TESTNET only — never
+      # mainnet/CDP from the harness. Dummy payTo (never moves funds).
+      X402_PAYMENT_ADDRESS: "0x0000000000000000000000000000000000000001"
+      X402_NETWORK: base-sepolia
+      X402_BASE_ENABLED: "false"
+      X402_BASE_TESTNET_ENABLED: "true"
+      X402_FACILITATOR_URLS_BASE_TESTNET: https://x402.org/facilitator
     depends_on:
       - payment-service-pg
 

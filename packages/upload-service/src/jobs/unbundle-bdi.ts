@@ -20,7 +20,7 @@ import { Readable } from "stream";
 import winston from "winston";
 
 import { CacheService } from "../arch/cacheServiceTypes";
-import { enqueue } from "../arch/queues";
+import { enqueueBatch } from "../arch/queues";
 import { rawDataItemStartFromParsedHeader } from "../bundles/rawDataItemStartFromParsedHeader";
 import { StreamingDataItem } from "../bundles/streamingDataItem";
 import { jobLabels } from "../constants";
@@ -37,6 +37,7 @@ import {
 // PostgreSQL is now used instead of DynamoDB - always available via database connection
 import { getS3ObjectStore } from "../utils/objectStoreUtils";
 import {
+  DatedSignedDataItemHeader,
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
@@ -50,6 +51,28 @@ export type UnbundleBDIMessageBody = {
 
 // TODO: Remove after initial deploy. Existing records will have a string value.
 type IncomingBDIMessageBody = string | UnbundleBDIMessageBody;
+
+// Optical fan-out for a BDI's nested data items is enqueued in batches (BullMQ
+// addBulk) rather than one job per child, so a large BDI can't flood the optical
+// queue with thousands of individual adds.
+export const opticalFanOutBatchSize = Math.max(
+  1,
+  Number.parseInt(process.env.BDI_OPTICAL_FAN_OUT_BATCH_SIZE || "50", 10) || 50
+);
+
+/**
+ * Split an array of optical headers into contiguous batches of at most
+ * `batchSize`, preserving order. Pure helper so the BDI fan-out batching is
+ * unit-testable without standing up the unbundle pipeline.
+ */
+export function batchOpticalHeaders<T>(items: T[], batchSize: number): T[][] {
+  const size = Math.max(1, Math.floor(batchSize));
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
 
 export async function unbundleBDIBatchHandler(
   messages: { MessageId?: string; Body?: string }[],
@@ -157,7 +180,7 @@ export async function unbundleBDIHandler(
               });
 
               const nestedDataItemParallelLimit = pLimit(10);
-              await Promise.all(
+              const opticalHeaders = await Promise.all(
                 parsedDataItemHeaders.map((parsedDataItemHeader) => {
                   const {
                     id,
@@ -171,128 +194,146 @@ export async function unbundleBDIHandler(
                   const nestedItemLogger = bdiLogger.child({
                     nestedDataItemId: id,
                   });
-                  return nestedDataItemParallelLimit(async () => {
-                    // Discern a content type for the data item if possible
-                    const payloadContentType =
-                      payloadContentTypeFromDecodedTags(tags);
+                  return nestedDataItemParallelLimit(
+                    async (): Promise<DatedSignedDataItemHeader> => {
+                      // Discern a content type for the data item if possible
+                      const payloadContentType =
+                        payloadContentTypeFromDecodedTags(tags);
 
-                    // Offsets here are relative to either the beginning of the raw BDI
-                    // OR its payload, depending on what the parser provides us. To extract
-                    // the nested raw data items, we need compute the offsets into the raw
-                    // BDI that we should stream them from. But we also need to compute some
-                    // offsets relative to the start of the nested data item to use for metadata
-                    // when we put the nested item into storage. READ VARIABLE NAMES CAREFULLY.
-                    const rawDataItemDataStartWithinRawBdi =
-                      bdiPayloadDataStart +
-                      rawDataItemStartFromParsedHeader(parsedDataItemHeader); // relative to BDI's payload offset
-                    const payloadEndOffsetWithinRawBdi =
-                      bdiPayloadDataStart +
-                      payloadDataStartWithinBdiPayload +
-                      payloadDataSize -
-                      1; // -1 because the range is INCLUSIVE
-                    const contentLength =
-                      payloadEndOffsetWithinRawBdi -
-                      rawDataItemDataStartWithinRawBdi +
-                      1;
-                    const payloadDataStart =
-                      bdiPayloadDataStart +
-                      payloadDataStartWithinBdiPayload - // payload offset in raw bdi
-                      rawDataItemDataStartWithinRawBdi; // => difference in offsets
+                      // Offsets here are relative to either the beginning of the raw BDI
+                      // OR its payload, depending on what the parser provides us. To extract
+                      // the nested raw data items, we need compute the offsets into the raw
+                      // BDI that we should stream them from. But we also need to compute some
+                      // offsets relative to the start of the nested data item to use for metadata
+                      // when we put the nested item into storage. READ VARIABLE NAMES CAREFULLY.
+                      const rawDataItemDataStartWithinRawBdi =
+                        bdiPayloadDataStart +
+                        rawDataItemStartFromParsedHeader(parsedDataItemHeader); // relative to BDI's payload offset
+                      const payloadEndOffsetWithinRawBdi =
+                        bdiPayloadDataStart +
+                        payloadDataStartWithinBdiPayload +
+                        payloadDataSize -
+                        1; // -1 because the range is INCLUSIVE
+                      const contentLength =
+                        payloadEndOffsetWithinRawBdi -
+                        rawDataItemDataStartWithinRawBdi +
+                        1;
+                      const payloadDataStart =
+                        bdiPayloadDataStart +
+                        payloadDataStartWithinBdiPayload - // payload offset in raw bdi
+                        rawDataItemDataStartWithinRawBdi; // => difference in offsets
 
-                    // Stash the full raw data item in all appropriate planned stores
-                    nestedItemLogger.debug("Caching nested data item...", {
-                      payloadContentType,
-                      rawDataItemDataStart: rawDataItemDataStartWithinRawBdi,
-                      payloadEndOffset: payloadEndOffsetWithinRawBdi,
-                      rawDataItemLength: contentLength,
-                    });
-
-                    await useAndCleanupReadable(
-                      async () =>
-                        await getDataItemReadableRange({
-                          cacheService,
-                          objectStore,
-                          dataItemId: bdiIdToUnpack,
-                          startOffset: rawDataItemDataStartWithinRawBdi,
-                          endOffsetInclusive: payloadEndOffsetWithinRawBdi,
-                          logger: nestedItemLogger,
-                        }),
-                      async (rawNestedDataItemReadable: Readable) => {
-                        // Pause the stream to avoid reading it before it's time to feed it to stores
-                        rawNestedDataItemReadable.pause();
-                        const streamingDataItem = new StreamingDataItem(
-                          rawNestedDataItemReadable,
-                          nestedItemLogger
-                        );
-
-                        // PostgreSQL offsets are always available (no size limits like DynamoDB)
-                        // Offsets stored in PostgreSQL data_item_offsets table
-                        const bytesThreshold = parseInt(
-                          process.env.POSTGRES_DATA_ITEM_BYTES_THRESHOLD || "10240",
-                          10
-                        );
-                        const itemFitsInPostgres = contentLength <= bytesThreshold;
-                        const willCacheToPostgres = itemFitsInPostgres;
-
-                        const objStoreStream =
-                          (await shouldCacheNestedDataItemToObjStore()) ||
-                          !willCacheToPostgres
-                            ? tapStream({
-                                readable: rawNestedDataItemReadable,
-                                logger: nestedItemLogger.child({
-                                  context: "s3BackupStream",
-                                }),
-                              })
-                            : undefined;
-
-                        // Now allow data to flow into the tapped streams
-                        rawNestedDataItemReadable.resume();
-
-                        await cacheNestedDataItem({
-                          parentDataItemId: bdiIdToUnpack,
-                          parentPayloadDataStart: bdiPayloadDataStart,
-                          streamingDataItem,
-                          startOffsetInRawParent:
-                            rawDataItemDataStartWithinRawBdi,
-                          rawContentLength: contentLength,
-                          payloadContentType,
-                          payloadDataStart,
-                          objStoreStream,
-                          cacheService,
-                          objectStore,
-                          logger: nestedItemLogger,
-                        });
-                      }
-                    );
-
-                    // TODO: Consider enqueue in batches
-                    await enqueue(jobLabels.opticalPost, {
-                      ...(await signDataItemHeader(
-                        encodeTagsForOptical({
-                          id,
-                          signature,
-                          owner,
-                          owner_address: ownerToNormalizedB64Address(owner),
-                          target: target ?? "",
-                          content_type: payloadContentType,
-                          data_size: payloadDataSize,
-                          tags,
-                        })
-                      )),
-                      uploaded_at: uploaded_at ?? 0, // TODO: Make non-nullable after initial deploy
-                    });
-
-                    nestedItemLogger.debug(
-                      "Finished caching nested data item.",
-                      {
+                      // Stash the full raw data item in all appropriate planned stores
+                      nestedItemLogger.debug("Caching nested data item...", {
                         payloadContentType,
                         rawDataItemDataStart: rawDataItemDataStartWithinRawBdi,
                         payloadEndOffset: payloadEndOffsetWithinRawBdi,
-                      }
-                    );
-                  });
+                        rawDataItemLength: contentLength,
+                      });
+
+                      await useAndCleanupReadable(
+                        async () =>
+                          await getDataItemReadableRange({
+                            cacheService,
+                            objectStore,
+                            dataItemId: bdiIdToUnpack,
+                            startOffset: rawDataItemDataStartWithinRawBdi,
+                            endOffsetInclusive: payloadEndOffsetWithinRawBdi,
+                            logger: nestedItemLogger,
+                          }),
+                        async (rawNestedDataItemReadable: Readable) => {
+                          // Pause the stream to avoid reading it before it's time to feed it to stores
+                          rawNestedDataItemReadable.pause();
+                          const streamingDataItem = new StreamingDataItem(
+                            rawNestedDataItemReadable,
+                            nestedItemLogger
+                          );
+
+                          // PostgreSQL offsets are always available (no size limits like DynamoDB)
+                          // Offsets stored in PostgreSQL data_item_offsets table
+                          const bytesThreshold = parseInt(
+                            process.env.POSTGRES_DATA_ITEM_BYTES_THRESHOLD ||
+                              "10240",
+                            10
+                          );
+                          const itemFitsInPostgres =
+                            contentLength <= bytesThreshold;
+                          const willCacheToPostgres = itemFitsInPostgres;
+
+                          const objStoreStream =
+                            (await shouldCacheNestedDataItemToObjStore()) ||
+                            !willCacheToPostgres
+                              ? tapStream({
+                                  readable: rawNestedDataItemReadable,
+                                  logger: nestedItemLogger.child({
+                                    context: "s3BackupStream",
+                                  }),
+                                })
+                              : undefined;
+
+                          // Now allow data to flow into the tapped streams
+                          rawNestedDataItemReadable.resume();
+
+                          await cacheNestedDataItem({
+                            parentDataItemId: bdiIdToUnpack,
+                            parentPayloadDataStart: bdiPayloadDataStart,
+                            streamingDataItem,
+                            startOffsetInRawParent:
+                              rawDataItemDataStartWithinRawBdi,
+                            rawContentLength: contentLength,
+                            payloadContentType,
+                            payloadDataStart,
+                            objStoreStream,
+                            cacheService,
+                            objectStore,
+                            logger: nestedItemLogger,
+                          });
+                        }
+                      );
+
+                      // Build the signed optical header; the actual enqueue is
+                      // batched (enqueueBatch / addBulk) after all children are
+                      // processed so a large BDI can't flood the optical queue.
+                      const opticalHeader: DatedSignedDataItemHeader = {
+                        ...(await signDataItemHeader(
+                          encodeTagsForOptical({
+                            id,
+                            signature,
+                            owner,
+                            owner_address: ownerToNormalizedB64Address(owner),
+                            target: target ?? "",
+                            content_type: payloadContentType,
+                            data_size: payloadDataSize,
+                            tags,
+                          })
+                        )),
+                        uploaded_at: uploaded_at ?? 0, // TODO: Make non-nullable after initial deploy
+                      };
+
+                      nestedItemLogger.debug(
+                        "Finished caching nested data item.",
+                        {
+                          payloadContentType,
+                          rawDataItemDataStart:
+                            rawDataItemDataStartWithinRawBdi,
+                          payloadEndOffset: payloadEndOffsetWithinRawBdi,
+                        }
+                      );
+
+                      return opticalHeader;
+                    }
+                  );
                 })
               );
+
+              // Enqueue the optical fan-out in batches instead of one job per
+              // child, to avoid flooding the optical queue on large BDIs.
+              for (const batch of batchOpticalHeaders(
+                opticalHeaders,
+                opticalFanOutBatchSize
+              )) {
+                await enqueueBatch(jobLabels.opticalPost, batch);
+              }
             }
           );
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

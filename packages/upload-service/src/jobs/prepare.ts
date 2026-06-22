@@ -18,7 +18,7 @@ import pLimit from "p-limit";
 import { Readable } from "stream";
 
 // import { defaultArchitecture } from "../arch/architecture"; // Unused - removed
-import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
+import { Gateway, MultiGatewayArweaveGateway } from "../arch/arweaveGateway";
 import { CacheService } from "../arch/cacheServiceTypes";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
@@ -37,7 +37,7 @@ import {
   bufferIdFromReadableSignature,
 } from "../bundles/idFromSignature";
 import { signatureTypeInfo } from "../constants";
-import { gatewayUrl, jobLabels } from "../constants";
+import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { PlanId, PlannedDataItem } from "../types/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
@@ -92,9 +92,7 @@ export async function prepareBundleHandler(
     objectStore = getS3ObjectStore(),
     cacheService = getElasticacheService(),
     jwk,
-    arweaveGateway = new ArweaveGateway({
-      endpoint: gatewayUrl,
-    }),
+    arweaveGateway = new MultiGatewayArweaveGateway(),
     pricing = new PricingService(arweaveGateway),
     arweave = new ArweaveInterface(),
   }: PrepareBundleJobInjectableArch,

@@ -31,6 +31,7 @@ export const QUEUE_NAMES = {
   [jobLabels.unbundleBdi]: "upload-unbundle-bdi",
   [jobLabels.finalizeUpload]: "upload-finalize-upload",
   [jobLabels.cleanupFs]: "upload-cleanup-fs",
+  [jobLabels.redrivePosted]: "upload-redrive-posted",
 } as const;
 
 const defaultQueueOptions: QueueOptions = {

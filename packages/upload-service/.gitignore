@@ -18,6 +18,11 @@ node_modules
 # Build folder
 /lib
 
+# Compiled JS must never live under src/: Node resolves `../foo` to a stale
+# foo.js before foo.ts under ts-node, so committed src/**/*.js silently shadow
+# the real TypeScript source in tests. Builds belong in /lib only.
+src/**/*.js
+
 # OSX
 .DS_Store
 

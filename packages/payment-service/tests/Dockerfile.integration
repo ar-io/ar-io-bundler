@@ -1,8 +1,45 @@
-ARG  NODE_VERSION
+# Integration test-runner image for payment-service.
+#
+# Built from the MONOREPO ROOT context (docker-compose.yml sets context: ../..).
+# Building from the root is what makes the dependency tree match what the app
+# actually runs with: Yarn honors `resolutions` only at the workspace root, and
+# corepack needs the root `packageManager` pin. A package-local install would
+# resolve different transitive versions and miss root-hoisted deps.
+#
+# Codebase requires Node 22 (@ar.io/sdk v4 is ESM-only; root engines >=22.12).
+# Keep in sync with .nvmrc (22.22.0).
+ARG NODE_VERSION=22.22.0
 
 FROM node:${NODE_VERSION}-bullseye-slim
 WORKDIR /usr/src/app
-RUN apt-get update && apt-get install -y git
+
+# git: resolves git-hosted transitive deps. corepack: activates the Yarn version
+# pinned in the root package.json (the base image ships Yarn 1.x, which errors on
+# the `packageManager: yarn@3.x` field).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable
+
+# Install from the workspace manifests first so the (slow) install layer is
+# cached and only re-runs when a manifest or the lockfile changes.
+COPY package.json yarn.lock .yarnrc.yml ./
+COPY .yarn/ ./.yarn/
+COPY packages/payment-service/package.json  ./packages/payment-service/
+COPY packages/upload-service/package.json   ./packages/upload-service/
+COPY packages/admin-service/package.json    ./packages/admin-service/
+COPY packages/shared/package.json           ./packages/shared/
+
+# --immutable: the copied lockfile must already satisfy the manifests; this both
+# reproduces the committed tree and fails loudly if the lockfile has drifted.
+RUN yarn install --immutable
+
+# Now copy the full source (node_modules etc. excluded via the .dockerignore
+# alongside this file).
 COPY . .
-RUN yarn 
-CMD yarn db:migrate:latest && yarn test
+
+WORKDIR /usr/src/app/packages/payment-service
+
+# Run migrations, then the integration suite only (unit is CI-gated separately;
+# payment integration tests are DB-coupled).
+CMD yarn db:migrate:latest && yarn test:integration

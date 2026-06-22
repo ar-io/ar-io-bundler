@@ -161,14 +161,59 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 - `optical-post.ts` posts data-item headers to the AR.IO Gateway optical bridge
   for optimistic caching (`OPTICAL_BRIDGE_URL`).
 - `putOffsets.ts` writes data-item offsets to PostgreSQL (for retrieval).
-- `unbundle-bdi.ts` unbundles nested bundle data items (BDIs).
+- `unbundle-bdi.ts` unbundles nested bundle data items (BDIs). Its optical fan-out
+  for a BDI's children is enqueued in batches (`enqueueBatch`/BullMQ `addBulk`,
+  `BDI_OPTICAL_FAN_OUT_BATCH_SIZE` default 50) so a large BDI can't flood the
+  optical queue with one job per child.
 - `cleanup-fs.ts` runs the tiered-retention cleanup (see below).
+
+### Optimistic surfaces (gateway warming) — enable-matrix
+
+Three INDEPENDENT, strictly **best-effort** pushes warm the AR.IO gateway *before*
+a bundle mines. Each is separately gated, fired detached, and emits its own
+metric. **None may ever block or fail the upload or the on-chain bundle post**,
+and the default-off ones leave behavior unchanged until flipped on.
+
+| # | What | Where | Gate (default) | Detached | Metric |
+|---|------|-------|----------------|----------|--------|
+| 1 | Data-item headers | `optical-post.ts` (enqueued from `prepare`/`unbundle-bdi`) | `OPTICAL_BRIDGING_ENABLED` != "false" (**ON**) | worker; throws→BullMQ retry w/ backoff, honors 429/5xx | `*_optical_failure_count`, circuit-breaker gauges |
+| 2 | Bundle-tx header | `ArweaveGateway.postBundleTxToOptimisticTxQueue` (fired from `post.ts`) | `OPTIMISTIC_TX_BRIDGE_ENABLED` == "true" (**OFF**) | `void`, single attempt, no retry | `optimistic_tx_post_total{result=indexed\|error\|disabled\|skipped}` + `optimistic_tx_post_duration_seconds` |
+| 3 | Bundle chunks (cache) | `ArweaveInterface.pushChunksToGatewayCache` (fired from `seed.ts`) | `CHUNK_CACHE_BRIDGE_ENABLED` == "true" (**OFF**) | `void`, swallows errors | `chunk_cache_bridge_total{result=cached\|error\|disabled}` |
+
+Design decisions:
+- **Seeding is separate from surface 3.** Seeding always targets a real Arweave
+  node (`ARWEAVE_UPLOAD_NODE`) so on-chain landing never depends on the gateway
+  supporting `/chunk` or being healthy. Surface 3 is an *additional* push to the
+  read gateway's `/chunk` cache (`ARWEAVE_GATEWAY`); it never affects seeding.
+- **Surface 2 URL hardening.** The endpoint is read from explicit
+  `OPTIMISTIC_TX_BRIDGE_URL` first, falling back to deriving it from
+  `OPTICAL_BRIDGE_URL` (`…/queue-data-item` → `…/queue-optimistic-tx`). If neither
+  yields a usable endpoint the surface logs and increments
+  `result=skipped` instead of silently no-op'ing. Surfaces 2 and 3 require
+  `AR_IO_ADMIN_KEY` where they hit the admin API.
+- **`post.ts` keeps the critical path lean.** Both `postBundleTxToOptimisticTxQueue`
+  (surface 2) and the non-essential admin `queue-bundle` push
+  (`postBundleTxToAdminQueue`) are fired `void`-detached — neither is inside the
+  awaited `Promise.all` with `postBundleTx`, so a slow/retrying gateway can't add
+  latency to the on-chain post.
 
 **Internal job schedulers (no cron needed):** at startup the worker process
 (`src/workers/allWorkers.ts`) registers two BullMQ job schedulers via
 `upsertRepeatable()` (`src/arch/queues.ts`):
 - `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
 - `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
+- `redrive-posted` — `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+
+**`posted_bundle` recovery (`redrive-posted.ts`):** the bundle pipeline's one
+dead-end was `posted_bundle` — a bundle whose tx header posted but whose
+`seed-bundle` job then exhausted its retries had no re-driver (unlike
+`seeded_bundle`, which `verify` re-scans every tick). The `redrive-posted`
+scheduler re-enqueues seeding for `posted_bundle` rows older than
+`POSTED_STALE_THRESHOLD_MS` (default 30 min, past the seed job's own backoff);
+after `MAX_SEED_REDRIVES` (default 5) it demotes the bundle to `failed_bundle`
+(items repacked to `new_data_item`) and emits `posted_bundle_failed_to_seed_total`
+so the stall is loud, not silent. Attempt counts live in the `posted_bundle_redrive`
+table.
 
 This replaced the external `cron-trigger-*.sh` crons, which were a silent-failure
 footgun (a cron never registered, or one that couldn't find `node` on cron's

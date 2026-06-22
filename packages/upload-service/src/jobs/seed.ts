@@ -99,6 +99,15 @@ export async function seedBundleHandler(
 
   logger.info("Finished uploading chunks.", { bundleToSeed });
 
+  // Optimistic surface 3 (best-effort, env-gated CHUNK_CACHE_BRIDGE_ENABLED):
+  // warm the read gateway's /chunk cache before the tx mines. Fired DETACHED and
+  // self-contained (swallows its own errors + metric) so it can NEVER affect
+  // seeding, which already targets ARWEAVE_UPLOAD_NODE above.
+  void arweave.pushChunksToGatewayCache(
+    () => getBundlePayload(objectStore, planId),
+    bundleTx
+  );
+
   await database.insertSeededBundle(bundleId);
 
   // Enqueue verify job with 5 minute delay to allow gateway indexing

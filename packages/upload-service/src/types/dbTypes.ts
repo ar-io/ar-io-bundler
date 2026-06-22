@@ -34,7 +34,10 @@ export type Signature = Buffer;
 export type DataStart = number;
 export type BlockHeight = number;
 
-export type BundleFailedReason = "not_found" | "failed_to_post";
+export type BundleFailedReason =
+  | "not_found"
+  | "failed_to_post"
+  | "failed_to_seed";
 export type DataItemFailedReason =
   | "missing_from_object_store"
   | "too_many_failures"

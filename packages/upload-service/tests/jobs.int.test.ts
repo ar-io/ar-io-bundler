@@ -16,6 +16,7 @@
  */
 import axios from "axios";
 import { expect } from "chai";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { stub } from "sinon";
 
 import { ArweaveGateway } from "../src/arch/arweaveGateway";
@@ -169,6 +170,14 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
   const dataItemIds = [stubTxId10, stubTxId11, stubTxId12];
 
   beforeEach(async () => {
+    // postBundleHandler reads the bundle tx from the (FileSystem) object store
+    // at temp/bundle/<bundleId>. Seed it from the stub bundle tx (1905 bytes).
+    mkdirSync("temp/bundle", { recursive: true });
+    copyFileSync(
+      "tests/stubFiles/bundleTxStub",
+      `temp/bundle/${validBundleIdOnFileSystem}`
+    );
+
     await dbTestHelper.insertStubNewBundle({
       bundleId,
       planId,
@@ -228,6 +237,34 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     expect(bundleTxFromArLocal.owner_address).to.equal(
       bundleTxStubOwnerAddress
     );
+  });
+
+  it("does NOT await postBundleTxToAdminQueue (correction 4: detached best-effort) — a hung admin push must not block the on-chain post", async () => {
+    stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
+    // Admin-queue push that never settles. If the handler awaited it (the old
+    // Promise.all behavior), this test would time out. Detached, the handler
+    // promotes the bundle and returns regardless.
+    const adminQueueStub = stub(gateway, "postBundleTxToAdminQueue").returns(
+      new Promise<void>(() => {
+        /* never resolves */
+      })
+    );
+
+    await postBundleHandler(planId, {
+      objectStore,
+      database: db,
+      arweaveGateway: gateway,
+      paymentService,
+    });
+
+    // It was still INVOKED (fire-and-forget), just not awaited.
+    expect(adminQueueStub.calledOnce).to.equal(true);
+
+    const postedBundleDbResult = await db["writer"]<PostedBundleDBResult>(
+      tableNames.postedBundle
+    ).where(columnNames.bundleId, bundleId);
+    expect(postedBundleDbResult.length).to.equal(1);
+    expect(postedBundleDbResult[0].plan_id).to.equal(planId);
   });
 
   it("when get fiat to ar conversion rate fails, the post bundle handler still runs as expected", async () => {

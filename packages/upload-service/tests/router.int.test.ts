@@ -23,6 +23,7 @@ import { Server } from "http";
 import { stub } from "sinon";
 
 import { ArweaveGateway } from "../src/arch/arweaveGateway";
+import { DataItemOffsetsDB } from "../src/arch/db/dataItemOffsets";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
 import { TurboPaymentService } from "../src/arch/payment";
@@ -80,7 +81,8 @@ describe("Router tests", function () {
       expect(headers["content-type"]).to.equal(
         "application/json; charset=utf-8"
       );
-      expect(headers.connection).to.equal("close");
+      // Node 18→22: HTTP/1.1 keep-alive is now the default (was "close").
+      expect(headers.connection).to.equal("keep-alive");
 
       expect(data).to.deep.equal({
         version: "0.2.0",
@@ -90,6 +92,7 @@ describe("Router tests", function () {
         },
         freeUploadLimitBytes: 517120,
         gateway: "https://arweave.net",
+        gateways: ["https://arweave.net"],
       });
     });
   });
@@ -97,9 +100,25 @@ describe("Router tests", function () {
   describe("Data Item Status GET `/v1/tx/:id/status` Route", () => {
     const testTxId = "G-i10-8jE1Kg1fDuEYGM-MWddAO9sJEKvfZNQuD3AP0";
     const database = new PostgresDatabase({});
+    // The status route reads offsets from dataItemOffsetsDB.getOffset and merges
+    // them into the response. Stub it (root_bundle_id intentionally mismatches
+    // info.bundleId so the route excises startOffsetInRootBundle, as expected).
+    const stubStatusOffset = {
+      data_item_id: testTxId,
+      root_bundle_id: "stubRootBundleId",
+      raw_content_length: 12345,
+      payload_content_type: "application/json",
+      payload_data_start: 1234,
+      start_offset_in_root_bundle: 999,
+      parent_data_item_id: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+      start_offset_in_parent_data_item_payload: 321,
+    };
     before(async function () {
       server = await createServer({
         database,
+        dataItemOffsetsDB: {
+          getOffset: async () => stubStatusOffset,
+        } as unknown as DataItemOffsetsDB,
       });
     });
 
@@ -208,9 +227,34 @@ describe("Router tests", function () {
     const database = new PostgresDatabase({});
     const testTxId = "G-i10-8jE1Kg1fDuEYGM-MWddAO9sJEKvfZNQuD3AP0";
     const testTxId2 = "zXNZ9WDw6YEdK80hVrh0cR_bMeWyRbK5I2wUBvr7r1o";
+    // The offsets route reads from dataItemOffsetsDB.getOffset. Stub it per id:
+    // testTxId carries parent-bundle offsets, testTxId2 carries root-bundle
+    // offsets (undefined columns are dropped from the JSON response).
+    const stubParentOffset = {
+      raw_content_length: 54321,
+      payload_content_type: "text/html",
+      payload_data_start: 2345,
+      parent_data_item_id: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+      start_offset_in_parent_data_item_payload: 123,
+    };
+    const stubRootOffset = {
+      root_bundle_id: "uMguurlEh9a7MKYiauKGlbxG6OjP2xaGmWa1-vrHVh8",
+      start_offset_in_root_bundle: 123,
+      raw_content_length: 43210,
+      payload_content_type: "application/json",
+      payload_data_start: 3456,
+    };
     before(async function () {
       server = await createServer({
         database,
+        dataItemOffsetsDB: {
+          getOffset: async (id: string) =>
+            id === testTxId
+              ? stubParentOffset
+              : id === testTxId2
+              ? stubRootOffset
+              : undefined,
+        } as unknown as DataItemOffsetsDB,
       });
 
       stub(database, "getDataItemInfo").resolves({
@@ -538,18 +582,44 @@ describe("Router tests", function () {
         });
       });
 
-      it("when reserveBalance throws return the correct error", async () => {
+      // The no-X-PAYMENT path now calls checkBalanceForData (not
+      // reserveBalanceForData). When the user lacks balance, the route returns
+      // HTTP 402 with x402 payment requirements (from getX402PriceQuote), per
+      // src/routes/dataItemPost.ts ~lines 449-518. Updated to reflect that.
+      it("when balance is insufficient returns 402 with x402 payment requirements", async () => {
         const tags = [{ name: "test", value: "value" }];
         const dataItem = await signDataItem(
           generateJunkDataItem(512, receiptSigningWallet, tags),
           receiptSigningWallet
         );
 
-        stub(paymentService, "reserveBalanceForData").throws();
-        const { status, data } = await postStubDataItem(dataItem);
+        stub(paymentService, "checkBalanceForData").resolves({
+          bytesCostInWinc: W("500"),
+          userBalanceInWinc: W("20"),
+          userHasSufficientBalance: false,
+        });
+        stub(paymentService, "getX402PriceQuote").resolves({
+          x402Version: 1,
+          accepts: [
+            {
+              scheme: "exact",
+              network: "base-sepolia",
+              maxAmountRequired: "1000",
+              asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+              payTo: "0x0000000000000000000000000000000000000000",
+              timeout: { validBefore: Math.floor(Date.now() / 1000) + 300 },
+              extra: { name: "USD Coin", version: "2" },
+            },
+          ],
+        });
+        const { status, data, headers } = await postStubDataItem(dataItem);
 
-        expect(data).to.contain("Insufficient balance");
         expect(status).to.equal(402);
+        expect(headers["x-payment-required"]).to.equal("x402-1");
+        expect(data).to.have.property("x402Version", 1);
+        expect(data).to.have.property("accepts");
+        expect(data.accepts[0]).to.have.property("scheme");
+        expect(data.accepts[0]).to.have.property("payTo");
       });
 
       it("with a data item signed by a non allow listed wallet without balance", async () => {
@@ -564,14 +634,29 @@ describe("Router tests", function () {
           userBalanceInWinc: W("20"),
           userHasSufficientBalance: false,
         });
-        const { status, statusText, data, headers } = await postStubDataItem(
-          dataItem
-        );
-        expect(data).to.equal("Insufficient balance");
-        expect(statusText).to.equal("Insufficient balance");
+        // Without a getX402PriceQuote stub the route hits the real (empty-URL)
+        // payment call and 503s; the current insufficient-balance behavior is a
+        // 402 with x402 requirements, so stub the quote to assert that.
+        stub(paymentService, "getX402PriceQuote").resolves({
+          x402Version: 1,
+          accepts: [
+            {
+              scheme: "exact",
+              network: "base-sepolia",
+              maxAmountRequired: "1000",
+              asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+              payTo: "0x0000000000000000000000000000000000000000",
+              timeout: { validBefore: Math.floor(Date.now() / 1000) + 300 },
+              extra: { name: "USD Coin", version: "2" },
+            },
+          ],
+        });
+        const { status, data, headers } = await postStubDataItem(dataItem);
 
         expect(status).to.equal(402);
-        assertExpectedHeadersWithContentLength(headers, 20);
+        expect(headers["x-payment-required"]).to.equal("x402-1");
+        expect(data).to.have.property("x402Version", 1);
+        expect(data.accepts[0]).to.have.property("payTo");
       });
     });
 
@@ -646,6 +731,12 @@ describe("Router tests", function () {
         `${localTestUrl}/chunks/arweave/-1/-1`,
         {
           validateStatus: () => true,
+          // createMultiPartUpload sleeps ~250ms server-side before responding,
+          // which leaves the keep-alive socket in a state where reusing it for
+          // the immediately-following status GET hits Node's well-known
+          // keep-alive ECONNRESET race. Disable connection reuse so each request
+          // uses a fresh socket. (Test-client transport detail only.)
+          headers: { Connection: "close" },
         }
       );
       const uploadId = newUploadResponse.data.id;
@@ -653,6 +744,7 @@ describe("Router tests", function () {
         `${localTestUrl}/chunks/arweave/${uploadId}/status`,
         {
           validateStatus: () => true,
+          headers: { Connection: "close" },
         }
       );
       expect(response.status).to.equal(200);
@@ -672,6 +764,8 @@ describe("Router tests", function () {
         `${localTestUrl}/chunks/arweave/-1/-1`,
         {
           validateStatus: () => true,
+          // See ASSEMBLING test: avoid the keep-alive reuse ECONNRESET race.
+          headers: { Connection: "close" },
         }
       );
       const uploadId = newUploadResponse.data.id;
@@ -679,6 +773,7 @@ describe("Router tests", function () {
         `${localTestUrl}/chunks/arweave/${uploadId}/status`,
         {
           validateStatus: () => true,
+          headers: { Connection: "close" },
         }
       );
       expect(response.status).to.equal(200);

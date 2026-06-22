@@ -23,7 +23,7 @@ import {
   x402PricingBufferPercent,
 } from "../constants";
 import { DataItemId, UserAddressType, X402PaymentMode } from "../database/dbTypes";
-import { X402PaymentError } from "../database/errors";
+import { BadRequest, X402PaymentError } from "../database/errors";
 import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
@@ -103,10 +103,18 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
   });
 
   try {
-    // Decode payment header to extract payment details
-    const paymentPayload = JSON.parse(
-      Buffer.from(paymentHeader, "base64").toString("utf-8")
-    );
+    // Decode payment header to extract payment details. A malformed header is
+    // invalid client input → typed BadRequest (→ 400), not a 500.
+    let paymentPayload;
+    try {
+      paymentPayload = JSON.parse(
+        Buffer.from(paymentHeader, "base64").toString("utf-8")
+      );
+    } catch {
+      throw new X402PaymentError(
+        "Invalid payment header: not base64-encoded JSON"
+      );
+    }
 
     const { authorization } = paymentPayload.payload;
     const network = paymentPayload.network;
@@ -345,15 +353,22 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
       mode,
     };
   } catch (error) {
-    logger.error("X402 payment processing failed", {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-    ctx.status = 500;
-    ctx.body = {
-      error: "Payment processing failed",
-      details: error instanceof Error ? error.message : "Unknown error",
-    };
+    // Malformed/invalid payment input (X402PaymentError extends BadRequest) is a
+    // client error → 400, not 500.
+    if (error instanceof BadRequest) {
+      ctx.status = 400;
+      ctx.body = { error: error.message };
+    } else {
+      logger.error("X402 payment processing failed", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      ctx.status = 500;
+      ctx.body = {
+        error: "Payment processing failed",
+        details: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   }
 
   return next();

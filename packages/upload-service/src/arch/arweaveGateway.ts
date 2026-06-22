@@ -18,7 +18,7 @@ import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import Transaction from "arweave/node/lib/transaction";
 import axios, { AxiosInstance, AxiosResponse } from "axios";
 
-import { gatewayUrl, msPerMinute } from "../constants";
+import { arweaveGatewayUrls, gatewayUrl, msPerMinute } from "../constants";
 import logger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import {
@@ -101,6 +101,11 @@ export class ArweaveGateway implements Gateway {
     this.endpoint = endpoint;
     this.retryStrategy = retryStrategy;
     this.axiosInstance = axiosInstance;
+  }
+
+  /** The endpoint this gateway is bound to (read-only accessor for composition). */
+  public get endpointUrl(): URL {
+    return this.endpoint;
   }
 
   public async postToEndpoint<D, T>(
@@ -240,6 +245,43 @@ export class ArweaveGateway implements Gateway {
     ).blockHeight;
   }
 
+  /**
+   * Returns true if this gateway's GraphQL index resolves a `transaction(id)`
+   * node for the given id (i.e. the gateway has indexed the bundle tx). Used as
+   * a second, independent confirmation source for multi-source permanence.
+   * Best-effort: never throws — a query failure or missing node returns false so
+   * the caller treats it as "this source did not confirm".
+   */
+  public async isTransactionIndexedOnGQL(
+    transactionId: TransactionId
+  ): Promise<boolean> {
+    try {
+      const response = await new ExponentialBackoffRetryStrategy<AxiosResponse>(
+        {
+          validStatusCodes: [200, 202],
+        }
+      ).sendRequest(() =>
+        this.axiosInstance.post(this.endpoint.href + "graphql", {
+          query: `
+          query {
+            transaction(id: "${transactionId}") {
+              id
+            }
+          }
+          `,
+        })
+      );
+      return response?.data?.data?.transaction?.id === transactionId;
+    } catch (error) {
+      logger.debug("GQL transaction index check failed", {
+        transactionId,
+        endpoint: this.endpoint.href,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      return false;
+    }
+  }
+
   public async getCurrentBlockTimestamp(): Promise<number> {
     return (
       await currentBlockInfoCache.get(this.endpoint.href, {
@@ -303,33 +345,56 @@ export class ArweaveGateway implements Gateway {
     bundleTx: Transaction
   ): Promise<void> {
     if (process.env.OPTIMISTIC_TX_BRIDGE_ENABLED !== "true") {
+      MetricRegistry.optimisticTxPost.inc({ result: "disabled" });
       return;
     }
     const adminKey = process.env.AR_IO_ADMIN_KEY;
     const opticalBridgeUrl = process.env.OPTICAL_BRIDGE_URL;
-    if (adminKey === undefined || opticalBridgeUrl === undefined) {
+    if (adminKey === undefined) {
       logger.warn(
-        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY or OPTICAL_BRIDGE_URL is missing; skipping optimistic-tx post."
+        "OPTIMISTIC_TX_BRIDGE_ENABLED is set but AR_IO_ADMIN_KEY is missing; skipping optimistic-tx post."
       );
+      MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
       return;
     }
-    // The optimistic-tx admin endpoint lives next to the optical data-item queue
-    // on the same gateway: .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
-    const optimisticTxUrl = opticalBridgeUrl.replace(
-      /queue-data-item\/?$/,
-      "queue-optimistic-tx"
-    );
-    if (optimisticTxUrl === opticalBridgeUrl) {
-      logger.error(
-        "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive the optimistic-tx endpoint. Skipping optimistic-tx post.",
-        { opticalBridgeUrl }
+    // Prefer the explicit OPTIMISTIC_TX_BRIDGE_URL when configured. Otherwise fall
+    // back to deriving it from the optical data-item queue, which lives next to the
+    // optimistic-tx admin endpoint on the same gateway:
+    //   .../ar-io/admin/queue-data-item -> .../queue-optimistic-tx
+    // The explicit env exists because the suffix-replace silently disables itself
+    // for a validly-spelled-but-different optical URL.
+    // Read at call time (mirrors how AR_IO_ADMIN_KEY/OPTICAL_BRIDGE_URL are read
+    // here) so config changes/tests don't depend on module-load order.
+    let optimisticTxUrl: string | undefined =
+      process.env.OPTIMISTIC_TX_BRIDGE_URL;
+    if (optimisticTxUrl === undefined) {
+      if (opticalBridgeUrl === undefined) {
+        logger.warn(
+          "OPTIMISTIC_TX_BRIDGE_ENABLED is set but neither OPTIMISTIC_TX_BRIDGE_URL nor OPTICAL_BRIDGE_URL is set; skipping optimistic-tx post."
+        );
+        MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
+        return;
+      }
+      const derived = opticalBridgeUrl.replace(
+        /queue-data-item\/?$/,
+        "queue-optimistic-tx"
       );
-      return;
+      if (derived === opticalBridgeUrl) {
+        logger.error(
+          "OPTICAL_BRIDGE_URL does not end with 'queue-data-item'; cannot derive a distinct optimistic-tx endpoint. Set OPTIMISTIC_TX_BRIDGE_URL explicitly. Skipping optimistic-tx post.",
+          { opticalBridgeUrl }
+        );
+        MetricRegistry.optimisticTxPost.inc({ result: "skipped" });
+        return;
+      }
+      optimisticTxUrl = derived;
     }
     logger.debug("Posting bundle tx to optimistic-tx queue...", {
       bundleTxId: bundleTx.id,
       optimisticTxUrl,
     });
+    const endTimer =
+      MetricRegistry.optimisticTxPostDurationSeconds.startTimer();
     try {
       // Single attempt, short timeout — no retryStrategy. Retrying a best-effort
       // pre-mine index is pointless (it races the actual mine) and could pile up
@@ -340,12 +405,290 @@ export class ArweaveGateway implements Gateway {
         },
         timeout: 5000,
       });
+      MetricRegistry.optimisticTxPost.inc({ result: "indexed" });
     } catch (error) {
       logger.error("Error posting bundle tx to optimistic-tx queue", {
         bundleTxId: bundleTx.id,
         error: error instanceof Error ? error.message : "Unknown error",
       });
+      MetricRegistry.optimisticTxPost.inc({ result: "error" });
+    } finally {
+      endTimer();
     }
+  }
+}
+
+/** Default per-gateway timeout (ms) for a single read attempt in the multi-gateway wrapper. */
+const DEFAULT_PER_GATEWAY_TIMEOUT_MS = +(
+  process.env.GATEWAY_READ_TIMEOUT_MS || 15_000
+);
+
+interface MultiGatewayArweaveGatewayParams {
+  /** Ordered list of gateway endpoints; index 0 is the primary. */
+  endpoints?: URL[];
+  /** Pre-built gateways (mainly for tests); overrides `endpoints` when provided. */
+  gateways?: ArweaveGateway[];
+  /** Per-gateway timeout for a single read attempt, in ms. */
+  perGatewayTimeoutMs?: number;
+}
+
+/**
+ * `Gateway` implementation that composes N `ArweaveGateway` instances and adds
+ * HOST-LEVEL redundancy for the core read/post pipeline.
+ *
+ * It EXTENDS `ArweaveGateway` (rather than merely implementing `Gateway`) so it
+ * is drop-in assignable everywhere an `ArweaveGateway` is expected — no call-site
+ * type churn, which keeps sibling lanes' additive edits rebase-clean. The base
+ * instance is constructed against the PRIMARY endpoint and every redundant method
+ * is overridden to fan out across the list; the only behavior inherited from the
+ * base is against the primary (a sensible default).
+ *
+ * Design notes:
+ * - Additive: the underlying `ArweaveGateway` (and its per-gateway retry/429
+ *   strategy) is untouched. This wraps a list of them.
+ * - Reads try gateways IN ORDER (primary first), each bounded by a per-gateway
+ *   timeout, and return the first success. Only if EVERY gateway fails does the
+ *   call throw (preserving the single-gateway error contract for a list of 1).
+ * - A single-entry list behaves exactly like a bare `ArweaveGateway`: no extra
+ *   timeout wrapper or fallback bookkeeping is engaged on the happy path, and the
+ *   underlying error is re-thrown verbatim.
+ * - `postBundleTx` also fails over across the list so getting the tx header on
+ *   chain does not depend on one host.
+ * - Best-effort, gateway-specific side-channels (`postBundleTxToAdminQueue`,
+ *   `postBundleTxToOptimisticTxQueue`) target the PRIMARY only — they are
+ *   opt-in, already swallow their own errors, and must not fan out.
+ */
+export class MultiGatewayArweaveGateway extends ArweaveGateway {
+  public readonly gateways: ArweaveGateway[];
+  private readonly perGatewayTimeoutMs: number;
+
+  constructor({
+    endpoints = arweaveGatewayUrls,
+    gateways,
+    perGatewayTimeoutMs = DEFAULT_PER_GATEWAY_TIMEOUT_MS,
+  }: MultiGatewayArweaveGatewayParams = {}) {
+    const resolvedGateways =
+      gateways && gateways.length > 0
+        ? gateways
+        : (endpoints.length > 0 ? endpoints : [gatewayUrl]).map(
+            (endpoint) => new ArweaveGateway({ endpoint })
+          );
+    // Base instance targets the primary so any non-overridden inherited method
+    // (e.g. getCurrentBlockTimestamp, when not fanned out) resolves against it.
+    super({ endpoint: resolvedGateways[0].endpointUrl });
+    this.gateways = resolvedGateways;
+    this.perGatewayTimeoutMs = perGatewayTimeoutMs;
+  }
+
+  /** Number of configured gateways — the ceiling on independent confirmation sources. */
+  public get gatewayCount(): number {
+    return this.gateways.length;
+  }
+
+  private get primary(): ArweaveGateway {
+    return this.gateways[0];
+  }
+
+  /**
+   * Try each gateway in order, bounded by a per-gateway timeout, returning the
+   * first success. Throws an aggregate error only when every gateway fails.
+   *
+   * For a single-gateway list this is a thin pass-through: the underlying call is
+   * awaited directly (no timeout race, no fallback metric) so behavior — including
+   * the exact thrown error — is identical to calling `ArweaveGateway` directly.
+   */
+  private async tryInOrder<T>(
+    opName: string,
+    op: (gateway: ArweaveGateway) => Promise<T>
+  ): Promise<T> {
+    if (this.gateways.length === 1) {
+      return op(this.gateways[0]);
+    }
+
+    const errors: unknown[] = [];
+    for (let i = 0; i < this.gateways.length; i++) {
+      const gateway = this.gateways[i];
+      try {
+        const result = await this.withTimeout(op(gateway), opName, i);
+        if (i > 0) {
+          // A non-primary gateway answered after an earlier one failed.
+          MetricRegistry.gatewayReadFallback.inc({ result: "success" });
+          logger.warn("Gateway read succeeded on a fallback gateway", {
+            opName,
+            gatewayIndex: i,
+          });
+        }
+        return result;
+      } catch (error) {
+        errors.push(error);
+        logger.warn("Gateway read failed; trying next gateway if available", {
+          opName,
+          gatewayIndex: i,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+
+    MetricRegistry.gatewayReadFallback.inc({ result: "exhausted" });
+    const messages = errors
+      .map((e) => (e instanceof Error ? e.message : String(e)))
+      .join("; ");
+    throw new Error(
+      `All ${this.gateways.length} gateway(s) failed for ${opName}: ${messages}`
+    );
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    opName: string,
+    gatewayIndex: number
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `Gateway ${gatewayIndex} timed out after ${this.perGatewayTimeoutMs}ms for ${opName}`
+          )
+        );
+      }, this.perGatewayTimeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  public async getWinstonPriceForByteCount(
+    byteCount: ByteCount,
+    target?: PublicArweaveAddress
+  ): Promise<Winston> {
+    return this.tryInOrder("getWinstonPriceForByteCount", (g) =>
+      g.getWinstonPriceForByteCount(byteCount, target)
+    );
+  }
+
+  public async postToEndpoint<T = unknown>(
+    endpoint: string,
+    data?: unknown
+  ): Promise<AxiosResponse<T>> {
+    return this.tryInOrder("postToEndpoint", (g) =>
+      g.postToEndpoint<unknown, T>(endpoint, data)
+    );
+  }
+
+  public async postBundleTx(bundleTx: Transaction): Promise<Transaction> {
+    // The tx-header POST must not depend on one host: fail over across the list.
+    return this.tryInOrder("postBundleTx", (g) => g.postBundleTx(bundleTx));
+  }
+
+  public async getTransactionStatus(
+    transactionId: TransactionId
+  ): Promise<TransactionStatus> {
+    return this.tryInOrder("getTransactionStatus", (g) =>
+      g.getTransactionStatus(transactionId)
+    );
+  }
+
+  public async getBlockHash(): Promise<string> {
+    return this.tryInOrder("getBlockHash", (g) => g.getBlockHash());
+  }
+
+  public async getBlockHeightForTxAnchor(txAnchor: string): Promise<number> {
+    return this.tryInOrder("getBlockHeightForTxAnchor", (g) =>
+      g.getBlockHeightForTxAnchor(txAnchor)
+    );
+  }
+
+  public async getCurrentBlockHeight(): Promise<number> {
+    return this.tryInOrder("getCurrentBlockHeight", (g) =>
+      g.getCurrentBlockHeight()
+    );
+  }
+
+  public async getBalanceForWallet(
+    wallet: PublicArweaveAddress
+  ): Promise<Winston> {
+    return this.tryInOrder("getBalanceForWallet", (g) =>
+      g.getBalanceForWallet(wallet)
+    );
+  }
+
+  public async getCurrentBlockTimestamp(): Promise<number> {
+    return this.tryInOrder("getCurrentBlockTimestamp", (g) =>
+      g.getCurrentBlockTimestamp()
+    );
+  }
+
+  public async postBundleTxToAdminQueue(
+    bundleTxId: TransactionId
+  ): Promise<void> {
+    // Best-effort optical side-channel — primary only.
+    return this.primary.postBundleTxToAdminQueue(bundleTxId);
+  }
+
+  public async postBundleTxToOptimisticTxQueue(
+    bundleTx: Transaction
+  ): Promise<void> {
+    // Best-effort optimistic-index side-channel — primary only.
+    return this.primary.postBundleTxToOptimisticTxQueue(bundleTx);
+  }
+
+  /**
+   * Returns the number of independent gateways (by index) that report the given
+   * transaction as `found` with at least `minConfirmations` confirmations. Used
+   * by the verify job to require multi-source agreement before promoting a bundle
+   * to permanent. Each gateway is checked independently; failures count as
+   * "did not confirm" (not as an error) so one unhealthy gateway cannot block a
+   * quorum reached by the others.
+   */
+  public async countConfirmingSources(
+    transactionId: TransactionId,
+    minConfirmations: number
+  ): Promise<number> {
+    const results = await Promise.all(
+      this.gateways.map(async (gateway, index) => {
+        try {
+          const status = await this.withTimeout(
+            gateway.getTransactionStatus(transactionId),
+            "countConfirmingSources",
+            index
+          );
+          return (
+            status.status === "found" &&
+            status.transactionStatus.number_of_confirmations >= minConfirmations
+          );
+        } catch (error) {
+          logger.warn("Gateway did not confirm transaction for quorum", {
+            transactionId,
+            gatewayIndex: index,
+            error: error instanceof Error ? error.message : "Unknown error",
+          });
+          return false;
+        }
+      })
+    );
+    return results.filter(Boolean).length;
+  }
+
+  /**
+   * Implements the previously-stubbed GQL index cross-check: asks a SECONDARY
+   * gateway's GraphQL whether the given transaction id is indexed (resolves a
+   * `transaction(id)` node). Returns false (never throws) if there is no second
+   * gateway or the query fails — callers treat it as "this independent source did
+   * not confirm".
+   */
+  public async isTransactionIndexedOnGQL(
+    transactionId: TransactionId
+  ): Promise<boolean> {
+    // Prefer a gateway OTHER than the primary so the check is independent of the
+    // source that already reported confirmations. Fall back to the primary only
+    // if it is the lone gateway (single-gateway deployments).
+    const gateway = this.gateways[1] ?? this.gateways[0];
+    return gateway.isTransactionIndexedOnGQL(transactionId);
   }
 }
 

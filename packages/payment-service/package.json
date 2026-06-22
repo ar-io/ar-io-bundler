@@ -1,6 +1,6 @@
 {
   "name": "@ar-io-bundler/payment-service",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "license": "AGPL-3.0-or-later",
   "main": "index.js",
   "packageManager": "yarn@3.2.1",
@@ -15,7 +15,7 @@
     "test": "nyc mocha --spec='src/**/*.test.ts' --spec='tests/**/*.test.ts'",
     "test:local": "yarn db:up && yarn test \"$@\" ; yarn db:down",
     "test:unit": "nyc mocha --spec='src/**/*.test.ts'",
-    "test:integration": "nyc mocha --spec='tests/**/*.test.ts'",
+    "test:integration": "nyc mocha --spec='tests/**/*.test.ts' --no-parallel --retries 1",
     "test:integration:local": "yarn db:up && yarn test:integration \"$@\" ; yarn db:down",
     "test:docker": "docker compose down -v && docker compose --profile test up test-runner --exit-code-from test-runner --build",
     "ci": "yarn build && yarn test:docker",

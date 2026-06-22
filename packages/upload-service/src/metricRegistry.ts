@@ -201,6 +201,28 @@ export class MetricRegistry {
       help: "Count of data items moved to failed_data_item after a constraint violation during the verify permanent insert",
     });
 
+  // Count of posted_bundle re-drive attempts, labelled by outcome:
+  //   result="reenqueued" — seed-bundle re-enqueued for a stale bundle
+  //   result="demoted"    — bundle exhausted MAX_SEED_REDRIVES and was failed
+  //   result="error"      — re-drive of a single bundle threw (isolated)
+  // Alert on any sustained "demoted"/"error" rate: it means bundles were stuck.
+  public static postedBundleRedrive = MetricRegistry.createCounter({
+    name: "posted_bundle_redrive_total",
+    help: "Count of posted_bundle re-drive outcomes (reenqueued/demoted/error)",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["reenqueued", "demoted", "error"],
+    },
+  });
+
+  // Count of bundles demoted to failed_bundle because seeding never completed
+  // (stranded in posted_bundle past MAX_SEED_REDRIVES). Any nonzero value is a
+  // loud signal that a bundle's tx header is on chain but its chunks never landed.
+  public static postedBundleFailedToSeed = MetricRegistry.createCounter({
+    name: "posted_bundle_failed_to_seed_total",
+    help: "Count of bundles demoted to failed_bundle after exhausting seed re-drives",
+  });
+
   public static newDataItemInsertBatchSizes = MetricRegistry.createHistogram({
     name: "new_data_item_insert_batch_size",
     help: "Size of the batch of new data items being inserted",
@@ -255,6 +277,31 @@ export class MetricRegistry {
     help: "Number of times a data item failed to be quarantined from the object store successfully",
   });
 
+  // Counts multi-gateway read attempts that had to fall back past the primary
+  // gateway. `result=success` means a later gateway in the list answered after an
+  // earlier one failed/timed out; `result=exhausted` means every gateway failed
+  // and the read threw. A nonzero success rate is the redundancy doing its job; a
+  // rising exhausted rate means ALL gateways are unhealthy.
+  public static gatewayReadFallback = MetricRegistry.createCounter({
+    name: "gateway_read_fallback_total",
+    help: "Count of multi-gateway core reads that fell back past the primary gateway, by outcome",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["success", "exhausted"],
+    },
+  });
+
+  // Counts how many independent sources confirmed a bundle as permanent at
+  // promotion time. `sources` is the number that agreed (e.g. "1", "2"). With
+  // PERMANENCE_CONFIRMATION_SOURCES>=2 a value of "1" should never reach
+  // promotion; it is exposed so a regression (single-source promotion) is visible.
+  public static permanenceConfirmationSourcesUsed =
+    MetricRegistry.createCounter({
+      name: "permanence_confirmation_sources_total",
+      help: "Count of bundle permanence promotions by the number of independent sources that confirmed",
+      labelNames: ["sources"],
+    });
+
   public static goldskyOpticalFailure = MetricRegistry.createCounter({
     name: "goldsky_optical_failure_count",
     help: "Number of times the service failure to post to the goldsky optical bridge",
@@ -268,6 +315,45 @@ export class MetricRegistry {
   public static ardriveGatewayOpticalFailure = MetricRegistry.createCounter({
     name: "ardrive_gateway_optical_failure_count",
     help: "Number of times the service failure to post to the ardrive gateway optical bridge",
+  });
+
+  // --- Optimistic surface 2: best-effort optimistic L1 tx-header push ---
+  // Until now this surface (postBundleTxToOptimisticTxQueue) had ZERO metrics, so
+  // silent failure was invisible. Mirror surface 1's observability:
+  //  - result="indexed"  : the gateway accepted the optimistic tx header
+  //  - result="error"    : the POST threw / was rejected (swallowed, best-effort)
+  //  - result="disabled" : OPTIMISTIC_TX_BRIDGE_ENABLED was not "true"
+  //  - result="skipped"  : enabled but unconfigured (missing key/URL, or the
+  //                        endpoint could not be derived)
+  public static optimisticTxPost = MetricRegistry.createCounter({
+    name: "optimistic_tx_post_total",
+    help: "Count of optimistic bundle-tx header pushes to the gateway by result",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["indexed", "error", "disabled", "skipped"],
+    },
+  });
+
+  public static optimisticTxPostDurationSeconds =
+    MetricRegistry.createHistogram({
+      name: "optimistic_tx_post_duration_seconds",
+      help: "Duration of optimistic bundle-tx header pushes to the gateway in seconds",
+      buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    });
+
+  // --- Optimistic surface 4: best-effort chunk push to the gateway cache ---
+  // Env-gated (CHUNK_CACHE_BRIDGE_ENABLED, default OFF), detached, never affects
+  // seeding to ARWEAVE_UPLOAD_NODE.
+  //  - result="cached"   : chunks pushed to the gateway cache
+  //  - result="error"    : the push failed (swallowed, best-effort)
+  //  - result="disabled" : CHUNK_CACHE_BRIDGE_ENABLED was not "true"
+  public static chunkCacheBridge = MetricRegistry.createCounter({
+    name: "chunk_cache_bridge_total",
+    help: "Count of best-effort bundle chunk pushes to the gateway cache by result",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["cached", "error", "disabled"],
+    },
   });
 
   private constructor() {

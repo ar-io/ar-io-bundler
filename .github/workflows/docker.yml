@@ -34,7 +34,7 @@ env:
   REGISTRY: ghcr.io
   # ghcr.io/<owner>/ar-io-bundler-<service>
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/ar-io-bundler
-  NODE_VERSION: "22.14.0"
+  NODE_VERSION: "22.22.0"
   NODE_VERSION_SHORT: "22"
 
 jobs:

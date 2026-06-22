@@ -15,13 +15,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 // import { defaultArchitecture } from "../arch/architecture"; // Unused - removed
-import { ArweaveGateway, Gateway } from "../arch/arweaveGateway";
+import { Gateway, MultiGatewayArweaveGateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
 import { PaymentService, TurboPaymentService } from "../arch/payment";
 import { enqueue } from "../arch/queues";
-import { gatewayUrl, jobLabels } from "../constants";
+import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
 import { NewBundle, PlanId } from "../types/dbTypes";
@@ -42,9 +42,7 @@ export async function postBundleHandler(
   {
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
-    arweaveGateway = new ArweaveGateway({
-      endpoint: gatewayUrl,
-    }),
+    arweaveGateway = new MultiGatewayArweaveGateway(),
     paymentService = new TurboPaymentService(),
   }: PostBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "post-bundle-job", planId })
@@ -81,10 +79,16 @@ export async function postBundleHandler(
     // unavailable gateway can never block or slow the on-chain bundle post.
     void arweaveGateway.postBundleTxToOptimisticTxQueue(bundleTx);
 
-    const [transactionPostResponseData] = await Promise.all([
-      arweaveGateway.postBundleTx(bundleTx),
-      arweaveGateway.postBundleTxToAdminQueue(bundleTx.id),
-    ]);
+    // The admin "queue-bundle" push is non-essential gateway warming and runs the
+    // full retry strategy internally; awaiting it (it used to be inside the
+    // Promise.all below) added gateway-retry latency to the critical post path.
+    // It already swallows its own errors, so fire it DETACHED like the
+    // optimistic-tx push — it must never slow or block the on-chain bundle post.
+    void arweaveGateway.postBundleTxToAdminQueue(bundleTx.id);
+
+    const transactionPostResponseData = await arweaveGateway.postBundleTx(
+      bundleTx
+    );
 
     // fetch AR rate - but don't throw on failure
     const usdToArRate = await paymentService
