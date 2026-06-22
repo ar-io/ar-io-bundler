@@ -131,7 +131,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (11 queues)
+- Asynchronous job processing via BullMQ (12 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
@@ -187,26 +187,28 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 11 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "11 queues"):
+BullMQ with 12 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "12 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`
+
+**Posted-bundle recovery (`redrive-posted`, #40):** a bundle whose `seed-bundle` exhausts its retries used to be stranded forever in `posted_bundle`. The `redrive-posted` scheduler re-enqueues seeding for stale `posted_bundle` rows (`POSTED_STALE_THRESHOLD_MS`, default 30 min) and after `MAX_SEED_REDRIVES` (default 5) demotes the bundle to `failed_bundle` (items repacked to `new_data_item`), emitting `posted_bundle_failed_to_seed_total`. Attempt counts live in the `posted_bundle_redrive` table.
 
 **Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
 - `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
-- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1
+- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1, redrive-posted=1
 
 **Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
 
 **Bundle planning is scheduled in-process (no cron needed)**: the always-running
 `upload-workers` process registers BullMQ job schedulers at startup
-(`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min and `cleanup-fs` daily
-at 02:00. This replaced the old external `cron-trigger-*.sh` crons (which were a
-silent-failure footgun: a cron never added to crontab, or one that couldn't find
-`node` on cron's minimal PATH, meant nothing ever bundled). The schedules are
-env-tunable and disable-able:
-- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
-- Set either to `""` to disable that schedule.
+(`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min, `cleanup-fs` daily
+at 02:00, and `redrive-posted` every 10 min. This replaced the old external
+`cron-trigger-*.sh` crons (which were a silent-failure footgun: a cron never
+added to crontab, or one that couldn't find `node` on cron's minimal PATH, meant
+nothing ever bundled). The schedules are env-tunable and disable-able:
+- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`), `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+- Set any to `""` to disable that schedule.
 - BullMQ dedupes each schedule by id in the shared queue Redis, so exactly one
   job fires per interval even if workers ever run multi-instance/multi-box.
 - The `cron-trigger-*.sh` / `trigger-*.js` scripts remain as **manual** on-demand
@@ -284,6 +286,17 @@ ARWEAVE_GATEWAY=http://localhost:3000
 OPTICAL_BRIDGING_ENABLED=true
 OPTICAL_BRIDGE_URL=http://localhost:4000/ar-io/admin/queue-data-item
 AR_IO_ADMIN_KEY=<your-key>
+
+# Gateway redundancy + permanence trust (#41). defaultArchitecture wires a
+# MultiGatewayArweaveGateway. ARWEAVE_GATEWAYS (comma-separated) makes reads +
+# the bundle-tx POST fail over; unset = single ARWEAVE_GATEWAY (unchanged).
+# PERMANENCE_CONFIRMATION_SOURCES (default 1) optionally requires N independent
+# gateways to confirm before a bundle is irreversibly permanent (opt-in).
+# ARWEAVE_GATEWAYS=http://localhost:3000,https://arweave.net
+# PERMANENCE_CONFIRMATION_SOURCES=1   # GATEWAY_READ_TIMEOUT_MS=15000   # CLEANUP_REQUIRE_PERMANENT_BUNDLE=true
+
+# Optimistic gateway-warming pushes — all best-effort, default OFF (#42/optical):
+# OPTIMISTIC_TX_BRIDGE_ENABLED=false  # OPTIMISTIC_TX_BRIDGE_URL=<override>  # CHUNK_CACHE_BRIDGE_ENABLED=false
 
 # X402 (USDC payments)
 X402_PAYMENT_ADDRESS=<ethereum-address>

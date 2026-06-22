@@ -89,7 +89,7 @@ docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d upload_service -t -A -F$'\t' -
   || echo 'pg query failed'
 
 section "BullMQ queue depth (redis-queues :6381 — failed>0 or a climbing wait = stuck stage)"
-QUEUES="upload-new-data-item upload-plan-bundle upload-prepare-bundle upload-post-bundle upload-seed-bundle upload-verify-bundle upload-optical-post upload-put-offsets upload-finalize-upload upload-unbundle-bdi upload-cleanup-fs payment-pending-tx"
+QUEUES="upload-new-data-item upload-plan-bundle upload-prepare-bundle upload-post-bundle upload-seed-bundle upload-verify-bundle upload-optical-post upload-put-offsets upload-finalize-upload upload-unbundle-bdi upload-cleanup-fs upload-redrive-posted payment-pending-tx"
 printf '%-26s %8s %8s %8s\n' queue wait active failed
 for q in $QUEUES; do
   w="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 LLEN "bull:$q:wait" 2>/dev/null)"
@@ -98,11 +98,22 @@ for q in $QUEUES; do
   printf '%-26s %8s %8s %8s\n' "$q" "${w:-?}" "${a:-?}" "${f:-?}"
 done
 
-section "required crons (plan = MANDATORY; without it nothing bundles)"
-cron="$(crontab -l 2>/dev/null)"
-echo "$cron" | grep -q 'trigger-plan'    && echo 'plan    : registered ✓' || echo 'plan    : MISSING ✗ — bundling will never run'
-echo "$cron" | grep -q 'trigger-cleanup' && echo 'cleanup : registered ✓' || echo 'cleanup : not registered (tiered retention will not run)'
-echo "$cron" | grep -q 'trigger-verify'  && echo 'verify  : registered ✓' || echo 'verify  : not registered (seed→verify still runs via in-pipeline 5-min delay)'
+section "in-process BullMQ schedulers (registered by upload-workers at startup — NOT crontab)"
+# Scheduling moved from external crons to in-process BullMQ repeatable schedulers.
+# A registered scheduler leaves one entry in the queue's :repeat zset (ZCARD == 1).
+for s in "plan:upload-plan-bundle" "cleanup:upload-cleanup-fs" "redrive-posted:upload-redrive-posted"; do
+  label="${s%%:*}"; q="${s##*:}"
+  card="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 ZCARD "bull:$q:repeat" 2>/dev/null)"
+  if [ "${card:-0}" -ge 1 ] 2>/dev/null; then
+    printf '%-14s : registered ✓\n' "$label"
+  else
+    printf '%-14s : NOT registered ✗ — check: pm2 logs upload-workers | grep "Registered BullMQ job schedulers"\n' "$label"
+  fi
+done
+# The ONLY legitimate crontab entry is the optional verify trigger; plan/cleanup/redrive must NOT be in crontab (they would double-fire).
+crontab -l 2>/dev/null | grep -q 'trigger-plan\|trigger-cleanup' \
+  && echo 'crontab : ⚠ has a plan/cleanup trigger — REMOVE it (double-fires with the in-process scheduler)' \
+  || echo 'crontab : clean (no stale plan/cleanup cron) ✓'
 
 section "gateway wiring (optical bridge + reads)"
 gw_arweave="$(printf '%s' "$(curl -sf -m5 "$UPLOAD_URL/v1/info" 2>/dev/null)" | grep -oE '"arweave":"[^"]*"' | head -1 | cut -d'"' -f4)"
