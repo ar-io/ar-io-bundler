@@ -52,14 +52,48 @@ conceptual HA model (what scales, what stays singleton, HA Postgres/Redis/MinIO 
 
 ## 1. Server prerequisites & sizing
 
-**Minimum recommended (single-host prod):** 8 vCPU / 32 GB RAM / 2× NVMe (OS + data).
-Rationale: Postgres + 2 Redis + MinIO + ~6 Node processes (2 API clusters × 2 instances, upload-workers,
-payment-workers, admin-dashboard) + bundle build/seed CPU spikes. See
-`docs/archive/SCALE_TESTING_ANALYSIS.md` for worker/DB-pool tuning under load.
+**One beefy single node** runs all three tiers co-located: Postgres + 2 Redis + MinIO + the PM2 Node
+processes (API clusters + `upload-workers` + `payment-workers` + `admin-dashboard`) **plus** CPU spikes for
+bundle `prepare`/sign and the inter-service payment hop. Co-locating MinIO on **loopback** is deliberate and
+preferable here — bundling reads every data item back from MinIO during `prepare`, and local NVMe beats any
+network hop on both bandwidth and latency. The trade is resource contention on one host, which we solve by
+**sizing the box** (below), not by splitting MinIO out.
 
-**Disk:** MinIO and Postgres grow with traffic. The tiered-retention cleanup (filesystem 7d, MinIO 90d —
-§12) bounds growth, but size the data volume for ≥90 days of cold data plus bundle working space.
-Put MinIO + Postgres on the NVMe data volume; keep OS separate.
+**Sizing tiers:**
+
+| Tier | Hetzner SKU (or equivalent) | Specs | Use when |
+|---|---|---|---|
+| Floor | AX52 / CCX43 | 8C/16T, 64 GB ECC, 2× NVMe | low traffic only; previous runbook minimum, with RAM headroom |
+| **★ Recommended** | **AX102** | **16C/32T (Ryzen 9 7950X3D), 128 GB DDR5 ECC, 2× 1.92 TB NVMe Gen4** | the beefy single-node sweet spot |
+| Headroom (peak×5 gate) | AX162-R | 48C/96T (EPYC 9454P), 256 GB ECC, extra NVMe bays | spec for the peak×5 target and never revisit |
+
+Rationale for the **AX102 recommendation**: 16 fast cores (strong single-thread suits Node event loops +
+Postgres), 128 GB ECC gives generous OS page-cache for **both** the MinIO and Postgres working sets plus Node
+heaps, and ECC is appropriate for a money-handling node. Round-1 scale testing hit ~350 items/s but was
+**CPU/co-location-bound on the 32-core dev box** — cores directly set the ingest ceiling. Production *averages*
+only ~0.8 items/s (~0.4 MB/s); this box is sized for **burst headroom + the peak×5 gate**, but **peak is still
+unmeasured** — confirm with scenario S1 (full-size bundles, off-box clients, $0 sink) after deploy and
+right-size from real CPU / PG IO-wait / MinIO disk numbers. See `scripts/perf/SCALE_TEST_PLAN.md`.
+
+**Disk layout (matters more than `S3_MAX_SOCKETS`):** the co-location failure mode is MinIO's large sequential
+IO starving Postgres's small fsync/WAL writes. Prefer **separate physical NVMe for MinIO vs Postgres**:
+- **Best (3 volumes):** OS on one NVMe, Postgres data on a second, MinIO data on a third (add-on drive).
+- **Acceptable (2 volumes):** OS on the small drive; MinIO **+** Postgres share the data NVMe (fine on Gen4
+  NVMe, but watch `pg_stat` IO-waits under S1).
+
+**Capacity:** historical ~1 TB/month × **90-day MinIO retention** (§12) ≈ **~3 TB cold** + bundle working
+space + Postgres + growth → size the MinIO volume **≥ 3–4 TB usable**. ⚠️ 2× 1.92 TB in **RAID1 = only
+~1.92 TB usable** — likely too small; use larger/extra NVMe (or RAID0 + rely on Arweave for durability).
+RAID1 is still worth it for the **pre-bundle at-risk window** (0–7 day FS + MinIO copy before Arweave
+finality — the "never lose user data" gate); Arweave is the durability backstop after that.
+
+**Config to match the box (don't leave defaults):**
+- `API_INSTANCES` ≈ ½ core count, leaving headroom for MinIO + PG + workers (e.g. 6–8 on 16 cores).
+- Postgres `shared_buffers` ≈ 25% RAM (e.g. ~16–32 GB on 128 GB), and re-derive `max_connections` from
+  `procs × DB_POOL_MAX + overhead` (PR #39 / `scripts/perf/SCALE_TEST_PLAN.md` finding #1).
+- Worker concurrencies (`PREPARE/POST/VERIFY/SEED_WORKER_CONCURRENCY`) — rebalance up for the core count
+  (defaults are conservative).
+- Size the private vSwitch NIC for **gateway read-pull**: both gateways fetch data items from this box's MinIO.
 
 **OS:** Ubuntu 22.04/24.04 LTS (matches current tooling). Create a non-root deploy user (the runbook
 assumes `bundler`; **do not** hardcode `/home/vilenarios` — see ⚠️ ACTION in §10/§12).
