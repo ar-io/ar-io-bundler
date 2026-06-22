@@ -242,9 +242,18 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     expect(verifyStub.called).to.be.true;
 
     // verifyPayment(paymentHeader, requirements) — assert the second arg's payTo.
+    // Mirror the route's recipient resolution (X402_PAYMENT_ADDRESS, then the
+    // legacy ETHEREUM_ADDRESS / BASE_ETH_ADDRESS fallbacks) so a fallback-only
+    // fixture still validates correctly.
+    const expectedPayTo =
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "";
+    expect(expectedPayTo, "operator payTo test fixture").to.not.equal("");
     const requirements = verifyStub.firstCall.args[1] as { payTo: string };
     expect(requirements.payTo.toLowerCase()).to.equal(
-      process.env.X402_PAYMENT_ADDRESS!.toLowerCase()
+      expectedPayTo.toLowerCase()
     );
     expect(requirements.payTo.toLowerCase()).to.not.equal(
       attackerAddress.toLowerCase()
