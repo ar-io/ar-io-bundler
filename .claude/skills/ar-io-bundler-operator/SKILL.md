@@ -64,28 +64,30 @@ The repo-root `ecosystem.config.js` is a deprecated shim that re-exports the can
 - `payment_service` DB holds users, balances (Winston credits), receipts, crypto/x402 payments.
 - Objects (raw uploads, bundles) live in **MinIO** via the S3 abstraction (`getS3ObjectStore()`), even locally — `FileSystemObjectStore` exists but is not wired.
 
-### The bundle pipeline (BullMQ, 11 upload queues + 1 payment queue)
+### The bundle pipeline (BullMQ, 12 upload queues + 1 payment queue)
 
 ```
 upload → new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle → permanent
-                              ↑ (cron)                       ↘ optical-post → gateway      ↘ put-offsets
-other queues: finalize-upload, unbundle-bdi, cleanup-fs        payment-pending-tx (payment-workers)
+                         ↑ (in-process scheduler)            ↘ optical-post → gateway      ↘ put-offsets
+other queues: finalize-upload, unbundle-bdi, cleanup-fs, redrive-posted   payment-pending-tx (payment-workers)
 ```
 
-- **`plan-bundle` is cron-driven** — a cron enqueues it every 5 min. No cron ⇒ items pile up in `new_data_item` and nothing ever bundles. This is the #1 "uploads work but nothing posts" cause.
+- **`plan-bundle` is driven by an in-process BullMQ scheduler, NOT cron.** At startup `upload-workers` registers repeatable schedulers (`upsertRepeatable` in `src/arch/queues.ts`, wired in `src/workers/allWorkers.ts`): `plan-bundle` (`PLAN_SCHEDULE_CRON`, default `*/5 * * * *`), `cleanup-fs` (`CLEANUP_SCHEDULE_CRON`, `0 2 * * *`), and `redrive-posted` (`POSTED_REDRIVE_SCHEDULE_CRON`, `*/10 * * * *`). So the #1 "uploads work but nothing posts" check is: **is `upload-workers` up and did it log `Registered BullMQ job schedulers`?** — not "is the cron installed." The `cron-trigger-*.sh` scripts still exist but are **manual** on-demand triggers only; do NOT add them to crontab or they double-fire alongside the scheduler.
 - `post-bundle` posts the bundle tx; `seed-bundle` uploads chunks then enqueues `verify-bundle` with a **5-min delay**; `verify-bundle` promotes data items to `permanent_data_items` once confirmed.
-- `optical-post` fires in parallel — POSTs each data item to the gateway's admin queue for optimistic caching/indexing. Independent of the on-chain path.
+- **`redrive-posted` (#40) is the seed-failure safety net** — a bundle whose `seed-bundle` exhausts its retries used to be stranded forever in `posted_bundle`. The re-driver re-enqueues seeding for stale `posted_bundle` rows (`POSTED_STALE_THRESHOLD_MS`, default 30 min) and after `MAX_SEED_REDRIVES` (default 5) demotes to `failed_bundle`, emitting `posted_bundle_failed_to_seed_total`. `posted_bundle` is no longer a dead-end.
+- `optical-post` fires in parallel — POSTs each data item to the gateway's admin queue for optimistic caching/indexing. Independent of the on-chain path. (Two more best-effort, default-OFF gateway-warming pushes exist — optimistic-tx via `OPTIMISTIC_TX_BRIDGE_ENABLED` and a chunk-cache push via `CHUNK_CACHE_BRIDGE_ENABLED`; see "Gateway integration".)
 - Inspect depth: `health-check` prints `wait/active/failed` per queue, or use Bull Board at `http://localhost:3002/admin/queues`. Failed-job counts are **retained** (BullMQ keeps them) — a nonzero `failed` is history, not necessarily a live fire; check timestamps in `pm2 logs upload-workers`.
 
 ### Tunable knobs
-- Worker concurrency (only these 4 are env-tunable; rest hardcoded in `allWorkers.ts`): `PLAN_WORKER_CONCURRENCY` (5), `PREPARE_WORKER_CONCURRENCY` (3), `POST_WORKER_CONCURRENCY` (2), `VERIFY_WORKER_CONCURRENCY` (3).
+- Worker concurrency (only these 4 are env-tunable; rest hardcoded in `allWorkers.ts`): `PLAN_WORKER_CONCURRENCY` (**1** — overlap guard for the wall-clock scheduler tick; raising it re-introduces overlapping plan drains), `PREPARE_WORKER_CONCURRENCY` (3), `POST_WORKER_CONCURRENCY` (2), `VERIFY_WORKER_CONCURRENCY` (3).
 - Scale: `API_INSTANCES` (cluster APIs), `WORKER_INSTANCES` (keep 1). DB pool `DB_POOL_MIN/MAX` (5/50). Server timeouts `REQUEST_TIMEOUT_MS` etc.
+- Schedules: `PLAN_SCHEDULE_CRON`, `CLEANUP_SCHEDULE_CRON`, `POSTED_REDRIVE_SCHEDULE_CRON` (set any to `""` to disable that scheduler).
 
 ## Gateway integration — the three wires
 
 The bundler is wired to a co-located AR.IO gateway (the `ar-io-node` repo; use the **`ar-io-gateway-operator`** skill for that side). Three independent wires, all in the bundler `.env`:
 
-1. **Reads / pricing** — `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY`, `PRICE_ORACLE_GATEWAY_URL`, `ARIO_GATEWAY_URL` point at the gateway, **never `arweave.net`** (its `/price` 429s under load → "Pricing Oracle Unavailable" on every priced upload).
+1. **Reads / pricing** — `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY`, `PRICE_ORACLE_GATEWAY_URL`, `ARIO_GATEWAY_URL` point at the gateway, **never `arweave.net`** (its `/price` 429s under load → "Pricing Oracle Unavailable" on every priced upload). For redundancy, `ARWEAVE_GATEWAYS` (comma-separated, #41) makes reads + the bundle-tx POST fail over across gateways; unset = the single `ARWEAVE_GATEWAY` (default, unchanged). `PERMANENCE_CONFIRMATION_SOURCES` (default **1**) optionally requires N independent gateways to confirm before a bundle is irreversibly marked permanent — opt-in; only meaningful with ≥2 *independent* gateways, and a down gateway then delays promotion (storage grows, no data loss). Chunk **seeding** still goes to `ARWEAVE_UPLOAD_NODE` (a real Arweave node, default arweave.net) — gateways don't serve `/chunk`.
 2. **Optical bridge** — `upload-workers` POST new data items to `OPTICAL_BRIDGE_URL` (`<gateway>:4000/ar-io/admin/queue-data-item`) authed with `AR_IO_ADMIN_KEY`; a second gateway can be listed in `OPTIONAL_OPTICAL_BRIDGE_URLS`. **Two things must line up for items to actually index:**
    - bundler `AR_IO_ADMIN_KEY` **==** gateway `ADMIN_API_KEY` (else optical POSTs 401), and
    - the gateway's `ANS104_UNBUNDLE_FILTER` owner **==** this bundler's Arweave wallet (or `{always:true}`), so the gateway unbundles this bundler's on-chain bundles.
@@ -94,32 +96,32 @@ The bundler is wired to a co-located AR.IO gateway (the `ar-io-node` repo; use t
 
 **This deployment's topology** (dev/test box; will differ on Hetzner): identity domain **perma.online**, reads + optical bridge target **localhost** gateway, bundle **seeder** gateway is **vilenarios.com**; perma.online hairpins and the LAN cert is expired, so internal calls use localhost. A second optical target is a LAN gateway. On Hetzner these become private prod addresses — replace all `localhost`/`192.168.*` accordingly.
 
-## Cron requirements (and the silent killer)
+## Scheduling — in-process, no crontab needed
 
-| Job | Wrapper | Schedule | Required? |
-|---|---|---|---|
-| Bundle planning | `packages/upload-service/cron-trigger-plan.sh` | `*/5 * * * *` | **Yes — nothing bundles without it** |
-| Tiered cleanup | `packages/upload-service/cron-trigger-cleanup.sh` | `0 2 * * *` | Recommended (retention) |
-| Bundle verify | `scripts/trigger-verify.sh` | hourly (optional) | No — seeding already enqueues verify with a 5-min delay |
+Bundle planning, cleanup, and the posted-bundle re-driver are **BullMQ repeatable schedulers registered inside `upload-workers` at startup** — there is no crontab requirement. This replaced the old external crons (whose stripped-PATH `NODE_BIN` footgun was a silent-failure killer); that whole class of bug is gone.
 
-**The footgun:** cron runs with a stripped PATH. Both wrappers honor `NODE_BIN` (default bare `node`). If the only `node` is under nvm — or the system `node` is an old version — the cron **fails silently** (`set -e` + log redirect) and bundling just stops. Always pin it:
-```bash
-(crontab -l 2>/dev/null | grep -v trigger-plan ; \
- echo "*/5 * * * * NODE_BIN=$(command -v node) /opt/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh >> /var/log/bundler/plan.log 2>&1") | crontab -
-```
-On a multi-node/HA setup, run plan/cleanup/verify on **one node only** (or behind a Redis leader-lock) — duplicates produce competing bundle plans.
+| Job | Scheduler env (default) | Notes |
+|---|---|---|
+| Bundle planning | `PLAN_SCHEDULE_CRON` (`*/5 * * * *`) | The thing that turns `new_data_item` into bundles. If nothing bundles, check the worker logged `Registered BullMQ job schedulers`, not crontab. |
+| Tiered cleanup | `CLEANUP_SCHEDULE_CRON` (`0 2 * * *`) | Retention deletes (DB-aware). |
+| Posted-bundle re-driver | `POSTED_REDRIVE_SCHEDULE_CRON` (`*/10 * * * *`) | #40 seed-failure recovery (see pipeline above). |
+
+- Set any `*_SCHEDULE_CRON` to `""` to disable that scheduler. BullMQ dedupes each schedule by id in the queues Redis, so it's safe even multi-instance — **no crontab, no leader-lock needed** for these.
+- **Do NOT install `cron-trigger-plan.sh` / `cron-trigger-cleanup.sh` in crontab** — they're manual on-demand triggers now; a crontab entry double-fires alongside the in-process scheduler.
+- The only optional crontab entry is `scripts/trigger-verify.sh` (hourly), and even that is unnecessary — seeding already enqueues verify with a 5-min delay.
+- Confirm the schedulers are live: `pm2 logs upload-workers | grep "Registered BullMQ job schedulers"`, or inspect the repeat keys: `redis-cli -p 6381 KEYS 'bull:upload-plan-bundle:repeat:*'`.
 
 ## Tiered retention
 ```
 0–7d    FS keep   MinIO keep    7–90d   FS DELETE MinIO keep    90d+   FS DELETE MinIO DELETE (Arweave permanent)
 ```
-`FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`. Pick ONE mechanism: the BullMQ worker path (`cron-trigger-cleanup.sh` → `cleanup-fs` queue, DB-aware) **or** the bash path (`scripts/cleanup-bundler-files.sh`, works with workers offline, uses `CLEANUP_RETENTION_DAYS`). Don't run both.
+`FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`. Cleanup runs via the in-process `cleanup-fs` scheduler (`CLEANUP_SCHEDULE_CRON`); `cron-trigger-cleanup.sh` is just a manual trigger for the same queue. A bash fallback (`scripts/cleanup-bundler-files.sh`, `CLEANUP_RETENTION_DAYS`) works with workers offline — don't run both. **`CLEANUP_REQUIRE_PERMANENT_BUNDLE` (default ON, #41):** cleanup will not delete a data item's only off-chain copy until its bundle is confirmed `permanent_bundle`, so under multi-source permanence a slow second gateway delays cleanup (storage grows) rather than risking early deletion.
 
 ## Pitfalls (learned on this deployment)
 
 1. **`pm2 list` shows nothing / wrong node** — the operator's default `node` may be old (e.g. v12) while pm2 lives under nvm Node 22. `pm2` invoked under the wrong node can't see the daemon. Use the pm2 whose node started it (`~/.nvm/versions/node/v22*/bin/pm2`), or fix PATH. The health-check auto-locates it. **Node 22+ is mandatory anyway** — `@ar.io/sdk` v4 is ESM-only; Node 18/20 makes payment-service die with `ERR_REQUIRE_ESM`.
 2. **Optical posting silently does nothing** — almost always MinIO buckets weren't initialized. `docker compose up -d` does NOT run `minio-init`. Fix: `docker compose up minio-init && ./scripts/restart.sh`. Also check the admin-key match (pitfall: a 401 from the gateway looks like success in some logs).
-3. **`permanent_data_items` partition gap (SQLSTATE 23514)** — `verify-bundle` loops forever on `no partition of relation "permanent_data_items"` for some `uploaded_date`. The table is range-partitioned by `uploaded_date` with a hand-written historical list (inherited from Turbo upstream) ending before a `_future` catch-all (`2026-01-01→MAXVALUE`). A date in a gap below the catch-all has nowhere to go. **Harmless on a fresh box** (all new data lands in `_future`); only bites data physically uploaded into the missing window. Not auto-managed and intentionally left as-is for this deployment — don't "fix" it by hand-adding monthly partitions; if it ever matters, abut the catch-all to the last historical partition or adopt pg_partman.
+3. **`permanent_data_items` partition gap (SQLSTATE 23514) — FIXED by migration.** Historically `verify-bundle` could loop on `no partition of relation "permanent_data_items"` for an `uploaded_date` that fell in a gap in the hand-written partition list (inherited from Turbo upstream). Migration `20260618223000_permanent_data_items_partition_gap.ts` added the missing partitions **plus a `permanent_data_items_default` DEFAULT catch-all**, so **no `uploaded_date` can fail to route anymore** — the failure mode cannot recur on a migrated DB. If you ever see SQLSTATE 23514 here, you're on a DB that predates the migration: **run `yarn db:migrate`** (the fix is the DEFAULT partition; don't hand-add monthly partitions).
 4. **There is no `DB_DATABASE` var** — use `PAYMENT_DB_DATABASE` / `UPLOAD_DB_DATABASE`. (Some `scripts/*.sh` and the ADMIN_GUIDE still pass a generic `DB_DATABASE` inline — works because they also set the right value, but the env contract is the per-service names.)
 5. **Dual Redis naming** — cache is `REDIS_CACHE_*` / `ELASTICACHE_*` (6379); queues are `REDIS_QUEUE_*` / `REDIS_HOST`+`REDIS_PORT_QUEUES` (6381). Set both aliases or one half of the app can't find Redis.
 6. **`PAYMENT_SERVICE_BASE_URL` takes NO protocol prefix** (`localhost:4001`, not `http://...`); `PRIVATE_ROUTE_SECRET` must match across services (they share one root `.env`, so inherently consistent here).
@@ -131,9 +133,10 @@ On a multi-node/HA setup, run plan/cleanup/verify on **one node only** (or behin
 
 | Symptom | First check |
 |---|---|
-| Uploads accepted but never bundle | `crontab -l \| grep trigger-plan`; run `./packages/upload-service/cron-trigger-plan.sh` manually; `pm2 logs upload-workers --err`; is `new_data_item` count climbing? |
+| Uploads accepted but never bundle | is `upload-workers` up and did it log `Registered BullMQ job schedulers`? (`pm2 logs upload-workers \| grep schedulers`) — NOT a crontab check. `pm2 logs upload-workers --err`; is `new_data_item` climbing? Manual kick: `./packages/upload-service/cron-trigger-plan.sh` |
 | Bundles plan but never post | `post-bundle` failed count + `pm2 logs upload-workers`; bundler wallet AR balance (`/wallet/<addr>/balance` on the gateway); gateway reachable |
-| `verify-bundle` errors / items not permanent | partition gap (pitfall 3) if SQLSTATE 23514; else confirm tx mined (5-min verify delay) |
+| Bundles post but never seed (stuck in `posted_bundle`) | seed failures — `pm2 logs upload-workers`; `redrive-posted` re-drives them (and demotes to `failed_bundle` after `MAX_SEED_REDRIVES`); check `posted_bundle_failed_to_seed_total` and the `posted_bundle_redrive` table |
+| `verify-bundle` errors / items not permanent | SQLSTATE 23514 → run `yarn db:migrate` (partition-gap fix, pitfall 3); items not promoting under `PERMANENCE_CONFIRMATION_SOURCES=2` → a configured gateway is down (quorum unmet); else confirm tx mined (5-min verify delay) |
 | Uploaded item not on gateway | optical wiring: bucket init (pitfall 2), admin-key match, unbundle-filter owner; `HEAD /raw/<id>` on gateway |
 | Crypto top-up never credits | `payment-workers` process missing/stopped (pitfall: it must exist); `payment-pending-tx` queue + `pm2 logs payment-workers` |
 | Pricing fails ("Oracle Unavailable") | `PRICE_ORACLE_GATEWAY_URL` pointing at arweave.net instead of the gateway |
@@ -143,7 +146,7 @@ On a multi-node/HA setup, run plan/cleanup/verify on **one node only** (or behin
 
 ## Deployment (Hetzner)
 
-`docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md` is authoritative — single-node, deploy root `/opt/ar-io-bundler`, user `bundler`, **system Node 22 (nodesource), not nvm** (kills the cron PATH footgun), `corepack prepare yarn@3.6.0`, `npm i -g pm2`. Sequence: create `ar-io-network` → `yarn infra:up` → secrets/wallets/`.env` → `yarn db:migrate` → `./scripts/start.sh` → `./scripts/verify.sh` → `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save` → install crons → wire the gateway. Treat the runbook's open `⚠️ ACTION` items as deploy-blocking: pin Docker image tags + add `restart: unless-stopped`, rotate `minioadmin`/default creds, bind infra (Bull Board, MinIO console, Postgres, both Redis) to localhost/private not `0.0.0.0`, fold `PRICE_ORACLE_GATEWAY_URL`/`ARIO_GATEWAY_URL` into `.env.sample`, confirm no `/home/vilenarios` / LAN IP / nvm path leaks into PM2 or cron, and author a backup procedure (none exists yet).
+`docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md` is authoritative — single-node, deploy root `/opt/ar-io-bundler`, user `bundler`, **system Node 22 (nodesource), not nvm**, `corepack prepare yarn@3.6.0`, `npm i -g pm2`. Sequence: create `ar-io-network` → `yarn infra:up` → secrets/wallets/`.env` → `yarn db:migrate` → `./scripts/start.sh` → `./scripts/verify.sh` → `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save` → wire the gateway. (Plan/cleanup/redrive scheduling is in-process — no crontab needed; the only optional crontab entry is `trigger-verify.sh`.) Treat the runbook's open `⚠️ ACTION` items as deploy-blocking: pin Docker image tags + add `restart: unless-stopped`, rotate `minioadmin`/default creds, bind infra (Bull Board, MinIO console, Postgres, both Redis) to localhost/private not `0.0.0.0`, fold `PRICE_ORACLE_GATEWAY_URL`/`ARIO_GATEWAY_URL` into `.env.sample`, confirm no `/home/vilenarios` / LAN IP / nvm path leaks into PM2 or cron, and author a backup procedure (none exists yet).
 
 ## Adjacent skills
 - **`ar-io-gateway-operator`** (in the `ar-io-node` repo) — the gateway side of the optical/reads/MinIO wiring; ANS-104 unbundle pipeline, filters, trust headers.

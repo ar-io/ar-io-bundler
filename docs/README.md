@@ -12,7 +12,7 @@ deeper references.
 
 ### [architecture/](./architecture/)
 - [**ARCHITECTURE.md**](./architecture/ARCHITECTURE.md) — Full system architecture:
-  services, the two PostgreSQL databases, the 11-queue BullMQ pipeline, MinIO
+  services, the two PostgreSQL databases, the 12-queue BullMQ pipeline, MinIO
   object storage, APIs, and data flows.
 - [**X402_END_TO_END_DEEP_DIVE.md**](./architecture/X402_END_TO_END_DEEP_DIVE.md) —
   How an x402 USDC payment threads through the upload and payment services.

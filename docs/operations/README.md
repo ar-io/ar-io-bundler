@@ -22,12 +22,18 @@ Before deploying to production:
 
 ### Deployment Methods
 
-See [Architecture Documentation - Deployment](../architecture/ARCHITECTURE.md#deployment) for:
+The authoritative production deployment procedure is the
+[Hetzner Deployment Runbook](./HETZNER_DEPLOYMENT_RUNBOOK.md). See also
+[ADMIN_GUIDE.md](./ADMIN_GUIDE.md) for day-to-day administration. The deployment
+section of [ARCHITECTURE.md](../architecture/ARCHITECTURE.md#deployment) covers:
 - Docker Compose production setup
 - Manual deployment steps
 - PM2 configuration
 - Reverse proxy examples
 - Scaling strategies
+
+(Note: ARCHITECTURE.md is an older snapshot — defer to the runbook and ADMIN_GUIDE
+for current specifics.)
 
 ## Monitoring
 
@@ -60,9 +66,14 @@ PM2 log locations:
 /home/vilenarios/ar-io-bundler/logs/
 ├── payment-service-error.log
 ├── payment-service-out.log
+├── payment-workers-error.log
+├── payment-workers-out.log
 ├── upload-api-error.log
 ├── upload-api-out.log
-└── upload-workers-error.log
+├── upload-workers-error.log
+├── upload-workers-out.log
+├── admin-dashboard-error.log
+└── admin-dashboard-out.log
 ```
 
 View logs:
@@ -153,7 +164,7 @@ docker compose restart postgres
 ### Queue Processing Stopped
 
 1. Check Bull Board: http://localhost:3002
-2. Restart workers: `pm2 restart upload-workers`
+2. Restart workers via the scripts (NEVER `pm2 restart` directly): `./scripts/restart.sh`
 3. Check Redis: `docker compose logs redis-queues`
 4. Review failed jobs for errors
 
@@ -163,8 +174,8 @@ Monitor PM2 processes:
 ```bash
 pm2 monit
 
-# Restart if needed
-pm2 restart all
+# Restart if needed (use the scripts, not `pm2 restart`)
+./scripts/restart.sh
 ```
 
 ### Bundle Posting Failures
@@ -182,11 +193,9 @@ Check:
 
 Scale API instances:
 ```bash
-# Edit ecosystem.config.js
+# Set API_INSTANCES in .env, then restart via the scripts
 API_INSTANCES=4
-
-# Restart
-pm2 reload all
+./scripts/restart.sh
 ```
 
 ### Database Scaling
@@ -210,7 +219,7 @@ For high volume:
 |------|---------|--------|
 | 3001 | Upload API | Public |
 | 4001 | Payment API | Public |
-| 3002 | Bull Board | Admin only |
+| 3002 | Admin Dashboard (Bull Board) | Admin only |
 | 5432 | PostgreSQL | Internal only |
 | 6379 | Redis Cache | Internal only |
 | 6381 | Redis Queues | Internal only |
@@ -245,8 +254,8 @@ server {
 3. Install dependencies: `yarn install`
 4. Build: `yarn build`
 5. Run migrations: `yarn db:migrate`
-6. Restart services: `pm2 restart all`
-7. Verify: Check health endpoints
+6. Restart services via the scripts (NEVER `pm2 restart` directly): `./scripts/stop.sh --services-only && ./scripts/start.sh`
+7. Verify: Check health endpoints (`./scripts/verify.sh`)
 
 ### Log Rotation
 

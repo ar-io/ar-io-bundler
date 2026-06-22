@@ -61,7 +61,7 @@ interface VerifyBundleJobArch {
  * promoted to permanent. Capped at the number of configured gateways so a
  * single-gateway deployment (one entry in `arweaveGatewayUrls`) collapses to 1
  * and never stalls — matching today's behavior — while a multi-gateway deployment
- * honors `PERMANENCE_CONFIRMATION_SOURCES` (default 2).
+ * honors `PERMANENCE_CONFIRMATION_SOURCES` (default 1; opt in to 2+).
  */
 export function requiredPermanenceSources(arweaveGateway: Gateway): number {
   const gatewayCount =
