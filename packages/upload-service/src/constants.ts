@@ -424,6 +424,7 @@ export const jobLabels = {
   cleanupFs: "cleanup-fs",
   putOffsets: "put-offsets",
   redrivePosted: "redrive-posted",
+  refundBalance: "refund-balance",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 

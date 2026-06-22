@@ -18,7 +18,7 @@ import { AxiosInstance } from "axios";
 import { sign } from "jsonwebtoken";
 import winston from "winston";
 
-import { signatureTypeInfo } from "../constants";
+import { jobLabels, signatureTypeInfo } from "../constants";
 import {
   allowArFSData,
   allowListPublicAddresses,
@@ -40,6 +40,7 @@ import { PaymentServiceReturnedError } from "../utils/errors";
 import { getIpUsage, updateIpUsage } from "../utils/ipRateLimitCache";
 import { createAxiosInstance } from "./axiosClient";
 import { CacheService } from "./cacheServiceTypes";
+import { enqueue } from "./queues";
 import { getElasticacheService } from "./elasticacheService";
 
 // TODO: Payment service response API
@@ -246,7 +247,14 @@ export class TurboPaymentService implements PaymentService {
       .PAYMENT_SERVICE_BASE_URL,
     paymentServiceProtocol: string = process.env.PAYMENT_SERVICE_PROTOCOL ??
       "https",
-    private readonly cacheService: CacheService = getElasticacheService()
+    private readonly cacheService: CacheService = getElasticacheService(),
+    // Fast-fail client for the latency-critical upload-accept calls (reserve +
+    // check-balance). A payment-service outage must reject the upload in ~10s,
+    // not retry for minutes on the resilient default (8 retries / 60s socket).
+    private readonly criticalAxios: AxiosInstance = createAxiosInstance({
+      config: { timeout: +(process.env.PAYMENT_CRITICAL_TIMEOUT_MS ?? "5000") },
+      retries: +(process.env.PAYMENT_CRITICAL_RETRIES ?? "1"),
+    })
   ) {
     this.logger = logger.child({
       class: this.constructor.name,
@@ -317,7 +325,7 @@ export class TurboPaymentService implements PaymentService {
       url.searchParams.append("paidBy", address);
     }
 
-    const { status, statusText, data } = await this.axios.get<
+    const { status, statusText, data } = await this.criticalAxios.get<
       PaymentServiceCheckBalanceResponse | string
     >(url.href, {
       headers: {
@@ -515,7 +523,7 @@ export class TurboPaymentService implements PaymentService {
       url.searchParams.append("paidBy", address);
     }
 
-    const { status, statusText, data } = await this.axios.get(url.href, {
+    const { status, statusText, data } = await this.criticalAxios.get(url.href, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -555,7 +563,11 @@ export class TurboPaymentService implements PaymentService {
   }
 
   public async refundBalanceForData(
-    params: RefundBalanceParams
+    params: RefundBalanceParams,
+    // throwOnFailure is set by the durable refund worker so a failed attempt
+    // propagates and BullMQ retries the job. Critical-path callers leave it
+    // false: a failure enqueues a durable retry instead of dropping the refund.
+    { throwOnFailure = false }: { throwOnFailure?: boolean } = {}
   ): Promise<void> {
     const logger = this.logger.child({ ...params });
     const { nativeAddress, winston, dataItemId, signatureType } = params;
@@ -577,7 +589,9 @@ export class TurboPaymentService implements PaymentService {
     });
 
     try {
-      await this.axios.get(
+      // Fast inline attempt; if it fails, the durable refund queue (below)
+      // owns the persistence, so the upload-error response is never blocked.
+      await this.criticalAxios.get(
         `${this.paymentServiceURL}/v1/refund-balance/${signatureTypeInfo[signatureType].name}/${nativeAddress}?winstonCredits=${winston}&dataItemId=${dataItemId}`,
         {
           headers: {
@@ -587,12 +601,42 @@ export class TurboPaymentService implements PaymentService {
       );
       logger.debug("Successfully refunded balance for wallet.");
     } catch (error) {
-      // TODO: add prometheus metric for when this fails - we may need to manually intervene to distribute the refund
       MetricRegistry.refundBalanceFail.inc();
       const message = error instanceof Error ? error.message : "Unknown error";
-      logger.error("Unable to issue refund!", {
+
+      if (throwOnFailure) {
+        // Worker context: let BullMQ retry the durable job.
+        logger.error("Refund attempt failed; queue will retry.", {
+          error: message,
+        });
+        throw error instanceof Error ? error : new Error(message);
+      }
+
+      // Critical-path context: never drop the refund — enqueue a durable retry
+      // so the wallet is always credited back even if payment-service is down.
+      logger.error("Unable to issue refund inline; enqueuing durable retry.", {
         error: message,
       });
+      try {
+        await enqueue(jobLabels.refundBalance, {
+          nativeAddress,
+          winstonCredits: winston.toString(),
+          dataItemId,
+          signatureType,
+        });
+      } catch (enqueueError) {
+        // Last resort: the refund could not even be queued. Loud so it's caught.
+        MetricRegistry.refundBalanceFail.inc();
+        logger.error(
+          "Failed to enqueue durable refund retry — MANUAL INTERVENTION may be required.",
+          {
+            error:
+              enqueueError instanceof Error
+                ? enqueueError.message
+                : "Unknown error",
+          }
+        );
+      }
     }
   }
 
