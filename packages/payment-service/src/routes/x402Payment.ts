@@ -18,6 +18,7 @@ import { Next } from "koa";
 
 import {
   defaultX402PaymentMode,
+  x402PaymentAddress,
   x402PaymentModes,
   x402PaymentTimeoutMs,
   x402PricingBufferPercent,
@@ -182,7 +183,12 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
       description: `Upload ${byteCount || 0} bytes to Arweave via Turbo`,
       mimeType: "application/octet-stream",
       asset: networkConfig.usdcAddress,
-      payTo: authorization.to,
+      // SECURITY: bind the required recipient to the operator's configured
+      // address — NOT the attacker-controlled authorization.to. The recipient
+      // check in x402Service compares authorization.to against this value, so
+      // using authorization.to here would make it a client-controlled tautology
+      // (settle a self-transfer and still get credited).
+      payTo: x402PaymentAddress!,
       maxTimeoutSeconds: Math.floor(x402PaymentTimeoutMs / 1000),
       extra: {
         name: "USD Coin",
