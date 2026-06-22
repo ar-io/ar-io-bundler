@@ -47,6 +47,16 @@ type QueueTypeToMessageType = {
   [jobLabels.putOffsets]: EnqueuedOffsetsBatch;
   [jobLabels.cleanupFs]: Record<string, never>;
   [jobLabels.redrivePosted]: Record<string, never>;
+  [jobLabels.refundBalance]: RefundBalanceMessage;
+};
+
+// Durable refund retry payload. winstonCredits is the Winston value serialized
+// to a string (BullMQ messages are JSON), reconstructed in the worker.
+export type RefundBalanceMessage = {
+  nativeAddress: string;
+  winstonCredits: string;
+  dataItemId: string;
+  signatureType: number;
 };
 
 export type QueueType = keyof QueueTypeToMessageType;
@@ -62,6 +72,12 @@ export const enqueue = async <T extends QueueType>(
   const jobOptions: Record<string, unknown> = {};
   if (queueType === jobLabels.seedBundle) {
     jobOptions.timeout = 300000; // 5 minutes for seed jobs
+  }
+  if (queueType === jobLabels.refundBalance) {
+    // Durable refund: retry persistently (≈ many hours) so a wallet is always
+    // credited back, even through an extended payment-service outage.
+    jobOptions.attempts = 50;
+    jobOptions.backoff = { type: "exponential", delay: 30000 };
   }
 
   // Apply custom options if provided

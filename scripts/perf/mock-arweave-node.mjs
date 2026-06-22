@@ -105,6 +105,28 @@ const server = createServer(async (req, res) => {
       return send(404, "Not Found", "text/plain");
     }
 
+    // --- current block info ---
+    // The upload-ACCEPT path (getCurrentBlockInfo) needs a real block height +
+    // timestamp, via EITHER GraphQL `blocks(first:1)` OR GET /block/current.
+    // Without these the sink only works as ARWEAVE_UPLOAD_NODE (chunks); to also
+    // serve as ARWEAVE_GATEWAY (the tx-broadcast knob → the only true $0 path),
+    // it must answer block info too. Also covers `blocks(ids:[...])` (tx-anchor height).
+    const HEIGHT = 1_000_000;
+    const NOW = Math.floor(Date.now() / 1000);
+    if (req.method === "GET" && url === "/block/current") {
+      bump("GET /block/current");
+      return send(200, { height: HEIGHT, timestamp: NOW, indep_hash: ANCHOR });
+    }
+    if (req.method === "POST" && url === "/graphql") {
+      await drain(req);
+      bump("POST /graphql");
+      return send(200, {
+        data: {
+          blocks: { edges: [{ node: { id: ANCHOR, height: HEIGHT, timestamp: NOW } }] },
+        },
+      });
+    }
+
     // catch-all: accept everything else so the pipeline never blocks on the sink
     const bytes = await drain(req);
     bump(`${req.method} ${url.slice(0, 24)}`, bytes);

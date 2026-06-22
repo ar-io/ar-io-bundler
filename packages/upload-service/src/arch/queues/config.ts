@@ -32,6 +32,7 @@ export const QUEUE_NAMES = {
   [jobLabels.finalizeUpload]: "upload-finalize-upload",
   [jobLabels.cleanupFs]: "upload-cleanup-fs",
   [jobLabels.redrivePosted]: "upload-redrive-posted",
+  [jobLabels.refundBalance]: "upload-refund-balance",
 } as const;
 
 const defaultQueueOptions: QueueOptions = {
