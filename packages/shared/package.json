@@ -1,6 +1,6 @@
 {
   "name": "@ar-io-bundler/shared",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "license": "AGPL-3.0-or-later",
   "description": "Shared code and utilities for AR.IO Bundler services",
   "main": "lib/index.js",
