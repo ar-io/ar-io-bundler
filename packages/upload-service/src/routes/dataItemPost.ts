@@ -23,7 +23,11 @@ import {
   ReserveBalanceResponse,
 } from "../arch/payment";
 import { enqueue } from "../arch/queues";
-import { isANS104DataItem } from "../utils/rawDataUtils";
+import {
+  RawBodyTooLargeError,
+  bufferRequestBodyWithLimit,
+  isANS104DataItem,
+} from "../utils/rawDataUtils";
 import { handleRawDataUpload } from "./rawDataPost";
 import {
   DataItemInterface,
@@ -136,12 +140,26 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
     if (likelyRawData) {
       logger.info("Detected raw data upload request (non-ANS104)");
-      // Buffer the entire body for raw data handling
-      const chunks: Buffer[] = [];
-      for await (const chunk of ctx.req) {
-        chunks.push(chunk);
+      // SECURITY: raw detection must buffer the whole body to inspect it, but
+      // bound that allocation to the max item size — rejecting oversized
+      // (or Content-Length-lying / chunked) requests with 413 BEFORE/while
+      // reading, so an unauthenticated client can't force unbounded memory or
+      // expensive signing on an unpaid request.
+      let rawBody: Buffer;
+      try {
+        rawBody = await bufferRequestBodyWithLimit(
+          ctx.req,
+          maxSingleDataItemByteCount
+        );
+      } catch (error) {
+        if (error instanceof RawBodyTooLargeError) {
+          return errorResponse(ctx, {
+            errorMessage: `Data item is too large, this service only accepts data items up to ${maxSingleDataItemByteCount} bytes!`,
+            status: 413,
+          });
+        }
+        throw error;
       }
-      const rawBody = Buffer.concat(chunks);
 
       // Verify it's not actually ANS-104
       if (!isANS104DataItem(rawBody)) {
