@@ -239,7 +239,7 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
   arweave.net anywhere** — reads/pricing/tx via the local gateway, posting via your gateway.
   `OPTICAL_BRIDGING_ENABLED=true`,
   `OPTICAL_BRIDGE_URL=http://<gateway>:4000/ar-io/admin/queue-data-item`, `AR_IO_ADMIN_KEY`,
-  `OPTIONAL_OPTICAL_BRIDGE_URLS` (second gateway). ⚠️ replace the dev LAN IP `192.168.2.235` with the
+  `OPTIONAL_OPTICAL_BRIDGE_URLS` (second gateway). ⚠️ replace the dev LAN IP `<GATEWAY_PRIVATE_IP>` with the
   prod gateway's private address.
 - **x402:** `X402_PAYMENT_ADDRESS`, `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET` (required on mainnet),
   `X402_FEE_PERCENT`, and **`UPLOAD_SERVICE_PUBLIC_URL`** = the real public HTTPS URL (not localhost) — x402 signing depends on it.
@@ -310,7 +310,7 @@ check guards the process list.
 > a latent prod bug now fixed. Cluster mode is kept for the two APIs; fork mode for the three workers/dashboard
 > (fork avoids duplicate job processing).
 
-⚠️ Remaining at integration: confirm the LAN IP `192.168.2.235` and any inline wallet addresses are sourced
+⚠️ Remaining at integration: confirm the LAN IP `<GATEWAY_PRIVATE_IP>` and any inline wallet addresses are sourced
 from `.env` (not the config) for the Hetzner box, and that the deploy root resolves correctly from
 `/opt/ar-io-bundler`.
 
