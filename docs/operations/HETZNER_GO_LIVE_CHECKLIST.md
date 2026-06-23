@@ -22,9 +22,15 @@
 
 ## Phase 1 — OS, disks, base deps (→ §1, §3)
 
-- [ ] Install **Ubuntu 24.04 LTS**.
-- [ ] **RAID1 the SSD pair** → mount `/` + `/var/lib/postgresql` + FS hot dirs (`TEMP_DIR`, `UPLOAD_SERVICE_DATA_DIR`).
-- [ ] **Cold volume:** HDD (or 2nd SSD pair RAID1) → mount `/mnt/minio`; point MinIO's data dir here.
+- [ ] Install **Ubuntu 24.04 LTS** via Hetzner installimage.
+- [ ] 🔴 **Disk layout — do NOT use the installimage default (`SWRAIDLEVEL 5` across all 3 drives):** RAID5
+      sizes to the smallest disk (would waste ~15 TB of the HDD) and runs the NVMe at HDD speed. Instead:
+      - **2× NVMe → RAID 1** (`SWRAID 1`, `SWRAIDLEVEL 1`, list only `DRIVE1`/`DRIVE2`; **comment out
+        `DRIVE3`**) → OS + `/var/lib/postgresql` + FS hot dirs (`TEMP_DIR`, `UPLOAD_SERVICE_DATA_DIR`).
+      - **16 TB HDD → standalone** (left out of RAID): post-install `parted /dev/sda mklabel gpt; mkpart;
+        mkfs.xfs -L minio /dev/sda1; mount /mnt/minio` (+ fstab `LABEL=minio /mnt/minio xfs defaults,noatime 0 2`).
+- [ ] Point **MinIO's data dir at `/mnt/minio`**: in `docker-compose.yml` change the minio volume from
+      `minio-data:/data` to a bind mount `/mnt/minio:/data`.
 - [ ] Create non-root deploy user `bundler`; deploy root `/opt/ar-io-bundler` (do **not** hardcode `/home/...`).
 - [ ] **Node 22** via a system install (NodeSource), fixed absolute path — `@ar.io/sdk` v4 is ESM-only and
       payment-service will not boot on Node <22.12. One runtime for the whole PM2 fleet.
