@@ -231,17 +231,20 @@ pm2 startup
 ### Step 8: Bundle Planning & Cleanup Schedules (no cron setup required)
 
 The bundling pipeline is triggered **automatically** by the always-running
-`upload-workers` process: at startup it registers two BullMQ job schedulers — one
-that plans bundles (default every 5 minutes) and one that runs tiered-retention
-cleanup (default daily at 02:00). **There is no crontab to set up.** This replaced
-the old external cron jobs, whose silent-failure modes (a cron never registered,
-or cron's minimal `PATH` lacking `node`) could quietly stop all bundling.
+`upload-workers` process: at startup it registers three BullMQ job schedulers —
+one that plans bundles (default every 5 minutes), one that runs tiered-retention
+cleanup (default daily at 02:00), and one that re-drives stale `posted_bundle`
+rows whose seeding stalled (default every 10 minutes). **There is no crontab to
+set up.** This replaced the old external cron jobs, whose silent-failure modes (a
+cron never registered, or cron's minimal `PATH` lacking `node`) could quietly
+stop all bundling.
 
 Tune or disable the schedules via env vars in `.env` (cron syntax):
 
 ```bash
-PLAN_SCHEDULE_CRON="*/5 * * * *"   # bundle planning (default); set "" to disable
-CLEANUP_SCHEDULE_CRON="0 2 * * *"  # tiered cleanup (default);   set "" to disable
+PLAN_SCHEDULE_CRON="*/5 * * * *"           # bundle planning (default); set "" to disable
+CLEANUP_SCHEDULE_CRON="0 2 * * *"          # tiered cleanup (default);  set "" to disable
+POSTED_REDRIVE_SCHEDULE_CRON="*/10 * * * *" # posted_bundle redrive (default); set "" to disable
 ```
 
 **What the plan schedule does**: every interval, the plan worker:
@@ -782,7 +785,7 @@ pm2 list | grep upload-workers
 2. **Check the plan/cleanup schedulers registered** (they run inside `upload-workers`, not crontab):
 ```bash
 pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"
-# Should show: Registered BullMQ job schedulers { planBundle: '*/5 * * * *', cleanupFs: '0 2 * * *' }
+# Should show: Registered BullMQ job schedulers { planBundle: '*/5 * * * *', cleanupFs: '0 2 * * *', redrivePosted: '*/10 * * * *' }
 # If planBundle shows "(disabled)", PLAN_SCHEDULE_CRON is set to "" — unset it.
 ```
 

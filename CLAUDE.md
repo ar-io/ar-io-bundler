@@ -366,4 +366,4 @@ TypeScript 5 / Node.js 22+ (required by @ar.io/sdk v4, ESM-only) • Yarn 3.6.0 
 - **docs/operations/ADMIN_GUIDE.md**: Day-to-day administration
 - **docs/api/README.md**: REST API reference
 - **docs/guides/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details (signed + unsigned uploads)
-- **docs/archive/**, **docs/migration/**: historical artifacts only (not current state)
+- **docs/archive/**: historical analyses/audits only (not current state)

@@ -223,7 +223,7 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 
 - **DB:** `DB_HOST/PORT/USER/PASSWORD`, `DB_WRITER_ENDPOINT`/`DB_READER_ENDPOINT` (same host single-node),
   `PAYMENT_DB_DATABASE=payment_service`, `UPLOAD_DB_DATABASE=upload_service`, pool `DB_POOL_MIN/MAX`
-  (see `docs/archive/SCALE_FIX_IMPLEMENTATION_PLAN.md` for prod pool sizing).
+  (defaults 5/50; size so Postgres `max_connections` ≥ processes-with-a-pool × `DB_POOL_MAX` + overhead).
 - **Redis ×2:** cache `REDIS_CACHE_HOST/PORT=6379` (+ alias `ELASTICACHE_HOST/PORT`); queues
   `REDIS_QUEUE_HOST/PORT=6381` (+ alias `REDIS_HOST/REDIS_PORT_QUEUES`). ⚠️ dual-naming footgun — set both.
 - **MinIO/S3:** `S3_ENDPOINT=http://localhost:9000`, rotated `S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`,
