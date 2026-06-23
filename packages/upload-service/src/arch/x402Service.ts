@@ -174,6 +174,11 @@ export interface X402NetworkConfig {
   facilitatorUrl?: string;
   enabled: boolean;
   minConfirmations: number;
+  // EIP-712 domain `name` for this network's USDC contract. MUST equal the token
+  // contract's on-chain name() or the facilitator rejects the payment with
+  // "invalid_exact_evm_token_name_mismatch". Base MAINNET USDC = "USD Coin";
+  // Base SEPOLIA USDC (0x036C…) = "USDC". (EIP-712 version stays "2".)
+  usdcName: string;
 }
 
 // x402 Protocol Types
@@ -554,7 +559,7 @@ export class X402Service {
 
       // EIP-712 domain for EIP-3009 transferWithAuthorization
       const domain = {
-        name: requirements.extra?.name || "USD Coin",
+        name: requirements.extra?.name || networkConfig.usdcName,
         version: requirements.extra?.version || "2",
         chainId: networkConfig.chainId,
         verifyingContract: requirements.asset,
@@ -972,6 +977,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   base: {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    usdcName: "USD Coin",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
     facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
@@ -981,6 +987,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   "base-mainnet": {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    usdcName: "USD Coin",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
     facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
@@ -989,6 +996,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   "ethereum-mainnet": {
     chainId: 1,
     usdcAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    usdcName: "USD Coin",
     rpcUrl:
       process.env.ETHEREUM_MAINNET_RPC_URL || "https://cloudflare-eth.com/",
     facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_ETH, process.env.X402_FACILITATOR_URLS_ETH),
@@ -998,6 +1006,9 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   "polygon-mainnet": {
     chainId: 137,
     usdcAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    // Native Polygon USDC (0x3c49…) on-chain name() = "USD Coin". (The bridged
+    // USDC.e at 0x2791… is "USD Coin (PoS)" — change this if you target that one.)
+    usdcName: "USD Coin",
     rpcUrl: process.env.POLYGON_MAINNET_RPC_URL || "https://polygon-rpc.com/",
     facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_POLYGON, process.env.X402_FACILITATOR_URLS_POLYGON),
     enabled: process.env.X402_POLYGON_ENABLED === "true", // Default: false
@@ -1006,6 +1017,8 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   "base-sepolia": {
     chainId: 84532,
     usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    // Base SEPOLIA USDC on-chain name() = "USDC" (NOT "USD Coin") — verified.
+    usdcName: "USDC",
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
     facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE_TESTNET, process.env.X402_FACILITATOR_URLS_BASE_TESTNET),
     enabled: process.env.X402_BASE_TESTNET_ENABLED === "true",
