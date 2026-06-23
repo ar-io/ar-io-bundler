@@ -456,8 +456,12 @@ services:
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
 AWS_ENDPOINT=http://ar-io-bundler-minio:9000
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin123
+# Use the dedicated READ-ONLY MinIO user — NOT the root/admin credentials. The
+# gateway only needs to READ objects; root creds in the gateway's .env would let
+# anything that reaches MinIO (or reads that file) overwrite/delete uploads.
+# minio-init creates this user from GATEWAY_S3_ACCESS_KEY_ID/SECRET.
+AWS_ACCESS_KEY_ID=gateway-readonly
+AWS_SECRET_ACCESS_KEY=readonly-change-me   # CHANGE THIS; must equal the bundler's GATEWAY_S3_SECRET_ACCESS_KEY
 AWS_REGION=us-east-1
 
 # Prioritize S3 for data retrieval
@@ -508,8 +512,9 @@ Add these entries to `/etc/hosts` on the **gateway server**:
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
 AWS_ENDPOINT=http://192.168.2.253:9000  # Use your bundler server LAN IP
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin123
+# Dedicated READ-ONLY MinIO user (NOT root). See the same-server note above.
+AWS_ACCESS_KEY_ID=gateway-readonly
+AWS_SECRET_ACCESS_KEY=readonly-change-me   # CHANGE THIS; must equal the bundler's GATEWAY_S3_SECRET_ACCESS_KEY
 AWS_REGION=us-east-1
 
 # Prioritize S3 for data retrieval
@@ -546,10 +551,20 @@ ping -c 1 raw-data-items.ar-io-bundler-minio
 - Virtual-hosted: `http://bucket.endpoint/key`
 - Path-style: `http://endpoint/bucket/key`
 
-**Security Note**:
-- MinIO port 9000 must be accessible from gateway server
-- Default credentials are `minioadmin:minioadmin123` (change in production!)
-- Consider using firewall rules to restrict access to trusted IPs
+**Security Note** (MinIO holds every user's uploaded data — treat it as a trust boundary):
+- **Give the gateway a READ-ONLY user, never root.** `minio-init` creates a
+  `readonly`-policy user (`GATEWAY_S3_ACCESS_KEY_ID`/`GATEWAY_S3_SECRET_ACCESS_KEY`);
+  point the gateway at that. Root/admin creds (`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY`)
+  can overwrite or delete raw data items — corrupting/losing uploads — and must
+  stay only on the bundler.
+- **Change ALL default credentials** (root *and* the read-only user) before any
+  non-localhost exposure. The compose defaults (`minioadmin:minioadmin123`,
+  `gateway-readonly:readonly-change-me`) are for local dev only.
+- **Do not put MinIO on a public interface.** Reach it over a private network
+  (e.g. a Hetzner vSwitch — see `MINIO_S3_BIND_IP` and the deployment runbook),
+  and firewall port 9000 to the gateway host(s) only.
+- **Prefer TLS** for the gateway↔MinIO link when it leaves a single host; the
+  `http://` examples above assume a trusted private network.
 
 ### Verify Local Gateway Integration
 
