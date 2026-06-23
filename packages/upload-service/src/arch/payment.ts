@@ -24,7 +24,6 @@ import {
   allowListPublicAddresses,
   allowListedSignatureTypes,
   freeUploadLimitBytes,
-  testPrivateRouteSecret,
 } from "../constants";
 import defaultLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
@@ -38,6 +37,7 @@ import {
 } from "../types/types";
 import { PaymentServiceReturnedError } from "../utils/errors";
 import { getIpUsage, updateIpUsage } from "../utils/ipRateLimitCache";
+import { resolvePrivateRouteSecret } from "../utils/privateRouteSecret";
 import { createAxiosInstance } from "./axiosClient";
 import { CacheService } from "./cacheServiceTypes";
 import { enqueue } from "./queues";
@@ -217,7 +217,9 @@ const allowedReserveBalanceResponse: ReserveBalanceResponse = {
   isReserved: true,
 };
 
-const secret = process.env.PRIVATE_ROUTE_SECRET ?? testPrivateRouteSecret;
+// SECURITY: fail closed if PRIVATE_ROUTE_SECRET is unset outside tests — never
+// sign inter-service tokens with the public hard-coded test secret.
+const secret = resolvePrivateRouteSecret();
 
 /**
  * Per-IP free-upload byte limit (PE-9011). Defaults to 5 GB per IP per TTL
