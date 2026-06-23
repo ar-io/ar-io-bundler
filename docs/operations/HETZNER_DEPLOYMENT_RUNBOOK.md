@@ -420,10 +420,15 @@ PROD:      [Internet] ──TLS──► [nginx on bundler box] ──► 127.0.
 DEV/TEST:  [Internet] ──TLS──► [separate nginx router] ──private net──► [bundler-ip]:3001 / :4001
 ```
 
-The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** — drop it in `sites-available`,
-`nginx -t`, reload. For the **dev/test separate-router** variant, change every `127.0.0.1` `proxy_pass`
-target to the bundler's private IP and open the bundler firewall for `:3001`/`:4001` **from the router IP
-only**. The three prod hostnames (mirrors the proven perma.online / vilenarios.com router config):
+The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** + the reusable snippets in
+**`infrastructure/nginx/snippets/`** (`bundler-ssl-params`, `bundler-headers`, `bundler-loc-{upload,
+payment,unified}`). Copy the snippets to `/etc/nginx/snippets/`, the main file to `sites-available` (→
+`sites-enabled`), `nginx -t`, reload. **Flexibility (use other URLs):** all routing/TLS/CORS logic lives in
+the snippets, so a new URL is just a thin `server` block (change `server_name` + its `ssl_certificate`);
+the **backend address is in one place** — the two `upstream` blocks. For the **dev/test separate-router**
+variant, change the upstream targets from `127.0.0.1` to the bundler's private IP and open the bundler
+firewall for `:3001`/`:4001` **from the router IP only**. (Validated with `nginx -t` + an empirical
+per-path routing test.) The three prod hostnames (mirrors the proven perma.online / vilenarios.com config):
 - `https://upload.ardrive.io` → `:3001`; `https://payment.ardrive.io` → `:4001`.
 - `https://turbo.ardrive.io` — **unified, path-muxed**: explicit payment prefixes (`/v1/balance`,
   `/v1/account`, `/v1/price`, `/v1/rates|currencies|countries|redeem|reserve-balance|refund-balance|
