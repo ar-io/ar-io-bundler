@@ -49,6 +49,7 @@ import router from "./router";
 import { JWKInterface } from "./types/jwkTypes";
 import { loadSecretsToEnv } from "./utils/loadSecretsToEnv";
 import { resolvePrivateRouteSecret } from "./utils/privateRouteSecret";
+import { resolveServerTimeouts } from "./utils/serverTimeouts";
 import { X402Service } from "./x402/x402Service";
 
 type KoaState = DefaultState & Architecture & { logger: Logger };
@@ -232,11 +233,16 @@ export async function createServer(
   // Bind to 0.0.0.0 to accept connections from nginx proxy on separate server
   const server = app.listen(port, '0.0.0.0');
 
-  // Timeout configuration for payment operations (faster than uploads)
-  const requestTimeout = parseInt(process.env.REQUEST_TIMEOUT_MS || "60000", 10); // 1 minute
-  const keepAliveTimeout = parseInt(process.env.KEEPALIVE_TIMEOUT_MS || "65000", 10); // 1m 5s
-  const headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS || "70000", 10); // 1m 10s
+  // Timeout configuration for payment operations (faster than uploads). Uses
+  // PAYMENT_-prefixed env vars so the payment service never inherits the upload
+  // service's large generic timeout values from a shared .env file. All stay
+  // short — headersTimeout in particular is a slowloris guard.
+  const { requestTimeout, keepAliveTimeout, headersTimeout } =
+    resolveServerTimeouts();
 
+  // requestTimeout (not the legacy server.timeout) is the total request timeout;
+  // server.timeout is retained as a socket-inactivity guard.
+  server.requestTimeout = requestTimeout;
   server.timeout = requestTimeout;
   server.keepAliveTimeout = keepAliveTimeout;
   server.headersTimeout = headersTimeout;
