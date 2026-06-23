@@ -74,6 +74,26 @@ export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
  * Used by: POST /x402/upload/unsigned
  */
 export async function rawDataUploadRoute(ctx: KoaContext): Promise<void> {
+  // Enforce the byte ceiling from the declared Content-Length BEFORE buffering
+  // the body. Otherwise a request that declares a huge size must be fully read
+  // into memory before being rejected (a memory-amplification vector), and a
+  // request that lies (declares 4 GiB but sends a few bytes) makes this loop
+  // wait for a body that never arrives — the request hangs until a timeout
+  // instead of failing fast. handleRawDataUpload still re-checks post-buffer.
+  const contentLengthHeader = ctx.headers["content-length"];
+  if (contentLengthHeader !== undefined) {
+    const declaredByteCount = +contentLengthHeader;
+    if (
+      !isNaN(declaredByteCount) &&
+      declaredByteCount > maxSingleDataItemByteCount
+    ) {
+      return errorResponse(ctx, {
+        errorMessage: `Data is too large (${declaredByteCount} bytes). Maximum allowed is ${maxSingleDataItemByteCount} bytes.`,
+        status: 413,
+      });
+    }
+  }
+
   // Buffer the entire request body
   const chunks: Buffer[] = [];
   for await (const chunk of ctx.req) {
