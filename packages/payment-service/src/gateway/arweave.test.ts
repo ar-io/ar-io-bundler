@@ -21,9 +21,72 @@ import { stub } from "sinon";
 import { createAxiosInstance } from "../axiosClient";
 import { ownerToAddress } from "../utils/base64";
 import { ArweaveGateway } from "./arweave";
-import { turboCreditDestinationAddressGqlTagName } from "./gateway";
+import {
+  computePollingDelayMs,
+  turboCreditDestinationAddressGqlTagName,
+} from "./gateway";
 
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
+
+// Regression: ArweaveGateway used to hardcode 10 attempts / 1200ms, which both
+// bypassed the env knobs and (via exponential backoff) let a missing-tx lookup on
+// the public POST /account/balance/:token route block for ~10 minutes.
+describe("ArweaveGateway poll defaults (env-configurable, not hardcoded)", () => {
+  const originalAttempts = process.env.MAX_PAYMENT_TX_POLLING_ATTEMPTS;
+  const originalWait = process.env.PAYMENT_TX_POLLING_WAIT_TIME_MS;
+
+  afterEach(() => {
+    if (originalAttempts === undefined) {
+      delete process.env.MAX_PAYMENT_TX_POLLING_ATTEMPTS;
+    } else {
+      process.env.MAX_PAYMENT_TX_POLLING_ATTEMPTS = originalAttempts;
+    }
+    if (originalWait === undefined) {
+      delete process.env.PAYMENT_TX_POLLING_WAIT_TIME_MS;
+    } else {
+      process.env.PAYMENT_TX_POLLING_WAIT_TIME_MS = originalWait;
+    }
+  });
+
+  it("new ArweaveGateway() uses the base 5-attempt / 500ms defaults, not 10 / 1200", () => {
+    delete process.env.MAX_PAYMENT_TX_POLLING_ATTEMPTS;
+    delete process.env.PAYMENT_TX_POLLING_WAIT_TIME_MS;
+
+    // protected fields — read via cast for the regression assertion
+    const gw = new ArweaveGateway() as unknown as {
+      pendingTxMaxAttempts: number;
+      paymentTxPollingWaitTimeMs: number;
+    };
+    expect(gw.pendingTxMaxAttempts).to.equal(5);
+    expect(gw.paymentTxPollingWaitTimeMs).to.equal(500);
+  });
+
+  it("respects MAX_PAYMENT_TX_POLLING_ATTEMPTS / PAYMENT_TX_POLLING_WAIT_TIME_MS env (no longer bypassed)", () => {
+    process.env.MAX_PAYMENT_TX_POLLING_ATTEMPTS = "2";
+    process.env.PAYMENT_TX_POLLING_WAIT_TIME_MS = "250";
+
+    const gw = new ArweaveGateway() as unknown as {
+      pendingTxMaxAttempts: number;
+      paymentTxPollingWaitTimeMs: number;
+    };
+    expect(gw.pendingTxMaxAttempts).to.equal(2);
+    expect(gw.paymentTxPollingWaitTimeMs).to.equal(250);
+  });
+});
+
+describe("computePollingDelayMs (capped exponential backoff)", () => {
+  it("doubles per attempt until the cap", () => {
+    expect(computePollingDelayMs(500, 0, 8000)).to.equal(500);
+    expect(computePollingDelayMs(500, 1, 8000)).to.equal(1000);
+    expect(computePollingDelayMs(500, 3, 8000)).to.equal(4000);
+  });
+
+  it("caps the per-attempt delay so total polling time stays bounded", () => {
+    // Without the cap, 1200 * 2^9 = 614400ms for one attempt; capped to 8000.
+    expect(computePollingDelayMs(1200, 9, 8000)).to.equal(8000);
+    expect(computePollingDelayMs(1200, 20, 8000)).to.equal(8000);
+  });
+});
 
 describe("ArweaveGateway", () => {
   // Tiny polling settings so the "not found" path resolves immediately
