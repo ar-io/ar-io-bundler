@@ -100,9 +100,25 @@ export async function createServer(
     try {
       await next();
     } catch (error) {
+      const httpStatus = (error as { status?: number; statusCode?: number })
+        ?.status ?? (error as { statusCode?: number })?.statusCode;
       if (error instanceof BadRequest) {
         ctx.status = 400;
         ctx.body = { error: error.message };
+      } else if (
+        typeof httpStatus === "number" &&
+        httpStatus >= 400 &&
+        httpStatus < 500
+      ) {
+        // http-errors thrown by middleware carry a client-error status — e.g.
+        // koa-bodyparser's 413 "request entity too large" when a body exceeds
+        // the configured limit. Surface the real 4xx instead of masking it as a
+        // generic 500 (which misreports a client mistake as a server fault and
+        // pollutes the error log).
+        ctx.status = httpStatus;
+        ctx.body = {
+          error: error instanceof Error ? error.message : "Request error",
+        };
       } else {
         logger.error("Unhandled route error", {
           method: ctx.method,
