@@ -109,7 +109,9 @@ services:
       mc mb --ignore-existing minio/backup-data-items;
       mc anonymous set download minio/raw-data-items;
       mc anonymous set download minio/backup-data-items;
-      echo 'MinIO buckets created successfully';
+      mc admin user add minio ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} ${GATEWAY_S3_SECRET_ACCESS_KEY:-readonly-change-me} || true;
+      mc admin policy attach minio readonly --user ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} || true;
+      echo 'MinIO buckets + read-only gateway user created successfully';
       "
 
 volumes:
