@@ -38,6 +38,94 @@ const ERC1271_ABI = [
 ];
 
 /**
+ * Parse a positive-integer env var, failing CLOSED on invalid input. These
+ * values are security limits; silently coercing a bad value to NaN (as `+x`
+ * would) could disable a bound at runtime (e.g. `length > NaN` is always false),
+ * so reject misconfiguration loudly at startup instead.
+ */
+function readPositiveIntegerEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return value;
+}
+
+function readPositiveBigIntEnv(name: string, defaultValue: bigint): bigint {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return BigInt(raw);
+}
+
+/**
+ * SECURITY: bounds on the attacker-influenced ERC-1271 on-chain verification
+ * path. A remote, unauthenticated client controls both authorization.from (the
+ * contract address) and the signature bytes, and any local ECDSA failure falls
+ * through to this on-chain path. Without bounds, a crafted payload could force
+ * the service into oversized-calldata, expensive, or hanging eth_calls — a DoS
+ * that also burns RPC quota. All limits are env-tunable (validated, fail-closed).
+ */
+const MAX_ERC1271_SIGNATURE_BYTES = readPositiveIntegerEnv(
+  "X402_MAX_ERC1271_SIGNATURE_BYTES",
+  8192
+);
+const ERC1271_RPC_TIMEOUT_MS = readPositiveIntegerEnv(
+  "X402_ERC1271_RPC_TIMEOUT_MS",
+  3000
+);
+const ERC1271_CALL_GAS_LIMIT = readPositiveBigIntEnv(
+  "X402_ERC1271_CALL_GAS_LIMIT",
+  BigInt(1_000_000)
+);
+
+/**
+ * Build a JsonRpcProvider whose HTTP transport aborts after
+ * ERC1271_RPC_TIMEOUT_MS. This cancels the underlying request at the socket
+ * level (not just the awaiting promise), so a slow/hanging RPC endpoint can't
+ * leak background connections or burn quota under sustained traffic. These
+ * providers are used solely for ERC-1271 verification.
+ */
+function makeBoundedProvider(rpcUrl: string): ethers.JsonRpcProvider {
+  const fetchRequest = new ethers.FetchRequest(rpcUrl);
+  fetchRequest.timeout = ERC1271_RPC_TIMEOUT_MS;
+  return new ethers.JsonRpcProvider(fetchRequest);
+}
+
+/**
+ * Reject a promise if it does not settle within `ms`. A last-resort guard on top
+ * of the transport-level timeout above (e.g. covers a pre-fetch hang).
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
  * Convert payload timestamps from numbers to strings for Coinbase facilitator
  */
 function toCoinbaseFormat(data: any): any {
@@ -137,7 +225,7 @@ export class X402Service {
       if (config.enabled) {
         this.providers.set(
           networkName,
-          new ethers.JsonRpcProvider(config.rpcUrl)
+          makeBoundedProvider(config.rpcUrl)
         );
       }
     }
@@ -633,7 +721,7 @@ export class X402Service {
           network: networkName,
           rpcUrl: networkConfig.rpcUrl,
         });
-        provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
+        provider = makeBoundedProvider(networkConfig.rpcUrl);
       }
 
       return await this.callERC1271IsValidSignature(
@@ -665,8 +753,31 @@ export class X402Service {
   ): Promise<boolean> {
     const walletAddress = authorization.from;
 
-    // Check if the address is a contract
-    const code = await provider.getCode(walletAddress);
+    // SECURITY: reject malformed or oversized signatures BEFORE any RPC work.
+    // `signature` is attacker-controlled; bounding its size prevents
+    // megabyte-scale calldata from being ABI-encoded into an eth_call.
+    if (!ethers.isHexString(signature)) {
+      logger.debug("ERC-1271 signature is not a valid hex string; rejecting", {
+        walletAddress,
+      });
+      return false;
+    }
+    const signatureByteLength = ethers.dataLength(signature);
+    if (signatureByteLength > MAX_ERC1271_SIGNATURE_BYTES) {
+      logger.warn("ERC-1271 signature exceeds maximum size; rejecting", {
+        walletAddress,
+        signatureByteLength,
+        maxBytes: MAX_ERC1271_SIGNATURE_BYTES,
+      });
+      return false;
+    }
+
+    // Check if the address is a contract (bounded by a per-call timeout).
+    const code = await withTimeout(
+      provider.getCode(walletAddress),
+      ERC1271_RPC_TIMEOUT_MS,
+      "ERC-1271 getCode"
+    );
     if (code === "0x" || code === "0x0") {
       logger.debug("Address is not a contract, cannot use ERC-1271", {
         walletAddress,
@@ -686,8 +797,16 @@ export class X402Service {
     const walletContract = new ethers.Contract(walletAddress, ERC1271_ABI, provider);
 
     try {
-      // Call isValidSignature(bytes32 hash, bytes signature) -> bytes4
-      const result = await walletContract.isValidSignature(typedDataHash, signature);
+      // Call isValidSignature(bytes32 hash, bytes signature) -> bytes4, bounded
+      // by an explicit gas limit and a per-call timeout so a malicious contract
+      // cannot make the eth_call expensive or hang the request handler.
+      const result = await withTimeout(
+        walletContract.isValidSignature(typedDataHash, signature, {
+          gasLimit: ERC1271_CALL_GAS_LIMIT,
+        }),
+        ERC1271_RPC_TIMEOUT_MS,
+        "ERC-1271 isValidSignature"
+      );
 
       // Check if result matches the ERC-1271 magic value
       const isValid = result.toLowerCase() === ERC1271_MAGIC_VALUE.toLowerCase();
