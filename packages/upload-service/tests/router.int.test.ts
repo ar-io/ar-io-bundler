@@ -545,18 +545,36 @@ describe("Router tests", function () {
         });
 
         it("with the wrong content type in the headers returns an error response", async () => {
-          const { status, statusText, headers, data } = await postStubDataItem(
-            validDataItem,
-            { "Content-Type": "application/json" }
-          );
+          // The "Invalid Content Type" rejection only applies when raw
+          // (server-signed) uploads are DISABLED. When raw uploads are enabled
+          // (the suite default since RAW_DATA_UPLOADS_ENABLED is set in
+          // .mocharc), a non-octet-stream Content-Type is a valid raw-upload
+          // signal, so dataItemPost intentionally does NOT reject it here
+          // (src/routes/dataItemPost.ts: `if (!rawDataUploadsEnabled) ...`).
+          // dataItemPost reads the flag dynamically per request, so disable it
+          // for just this assertion to exercise the rejection path.
+          const prevRawUploads = process.env.RAW_DATA_UPLOADS_ENABLED;
+          process.env.RAW_DATA_UPLOADS_ENABLED = "false";
+          try {
+            const { status, statusText, headers, data } = await postStubDataItem(
+              validDataItem,
+              { "Content-Type": "application/json" }
+            );
 
-          expect(status).to.equal(400);
-          assertExpectedHeadersWithContentLength(headers, 20);
+            expect(status).to.equal(400);
+            assertExpectedHeadersWithContentLength(headers, 20);
 
-          const expectedData = "Invalid Content Type";
+            const expectedData = "Invalid Content Type";
 
-          expect(statusText).to.equal(expectedData);
-          expect(data).to.equal(expectedData);
+            expect(statusText).to.equal(expectedData);
+            expect(data).to.equal(expectedData);
+          } finally {
+            if (prevRawUploads === undefined) {
+              delete process.env.RAW_DATA_UPLOADS_ENABLED;
+            } else {
+              process.env.RAW_DATA_UPLOADS_ENABLED = prevRawUploads;
+            }
+          }
         });
 
         it("with an invalid data item and 0 cost it does not refund balance", async () => {
