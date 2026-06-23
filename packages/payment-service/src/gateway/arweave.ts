@@ -60,8 +60,14 @@ export class ArweaveGateway extends Gateway {
   constructor({
     endpoint = gatewayUrls.arweave,
     axiosInstance = createAxiosInstance({}),
-    pendingTxMaxAttempts = 10,
-    paymentTxPollingWaitTimeMs = 1200,
+    // Do NOT hardcode poll attempts/wait here. Leaving these undefined lets the
+    // base Gateway's env-configurable defaults apply (MAX_PAYMENT_TX_POLLING_ATTEMPTS
+    // || 5, PAYMENT_TX_POLLING_WAIT_TIME_MS || 500). Hardcoding large values (10/1200)
+    // both bypassed those env knobs AND, via exponential backoff, made a missing-tx
+    // lookup on the PUBLIC, unauthenticated POST /account/balance/:token route block
+    // for ~10 minutes instead of seconds.
+    pendingTxMaxAttempts,
+    paymentTxPollingWaitTimeMs,
     minConfirmations = +(process.env.ARWEAVE_MIN_CONFIRMATIONS || 18),
   }: ArweaveGatewayParams = {}) {
     super({
