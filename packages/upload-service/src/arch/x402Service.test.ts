@@ -23,6 +23,7 @@ import {
   X402NetworkConfig,
   X402Service,
   resolveFacilitatorUrl,
+  x402Networks,
 } from "./x402Service";
 
 describe("X402Service ERC-1271 verification bounds (DoS hardening)", () => {
@@ -59,6 +60,7 @@ describe("X402Service ERC-1271 verification bounds (DoS hardening)", () => {
       "base-mainnet": {
         chainId: 8453,
         usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        usdcName: "USD Coin",
         rpcUrl: "https://mainnet.base.org",
         enabled: true,
         minConfirmations: 1,
@@ -139,6 +141,7 @@ describe("X402Service standard-facilitator request body (Bug 1)", () => {
     "base-sepolia": {
       chainId: 84532,
       usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      usdcName: "USDC",
       rpcUrl: "https://sepolia.base.org",
       facilitatorUrl,
       enabled: true,
@@ -241,5 +244,24 @@ describe("resolveFacilitatorUrl env-name aliasing (Bug 2)", () => {
   it("returns undefined when neither name is set", () => {
     expect(resolveFacilitatorUrl(undefined, undefined)).to.equal(undefined);
     expect(resolveFacilitatorUrl(undefined, "")).to.equal(undefined);
+  });
+});
+
+describe("x402Networks USDC EIP-712 token name per network (token_name_mismatch fix)", () => {
+  it("base-sepolia uses 'USDC' (matches the testnet USDC contract name())", () => {
+    // Base Sepolia USDC 0x036C… on-chain name() = "USDC", NOT "USD Coin".
+    expect(x402Networks["base-sepolia"].usdcName).to.equal("USDC");
+  });
+
+  it("base / base-mainnet use 'USD Coin' (Base mainnet USDC)", () => {
+    expect(x402Networks["base"].usdcName).to.equal("USD Coin");
+    expect(x402Networks["base-mainnet"].usdcName).to.equal("USD Coin");
+  });
+
+  it("every configured network defines a non-empty usdcName", () => {
+    for (const [name, cfg] of Object.entries(x402Networks)) {
+      expect(cfg.usdcName, name).to.be.a("string");
+      expect(cfg.usdcName, name).to.match(/\S/);
+    }
   });
 });

@@ -216,7 +216,7 @@ export async function x402DataItemPricing(
       maxTimeoutSeconds: 3600,
       asset: usdcAddress,
       extra: {
-        name: "USD Coin",
+        name: networkConfig.usdcName,
         version: "2",
       },
     };
@@ -478,7 +478,7 @@ export async function x402RawDataPricing(
       maxTimeoutSeconds: 3600,
       asset: usdcAddress,
       extra: {
-        name: "USD Coin",
+        name: networkConfig.usdcName,
         version: "2",
       },
     };

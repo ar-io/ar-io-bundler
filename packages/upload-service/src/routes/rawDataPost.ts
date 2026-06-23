@@ -248,7 +248,7 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
       "",
     maxTimeoutSeconds: 3600,
     extra: {
-      name: "USD Coin",
+      name: networkConfig.usdcName,
       version: "2",
     },
   };
@@ -621,7 +621,7 @@ async function send402PaymentRequired(
     maxTimeoutSeconds: 3600,
     asset: usdcAddress,
     extra: {
-      name: "USD Coin",
+      name: networkConfig?.usdcName || "USD Coin",
       version: "2",
     },
   };
