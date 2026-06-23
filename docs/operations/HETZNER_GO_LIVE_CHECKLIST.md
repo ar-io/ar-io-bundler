@@ -1,0 +1,146 @@
+# Hetzner Bundler — End-to-End Go-Live Checklist
+
+> Sequential, executable checklist for a clean production install of the AR.IO Bundler on a Hetzner
+> dedicated box, vertically integrated with the two AR.IO gateways.
+>
+> This is the **do-this-in-order** companion to `HETZNER_DEPLOYMENT_RUNBOOK.md` — each step cites the
+> runbook section (`→ §N`) that has the detail and the ⚠️ ACTION caveats. Sizing rationale is runbook §1.
+>
+> **🔴 PROD posts for real.** Unlike scale-testing (which uses the `:4555` $0 sink), production seeds bundles
+> to the real gateway/Arweave network — **every bundle costs AR**. Confirm the signing wallet is funded
+> (Phase 8) before opening uploads.
+
+---
+
+## Phase 0 — Procure the server (tonight)
+
+- [ ] Pick a box per the **two filters** (→ §1 "Buying off-the-shelf"): **(1)** has SSD/NVMe for Postgres,
+      **(2)** ≥ 3 TB for cold MinIO. Prefer ECC + a modern CPU.
+      - Box chosen: `__________________________`  ·  Cold capacity: `______`  ·  ECC: `Y/N`
+- [ ] Note the **disk plan** before install: SSD pair → OS+PG+FS-hot; bulk (HDD or 2nd SSD pair) → MinIO cold.
+- [ ] Confirm datacenter/region (FSN preferred for proximity to the gateways' network).
+
+## Phase 1 — OS, disks, base deps (→ §1, §3)
+
+- [ ] Install **Ubuntu 24.04 LTS**.
+- [ ] **RAID1 the SSD pair** → mount `/` + `/var/lib/postgresql` + FS hot dirs (`TEMP_DIR`, `UPLOAD_SERVICE_DATA_DIR`).
+- [ ] **Cold volume:** HDD (or 2nd SSD pair RAID1) → mount `/mnt/minio`; point MinIO's data dir here.
+- [ ] Create non-root deploy user `bundler`; deploy root `/opt/ar-io-bundler` (do **not** hardcode `/home/...`).
+- [ ] **Node 22** via a system install (NodeSource), fixed absolute path — `@ar.io/sdk` v4 is ESM-only and
+      payment-service will not boot on Node <22.12. One runtime for the whole PM2 fleet.
+- [ ] `corepack enable && corepack prepare yarn@3.6.0 --activate`; install Docker + compose plugin; `npm i -g pm2`.
+
+## Phase 2 — Network & firewall (→ §2)
+
+- [ ] Attach to the **vSwitch** shared with the 2 gateways; record this box's **private IP**.
+- [ ] Firewall: **public only** `22` (admin IPs), `80/443`. Everything else (`3001/4001/3002/9000/9001/5432/6379/6381/9090`)
+      → localhost or the private gateway network only.
+- [ ] DNS: `upload.<domain>` and `payment.<domain>` → this box (for TLS in Phase 11).
+
+## Phase 3 — Secrets & wallets (→ §6)
+
+- [ ] Place **two** wallets, mode `600`: `wallet.json` (`TURBO_JWK_FILE`), `rawWallet.json` (`RAW_DATA_ITEM_JWK_FILE`).
+- [ ] `openssl rand -hex 32` → `PRIVATE_ROUTE_SECRET`; again → `JWT_SECRET` (must **match** across both services).
+- [ ] Back up wallets + secrets **encrypted, off-box** (losing `wallet.json` = losing the posting identity).
+
+## Phase 4 — Code & infrastructure (→ §4, §5)
+
+- [ ] `git clone <ar.io-org-repo> /opt/ar-io-bundler` → `yarn install` → `yarn build`.
+- [ ] `docker network create ar-io-network` (**before** compose up).
+- [ ] Harden `docker-compose.yml`: pinned images, `restart: unless-stopped`, infra bound to localhost/private,
+      **rotate** PG + MinIO creds off the defaults.
+- [ ] **Postgres tuning** (PR #39 set `max_connections=500 shared_buffers=256MB`): on this box bump
+      `shared_buffers` to **~25% of RAM** (e.g. 16 GB on 64 GB / 32 GB on 128 GB). Re-derive `max_connections`
+      from `procs × DB_POOL_MAX + overhead`. *(→ finding #1, `scripts/perf/SCALE_TEST_PLAN.md`.)*
+- [ ] `yarn infra:up` → confirm both DBs (`payment_service`, `upload_service`) and buckets
+      (`raw-data-items`, `backup-data-items`) exist.
+
+## Phase 5 — `.env` configuration (→ §7) — the error-prone one
+
+- [ ] **DB:** host/port/user/pass, `DB_WRITER_ENDPOINT`=`DB_READER_ENDPOINT`=localhost, DB names, **`DB_POOL_MAX=20`**.
+- [ ] **Redis ×2 (dual-naming footgun — set BOTH):** cache `REDIS_CACHE_*`/`ELASTICACHE_*` :6379; queues
+      `REDIS_QUEUE_*`/`REDIS_HOST`+`REDIS_PORT_QUEUES` :6381.
+- [ ] **MinIO/S3:** `S3_ENDPOINT=http://localhost:9000`, rotated creds, `S3_FORCE_PATH_STYLE=true`, bucket names.
+- [ ] **Auth/inter-service:** `PRIVATE_ROUTE_SECRET`, `JWT_SECRET`, `PAYMENT_SERVICE_BASE_URL=localhost:4001` (no protocol).
+- [ ] **PM2 scale:** `API_INSTANCES` ≈ ½ cores (e.g. 4 on an 8-core), `WORKER_INSTANCES=1`. Bump
+      `PREPARE/POST/VERIFY_WORKER_CONCURRENCY` for the core count; **leave `PLAN_WORKER_CONCURRENCY=1`** (overlap guard).
+- [ ] **🔴 `ARWEAVE_UPLOAD_NODE`** = your gateway **core** (`http://localhost:4000`) — this posts bundles to Arweave
+      **for real** (costs AR). Do **not** point it at the `:4555` test sink in prod. *(→ §13.4 for the direct-to-core rationale.)*
+- [ ] **Reads/pricing:** `ARWEAVE_GATEWAY` / `PUBLIC_ACCESS_GATEWAY` → your gateway (`:3000`), **never arweave.net**.
+- [ ] **`PRICE_ORACLE_GATEWAY_URL`** → your own gateway `/price` (default arweave.net **429s under load** → "Pricing Oracle Unavailable").
+- [ ] **Optical bridging:** `OPTICAL_BRIDGING_ENABLED=true`, `OPTICAL_BRIDGE_URL=http://<gw1>:4000/ar-io/admin/queue-data-item`,
+      `OPTIONAL_OPTICAL_BRIDGE_URLS=http://<gw2>:4000/...` (the **second** gateway), `AR_IO_ADMIN_KEY`. Replace dev LAN IPs.
+- [ ] **ARIO/Solana:** `ARIO_ADDRESS` = **base58 Solana** (stale Arweave addr crashes payment boot), `ARIO_GATEWAY_URL`
+      = an RPC that allows `getProgramAccounts`, `ARIO_SOLANA_SIGNER_SECRET_KEY` (else ArNS is read-only).
+- [ ] **x402:** `X402_PAYMENT_ADDRESS`, `CDP_API_KEY_ID`/`SECRET` (mainnet), `X402_FEE_PERCENT`,
+      `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (x402 signing needs the real public URL).
+- [ ] **Cleanup + basics:** `FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`, `NODE_ENV=production`,
+      `REQUEST_TIMEOUT_MS=600000`, `PROMETHEUS_PORT=9090`. `chmod 600 .env`.
+
+## Phase 6 — Database migrations (→ §8)
+
+- [ ] `yarn db:migrate` (payment then upload). `MIGRATE_ON_STARTUP=false` — run explicitly.
+- [ ] Snapshot both DBs immediately after (clean baseline for rollback).
+
+## Phase 7 — Start services + boot persistence (→ §9–11)
+
+- [ ] `./scripts/start.sh` (checks infra, migrates, starts PM2). **Never `pm2 restart` directly.**
+- [ ] `pm2 list` → **all 5** processes online — incl. **`payment-workers`** (else crypto top-ups never finalize).
+- [ ] `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save`.
+- [ ] **Test reboot** → confirm Docker infra (restart policies) **and** PM2 (saved list) both come back.
+
+## Phase 8 — Fund the wallet & confirm posting (🔴 prod = real AR)
+
+- [ ] Confirm the **bundle-signing wallet has AR balance** (prod seeds for real). Top up if needed.
+- [ ] Confirm `ARWEAVE_ADDRESS` matches `wallet.json`.
+
+## Phase 9 — Schedulers (→ §12)
+
+- [ ] `pm2 logs upload-workers --nostream | grep "job schedulers"` → plan (5 min) + cleanup (daily) registered.
+- [ ] Install the **verify cron** with an **absolute Node path** (still subject to the stripped-PATH footgun):
+      `0 * * * * NODE_BIN=/abs/node /opt/ar-io-bundler/scripts/trigger-verify.sh >> /var/log/bundler/verify.log 2>&1`.
+
+## Phase 10 — Vertical integration with both gateways (→ §13)
+
+- [ ] **Optical:** confirm new items reach both gateways' `/ar-io/admin/queue-data-item`.
+- [ ] **MinIO retrieval:** on each gateway set `AWS_ENDPOINT`→bundler MinIO, `AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items`,
+      creds, and prioritize `s3` in `ON_DEMAND_RETRIEVAL_ORDER`. Different-host gateways: route the MinIO aliases to
+      this box's private IP.
+- [ ] **Gateway-side chunk-ingest cache** (set in each *gateway's* `.env`, startup-read): `CHUNK_INGEST_CACHE_ENABLED=true`,
+      `CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200`, allowlist TODO — confirm the bundler's apparent source IP as core sees it.
+
+## Phase 11 — TLS / reverse proxy (→ §14)
+
+- [ ] HTTPS at nginx/Caddy → `127.0.0.1:3001` (upload), `127.0.0.1:4001` (payment).
+- [ ] Large bodies + long timeouts (`client_max_body_size` for 10 GiB, `proxy_read_timeout 600s`).
+- [ ] Bull Board `:3002` stays **off** the public proxy (admin/VPN only).
+
+## Phase 12 — Smoke tests (→ §15)
+
+- [ ] `./scripts/verify.sh`; `curl :3001/v1/info` + `:4001/v1/info` → 200.
+- [ ] **Real end-to-end upload** (small signed): `new-data-item → plan → prepare → post → seed → verify`, and
+      confirm it **mines** (real `block_height`) and appears on the gateway via optical + MinIO retrieval.
+- [ ] **x402 unsigned upload** round-trips against the public HTTPS URL.
+
+## Phase 13 — Backups, monitoring, rollback (→ §16–18)
+
+- [ ] Backups scheduled & a **restore tested**: `pg_dump` both DBs off-box; `mc mirror` MinIO buckets off-box; wallets+`.env` encrypted off-box.
+- [ ] Monitoring live: Prometheus scrape `:9090` + Grafana; alert on queue depth, worker liveness (esp.
+      payment-workers/upload-workers), **DB pool saturation**, MinIO/PG disk growth, post/verify failure rates.
+- [ ] `pm2-logrotate` + logrotate for cron logs.
+- [ ] Rollback path rehearsed: tagged release + `db:migrate:rollback` + pre-migration snapshot.
+
+## Phase 14 — Post-deploy validation & right-sizing
+
+- [ ] Run **S1** (full-size bundles, off-box clients, **`:4555` $0 sink**) → right-size `API_INSTANCES`, worker
+      concurrencies, and confirm disk/CPU/PG-IO-wait headroom. *(→ `scripts/perf/SCALE_TEST_PLAN.md`.)*
+- [ ] Watch the **upload→payment hop** under load (finding #2): 503 cascade is driven by payment-service capacity
+      + axios `retries=8`/60s timeout — tune if it surfaces in prod.
+- [ ] Watch **MinIO disk** trend vs `MINIO_CLEANUP_DAYS`; if approaching the cold-volume limit, add a **local** NVMe/HDD
+      (not network storage) and migrate the MinIO data dir.
+
+---
+
+### Go / no-go gate
+Use the runbook's **Pre-flight checklist** (`HETZNER_DEPLOYMENT_RUNBOOK.md` end) as the final green-light gate
+before opening public traffic.
