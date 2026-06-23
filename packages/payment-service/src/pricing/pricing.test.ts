@@ -220,6 +220,47 @@ describe("TurboPricingService class", () => {
     });
   });
 
+  // Regression: the x402 quote (x402Price) and verify/settle (x402Payment) paths
+  // price through getTxAttributesForDataItems. It must include the same per-item
+  // surcharge that getWCForDataItem applies, otherwise x402 uploads bypass the
+  // USD_PRICE_PER_DATA_ITEM fee that signed/credit uploads pay.
+  describe("getTxAttributesForDataItems", () => {
+    beforeEach(() => {
+      stub(bytesToWinstonOracle, "getWinstonForBytes").callsFake((b) =>
+        Promise.resolve(new Winston(b.toString()))
+      );
+    });
+
+    it("includes the per-item surcharge so a single x402 item matches getWCForDataItem", async () => {
+      // 1 AR = $4 => wincPerUsd = 2.5e11 => surcharge = ceil(0.00002 * 2.5e11) = 5_000_000
+      stub(tokenToFiatOracle, "getUsdPriceForOneToken").resolves(4);
+
+      const { reward } = await pricing.getTxAttributesForDataItems([
+        { byteCount: ByteCount(100), signatureType: 1 },
+      ]);
+
+      // 100 (byte price) + 5_000_000 (surcharge) — identical to what a signed/
+      // credit upload pays for the same item, so x402 does not undercharge.
+      expect(reward).to.equal(5_000_100);
+
+      const { finalPrice } = await pricing.getWCForDataItem(ByteCount(100));
+      expect(reward.toString()).to.equal(finalPrice.winc.toString());
+    });
+
+    it("applies the surcharge once per item across a multi-item batch", async () => {
+      stub(tokenToFiatOracle, "getUsdPriceForOneToken").resolves(4);
+
+      const { reward } = await pricing.getTxAttributesForDataItems([
+        { byteCount: ByteCount(100), signatureType: 1 },
+        { byteCount: ByteCount(100), signatureType: 1 },
+        { byteCount: ByteCount(100), signatureType: 1 },
+      ]);
+
+      // byte price on summed bytes (300) + 3 * 5_000_000 surcharge
+      expect(reward).to.equal(300 + 3 * 5_000_000);
+    });
+  });
+
   describe("getWCForPayment", () => {
     beforeEach(() => {
       stub(oracle, "getFiatPricesForOneToken").resolves(expectedTokenPrices);
