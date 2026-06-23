@@ -319,4 +319,88 @@ describe("X402Service", () => {
       expect(providers.has("ethereum-mainnet")).to.be.false;
     });
   });
+
+  describe("ERC-1271 verification bounds (DoS hardening)", () => {
+    const walletAddress = "0x" + "11".repeat(20);
+    const authorization = {
+      from: walletAddress,
+      to: "0x" + "22".repeat(20),
+      value: "1000000",
+      validAfter: "0",
+      validBefore: "99999999999",
+      nonce: "0x" + "33".repeat(32),
+    };
+    const domain = {
+      name: "USD Coin",
+      version: "2",
+      chainId: 8453,
+      verifyingContract: "0x" + "44".repeat(20),
+    };
+    const types = {
+      TransferWithAuthorization: [
+        { name: "from", type: "address" },
+        { name: "to", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "validAfter", type: "uint256" },
+        { name: "validBefore", type: "uint256" },
+        { name: "nonce", type: "bytes32" },
+      ],
+    };
+
+    it("rejects an oversized signature WITHOUT any RPC call", async () => {
+      // 9000 bytes > MAX_ERC1271_SIGNATURE_BYTES (8192 default)
+      const oversized = "0x" + "ab".repeat(9000);
+      const getCode = stub().resolves("0x1234");
+      const provider = { getCode } as unknown as ethers.JsonRpcProvider;
+
+      const result = await (service as any).callERC1271IsValidSignature(
+        provider,
+        authorization,
+        oversized,
+        domain,
+        types
+      );
+
+      expect(result).to.be.false;
+      expect(getCode.called, "getCode must not be called for oversized sig").to.be
+        .false;
+    });
+
+    it("rejects a non-hex signature WITHOUT any RPC call", async () => {
+      const getCode = stub().resolves("0x1234");
+      const provider = { getCode } as unknown as ethers.JsonRpcProvider;
+
+      const result = await (service as any).callERC1271IsValidSignature(
+        provider,
+        authorization,
+        "not-a-hex-signature",
+        domain,
+        types
+      );
+
+      expect(result).to.be.false;
+      expect(getCode.called, "getCode must not be called for non-hex sig").to.be
+        .false;
+    });
+
+    it("proceeds to getCode for a normal-sized hex signature", async () => {
+      // EOA-sized 65-byte signature is well within bounds; a non-contract
+      // address (getCode -> "0x") short-circuits to false after one RPC call.
+      const normal = "0x" + "ab".repeat(65);
+      const getCode = stub().resolves("0x");
+      const provider = { getCode } as unknown as ethers.JsonRpcProvider;
+
+      const result = await (service as any).callERC1271IsValidSignature(
+        provider,
+        authorization,
+        normal,
+        domain,
+        types
+      );
+
+      expect(result).to.be.false;
+      expect(getCode.calledOnce, "getCode should run for a valid-size sig").to.be
+        .true;
+    });
+  });
 });
