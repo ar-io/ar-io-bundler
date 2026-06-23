@@ -143,3 +143,60 @@ export class X402PricingOracle {
 // Singleton instance shared across all requests to enable price caching
 // Creating new instances per-request defeats the 1-minute cache
 export const x402PricingOracle = new X402PricingOracle();
+
+// Minimum x402 price (0.001 USDC in atomic units with 6 decimals). Lives here
+// (the shared pricing util) so the quote route and the unsigned-upload handler
+// apply the SAME floor — divergence here means quote != actual charge.
+export const MINIMUM_USDC_PRICE = 1000;
+
+/**
+ * Flat per-data-item surcharge (USD_PRICE_PER_DATA_ITEM, default $0.00002) in
+ * USDC atomic units (6 decimals; USDC is treated 1:1 with USD, matching the
+ * payment-service x402 oracle). The unsigned/raw x402 flow always produces
+ * exactly ONE bundler-signed data item, so this is added once.
+ *
+ * Mirrors the per-data-item surcharge the payment-service applies for
+ * credit/signed-x402 uploads (getWCForDataItem / getTxAttributesForDataItems);
+ * without it, the local-priced unsigned x402 path underpays that fee. Read live
+ * from the env so it stays a no-rebuild config knob (and is testable).
+ */
+export function perItemSurchargeUsdcAtomic(): number {
+  const usdPerItem = +(process.env.USD_PRICE_PER_DATA_ITEM || 0.00002);
+  if (!Number.isFinite(usdPerItem) || usdPerItem <= 0) {
+    return 0;
+  }
+  return Math.ceil(usdPerItem * 1e6);
+}
+
+/**
+ * Apply the x402 fee markup and minimum-price floor to an exact USDC amount,
+ * including the flat per-data-item surcharge.
+ *
+ * Single source of truth for the unsigned/raw x402 path: the price-quote route
+ * (x402RawDataPricing) and the actual upload charge (rawDataPost) BOTH call this,
+ * so the amount a client is quoted always matches what it is charged.
+ * - Surcharge: perItemSurchargeUsdcAtomic(), added to the base before the fee
+ *   (so the markup applies on top of it, matching the signed/credit path where
+ *   the x402 buffer multiplies byte-price + surcharge).
+ * - Fee: X402_FEE_PERCENT is primary; X402_PRICING_BUFFER_PERCENT is the
+ *   deprecated fallback (back-compat with existing deployments).
+ * - Floor: MINIMUM_USDC_PRICE (0.001 USDC).
+ *
+ * @param exactUsdcAmount exact USDC atomic units (no markup) from the oracle
+ * @returns final USDC atomic units (string) including surcharge + fee + floor
+ */
+export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
+  // Use || (not ??) so an empty-string env var (common with compose
+  // `${VAR:-}` passthrough) falls through instead of yielding NaN. "0" is a
+  // non-empty string so a 0% fee is still honored.
+  const x402FeePercent = parseInt(
+    process.env.X402_FEE_PERCENT ||
+      process.env.X402_PRICING_BUFFER_PERCENT ||
+      "15",
+    10
+  );
+  const baseWithSurcharge =
+    Number(exactUsdcAmount) + perItemSurchargeUsdcAtomic();
+  const withFee = Math.ceil(baseWithSurcharge * (1 + x402FeePercent / 100));
+  return Math.max(withFee, MINIMUM_USDC_PRICE).toString();
+}

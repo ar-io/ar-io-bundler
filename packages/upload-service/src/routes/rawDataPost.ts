@@ -41,36 +41,12 @@ import {
   validateRawData,
 } from "../utils/rawDataUtils";
 import { signReceipt } from "../utils/signReceipt";
-import { MINIMUM_USDC_PRICE } from "./x402Pricing";
+// Single source of truth for unsigned/raw x402 pricing (surcharge + fee + floor)
+// lives in utils/x402Pricing so the quote route and this charge path can't drift.
+import { applyX402FeeAndFloor } from "../utils/x402Pricing";
 
 const rawDataUploadsEnabled = process.env.RAW_DATA_UPLOADS_ENABLED === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
-
-/**
- * Apply the x402 fee markup and minimum-price floor to an exact USDC amount.
- *
- * IMPORTANT: This MUST stay identical to the quote route (x402Pricing.ts) so the
- * amount a client is quoted matches the amount actually charged on upload.
- * - Fee: X402_FEE_PERCENT is primary; X402_PRICING_BUFFER_PERCENT is the
- *   deprecated fallback (kept for back-compat with existing deployments).
- * - Floor: the shared MINIMUM_USDC_PRICE (0.001 USDC) the quote route enforces.
- *
- * @param exactUsdcAmount exact USDC atomic units (no markup) from the oracle
- * @returns final USDC atomic units (string) including fee + floor
- */
-export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
-  // Use || (not ??) so an empty-string env var (common with compose
-  // `${VAR:-}` passthrough) falls through instead of yielding NaN. "0" is a
-  // non-empty string so a 0% fee is still honored.
-  const x402FeePercent = parseInt(
-    process.env.X402_FEE_PERCENT ||
-      process.env.X402_PRICING_BUFFER_PERCENT ||
-      "15",
-    10
-  );
-  const withFee = Math.ceil(Number(exactUsdcAmount) * (1 + x402FeePercent / 100));
-  return Math.max(withFee, MINIMUM_USDC_PRICE).toString();
-}
 
 /**
  * Koa route handler wrapper for raw data uploads
