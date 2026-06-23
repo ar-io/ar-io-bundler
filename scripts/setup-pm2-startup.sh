@@ -41,8 +41,10 @@ fi
 
 echo "   Using PM2: $PM2_PATH"
 
-# Run PM2 startup as the actual user
-su - "$ACTUAL_USER" -c "$PM2_PATH startup systemd -u $ACTUAL_USER --hp $ACTUAL_HOME"
+# Install the systemd unit. This MUST run as root (the script already requires it):
+# running `pm2 startup` as the unprivileged user only PRINTS a sudo command and does
+# not write/enable the unit. The -u/--hp flags target the unit at the deploy user.
+"$PM2_PATH" startup systemd -u "$ACTUAL_USER" --hp "$ACTUAL_HOME"
 
 echo ""
 echo "✅ PM2 systemd service configured!"
