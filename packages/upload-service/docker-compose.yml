@@ -29,6 +29,10 @@ services:
       DATA_ITEM_BUCKET_REGION: ${DATA_ITEM_BUCKET_REGION:-us-east-1}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      # Trusted reverse-proxy hops for client-IP extraction (per-IP free-upload
+      # metering). Default 1 = one proxy in front. Set 0 if this container is hit
+      # directly (no trusted proxy) so X-Forwarded-For isn't trusted. See .env.sample.
+      TRUSTED_PROXY_COUNT: ${TRUSTED_PROXY_COUNT:-1}
     ports:
       - "${PORT:-3001}:${PORT:-3001}"
     volumes:
