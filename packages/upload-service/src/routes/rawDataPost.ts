@@ -236,7 +236,17 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     description: `Upload ${estimatedDataItemSize} bytes to Arweave via AR.IO Bundler`,
     mimeType: parsedRequest.contentType || "application/octet-stream",
     asset: networkConfig.usdcAddress,
-    payTo: paymentPayload.payload.authorization.to,
+    // SECURITY: bind the required recipient to the operator's configured address
+    // — NOT the attacker-controlled authorization.to. x402Service's recipient
+    // check compares authorization.to against requirements.payTo, so using
+    // authorization.to here would make it a client-controlled tautology (settle
+    // a self-transfer and still get a signed receipt). Resolution must match the
+    // 402 quote's payTo below and the boot-time validateX402Config().
+    payTo:
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "",
     maxTimeoutSeconds: 3600,
     extra: {
       name: "USD Coin",
@@ -602,7 +612,13 @@ async function send402PaymentRequired(
     resource: resourceUrl,
     description: `Upload ${estimatedDataItemSize} bytes to Arweave via AR.IO Bundler`,
     mimeType: mimeType || "application/octet-stream",
-    payTo: process.env.ETHEREUM_ADDRESS || process.env.BASE_ETH_ADDRESS || "",
+    // Must match the verification payTo above and boot-time validateX402Config()
+    // so a client that pays the advertised recipient verifies successfully.
+    payTo:
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "",
     maxTimeoutSeconds: 3600,
     asset: usdcAddress,
     extra: {

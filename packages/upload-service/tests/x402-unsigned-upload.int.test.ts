@@ -208,6 +208,58 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     expect(verifyStub.called).to.be.true;
   });
 
+  it("binds requirements.payTo to the operator address, NOT the attacker-controlled authorization.to (security regression)", async () => {
+    // Regression for the x402 recipient-binding vulnerability: the paid path
+    // must build verification/settlement requirements with payTo = the
+    // operator's configured address, never the client-supplied authorization.to.
+    // Otherwise x402Service's recipient check (authorization.to === payTo)
+    // becomes a client-controlled tautology and an attacker can settle a
+    // self-transfer yet still receive a signed receipt.
+    stub(arweaveGateway, "getWinstonPriceForByteCount").resolves(W("100000"));
+    stub(x402PricingOracle, "getUSDCForWinston").resolves("5000");
+
+    const attackerAddress = "0x" + "dead".repeat(10);
+    // Stop the flow right after requirements are built so we only assert payTo.
+    const verifyStub = stub(x402Service, "verifyPayment").resolves({
+      isValid: false,
+      invalidReason: "stopped after payTo assertion (expected in test)",
+    });
+
+    const body = Buffer.from("attacker attempts to redirect the payment");
+    const response = await axios.post(unsignedUrl, body, {
+      headers: {
+        "Content-Type": octetStreamContentType,
+        "Content-Length": body.length.toString(),
+        // authorization.to is fully attacker-controlled here.
+        "X-PAYMENT": buildPaymentHeader({ to: attackerAddress }),
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+
+    expect(response.status).to.equal(402);
+    expect(verifyStub.called).to.be.true;
+
+    // verifyPayment(paymentHeader, requirements) — assert the second arg's payTo.
+    // Mirror the route's recipient resolution (X402_PAYMENT_ADDRESS, then the
+    // legacy ETHEREUM_ADDRESS / BASE_ETH_ADDRESS fallbacks) so a fallback-only
+    // fixture still validates correctly.
+    const expectedPayTo =
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "";
+    expect(expectedPayTo, "operator payTo test fixture").to.not.equal("");
+    const requirements = verifyStub.firstCall.args[1] as { payTo: string };
+    expect(requirements.payTo.toLowerCase()).to.equal(
+      expectedPayTo.toLowerCase()
+    );
+    expect(requirements.payTo.toLowerCase()).to.not.equal(
+      attackerAddress.toLowerCase()
+    );
+  });
+
   it("returns 201 with a signed receipt and X-Payment-Response header on success", async () => {
     // Deterministic pricing/gateway so the test never touches a live gateway.
     stub(arweaveGateway, "getWinstonPriceForByteCount").resolves(W("100000"));

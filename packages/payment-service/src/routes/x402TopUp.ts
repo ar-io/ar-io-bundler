@@ -222,7 +222,12 @@ export async function x402TopUpRoute(ctx: KoaContext, next: Next) {
       description: `Top up storage credits for ${byteCount} bytes`,
       mimeType: "application/json",
       asset: networkConfig.usdcAddress,
-      payTo: authorization.to,
+      // SECURITY: bind the required recipient to the operator's configured
+      // address — NOT the attacker-controlled authorization.to. The recipient
+      // check in x402Service compares authorization.to against this value, so
+      // using authorization.to here would make it a client-controlled tautology
+      // (settle a self-transfer and still get credited).
+      payTo: x402PaymentAddress!,
       maxTimeoutSeconds: Math.floor(x402PaymentTimeoutMs / 1000),
       extra: {
         name: "USD Coin",
