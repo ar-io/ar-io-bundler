@@ -63,8 +63,15 @@ describe("X402Service ERC-1271 verification bounds (DoS hardening)", () => {
   });
 
   it("rejects an oversized signature WITHOUT any RPC call", async () => {
-    // 9000 bytes > MAX_ERC1271_SIGNATURE_BYTES (8192 default)
-    const oversized = "0x" + "ab".repeat(9000);
+    // Derive from the configured cap so the test holds under any env value.
+    const configuredMax = Number(
+      process.env.X402_MAX_ERC1271_SIGNATURE_BYTES ?? 8192
+    );
+    const maxSigBytes =
+      Number.isSafeInteger(configuredMax) && configuredMax > 0
+        ? configuredMax
+        : 8192;
+    const oversized = "0x" + "ab".repeat(maxSigBytes + 1);
     const getCode = stub().resolves("0x1234");
     const provider = { getCode } as unknown as ethers.JsonRpcProvider;
 

@@ -37,26 +37,71 @@ const ERC1271_ABI = [
 ];
 
 /**
+ * Parse a positive-integer env var, failing CLOSED on invalid input. These
+ * values are security limits; silently coercing a bad value to NaN (as `+x`
+ * would) could disable a bound at runtime (e.g. `length > NaN` is always false),
+ * so reject misconfiguration loudly at startup instead.
+ */
+function readPositiveIntegerEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return value;
+}
+
+function readPositiveBigIntEnv(name: string, defaultValue: bigint): bigint {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return BigInt(raw);
+}
+
+/**
  * SECURITY: bounds on the attacker-influenced ERC-1271 on-chain verification
  * path. A remote, unauthenticated client controls both authorization.from (the
  * contract address) and the signature bytes, and any local ECDSA failure falls
  * through to this on-chain path. Without bounds, a crafted payload could force
  * the service into oversized-calldata, expensive, or hanging eth_calls — a DoS
- * that also burns RPC quota. All limits are env-tunable.
+ * that also burns RPC quota. All limits are env-tunable (validated, fail-closed).
  */
-const MAX_ERC1271_SIGNATURE_BYTES = +(
-  process.env.X402_MAX_ERC1271_SIGNATURE_BYTES ?? 8192
+const MAX_ERC1271_SIGNATURE_BYTES = readPositiveIntegerEnv(
+  "X402_MAX_ERC1271_SIGNATURE_BYTES",
+  8192
 );
-const ERC1271_RPC_TIMEOUT_MS = +(
-  process.env.X402_ERC1271_RPC_TIMEOUT_MS ?? 3000
+const ERC1271_RPC_TIMEOUT_MS = readPositiveIntegerEnv(
+  "X402_ERC1271_RPC_TIMEOUT_MS",
+  3000
 );
-const ERC1271_CALL_GAS_LIMIT = BigInt(
-  process.env.X402_ERC1271_CALL_GAS_LIMIT ?? 1_000_000
+const ERC1271_CALL_GAS_LIMIT = readPositiveBigIntEnv(
+  "X402_ERC1271_CALL_GAS_LIMIT",
+  BigInt(1_000_000)
 );
 
 /**
- * Reject a promise if it does not settle within `ms`, so a slow or hanging
- * outbound RPC call can't tie up a request handler indefinitely.
+ * Build a JsonRpcProvider whose HTTP transport aborts after
+ * ERC1271_RPC_TIMEOUT_MS. This cancels the underlying request at the socket
+ * level (not just the awaiting promise), so a slow/hanging RPC endpoint can't
+ * leak background connections or burn quota under sustained traffic. These
+ * providers are used solely for ERC-1271 verification.
+ */
+function makeBoundedProvider(rpcUrl: string): ethers.JsonRpcProvider {
+  const fetchRequest = new ethers.FetchRequest(rpcUrl);
+  fetchRequest.timeout = ERC1271_RPC_TIMEOUT_MS;
+  return new ethers.JsonRpcProvider(fetchRequest);
+}
+
+/**
+ * Reject a promise if it does not settle within `ms`. A last-resort guard on top
+ * of the transport-level timeout above (e.g. covers a pre-fetch hang).
  */
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -191,7 +236,7 @@ export class X402Service {
       if (config.enabled) {
         this.providers.set(
           networkName,
-          new ethers.JsonRpcProvider(config.rpcUrl)
+          makeBoundedProvider(config.rpcUrl)
         );
       }
     }
@@ -617,7 +662,7 @@ export class X402Service {
           network: networkName,
           rpcUrl: networkConfig.rpcUrl,
         });
-        provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
+        provider = makeBoundedProvider(networkConfig.rpcUrl);
       }
 
       return await this.callERC1271IsValidSignature(
