@@ -60,7 +60,7 @@ const rateLimitTtlSeconds = +(process.env.FREE_BYTES_PER_IP_TTL_SECS ?? 86_400);
 // In-memory cache for fallback scenarios
 const backupCache = EphemeralCache<string, IpUsageData>(
   10000, // Store up to 10k IPs in memory
-  rateLimitTtlSeconds * 1_000
+  rateLimitTtlSeconds * 1_000,
 );
 
 const ipUsageCache = new ReadThroughPromiseCache<
@@ -89,7 +89,7 @@ const ipUsageCache = new ReadThroughPromiseCache<
       .fire(async () => {
         logger.debug(`REMOTE: Getting rate limit data for IP ${ipAddress}...`);
         const val = await cacheService.get(
-          getElasticacheRateLimitKey(ipAddress)
+          getElasticacheRateLimitKey(ipAddress),
         );
 
         if (val === null) {
@@ -118,14 +118,14 @@ const ipUsageCache = new ReadThroughPromiseCache<
       .catch((error) => {
         logger.error(
           `Falling back to in-memory cache for rate limit check of IP ${ipAddress}...`,
-          { error: normalizeCacheError(error) }
+          { error: normalizeCacheError(error) },
         );
         return backupCache.read(ipAddress) ?? null;
       });
 
     logger.debug(
       `READ THROUGH: Rate limit data for IP ${ipAddress}:`,
-      fireResult
+      fireResult,
     );
     return fireResult;
   },
@@ -175,51 +175,93 @@ export async function updateIpUsage({
         await breakerForCache(cacheService).fire(() => {
           logger.debug(
             `REMOTE: Updating rate limit data for IP ${ipAddress}...`,
-            newUsageData
+            newUsageData,
           );
           return cacheService.set(
             getElasticacheRateLimitKey(ipAddress),
             JSON.stringify(newUsageData),
             "EX",
-            rateLimitTtlSeconds
+            rateLimitTtlSeconds,
           );
         });
       } catch (error) {
         logger.error(
           `Error while updating rate limit data for IP ${ipAddress}!`,
-          { error: normalizeCacheError(error) }
+          { error: normalizeCacheError(error) },
         );
         // Don't throw - we have local cache as backup
       }
 
       return newUsageData;
-    })()
+    })(),
   );
 
   return newUsageData;
 }
 
 /**
- * Extract the client IP from an incoming request, honoring the
- * X-Forwarded-For proxy header (first hop) when present and falling back to
- * the socket's remote address. IPv4-mapped IPv6 addresses are normalized.
+ * Number of trusted reverse-proxy hops in front of this service.
+ *
+ * `X-Forwarded-For` grows left-to-right: each proxy APPENDS the address of the
+ * peer that connected to it. A remote client can pre-populate the header with
+ * arbitrary values, but it can only ever control entries to the LEFT of what the
+ * outermost trusted proxy appends — so the real client IP is the Nth value
+ * counting from the RIGHT, where N is the number of trusted hops.
+ *
+ * Default 1 matches the standard production topology: a single co-located nginx
+ * that sets `X-Forwarded-For $proxy_add_x_forwarded_for`, appending the client's
+ * socket address. Set `TRUSTED_PROXY_COUNT=0` for a directly-exposed deployment
+ * (no trusted proxy): `X-Forwarded-For` is then fully untrusted and only the
+ * socket peer address is used. Set it to 2+ when additional trusted proxies
+ * (e.g. a cloud load balancer in front of nginx) each append a hop.
+ *
+ * Taking the trusted-appended entry — rather than the leftmost, client-supplied
+ * value — is what makes the per-IP free-upload metering identity non-spoofable:
+ * a caller cannot rotate identities to dodge their quota, nor forge a victim IP
+ * to exhaust someone else's allowance.
+ */
+const trustedProxyCount = Math.max(
+  0,
+  Math.trunc(+(process.env.TRUSTED_PROXY_COUNT ?? 1)),
+);
+
+// Normalize IPv4-mapped IPv6 addresses like ::ffff:208.123.24.44.
+function normalizeIp(ip: string | undefined): string {
+  if (!ip) {
+    return "unknown";
+  }
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+/**
+ * Extract the client IP from an incoming request. When `TRUSTED_PROXY_COUNT` > 0
+ * the IP appended by the outermost trusted proxy is taken from `X-Forwarded-For`
+ * (the Nth entry from the right, ignoring any values a client prepended);
+ * otherwise — and whenever the header is absent — the socket's remote address is
+ * used. Falls back to `"unknown"` when no address is available.
  */
 export function extractClientIp(request: IncomingMessage): string {
-  const forwardedFor = request.headers["x-forwarded-for"];
+  const socketIp = normalizeIp(request.socket?.remoteAddress);
 
-  const raw =
-    typeof forwardedFor === "string"
-      ? forwardedFor
-      : Array.isArray(forwardedFor)
-      ? forwardedFor[0]
-      : undefined;
-
-  if (raw) {
-    return raw.split(",")[0].trim();
+  if (trustedProxyCount <= 0) {
+    // No trusted proxy: X-Forwarded-For is attacker-controlled, so never trust it.
+    return socketIp;
   }
 
-  const remote = request.socket?.remoteAddress || "unknown";
+  const forwardedFor = request.headers["x-forwarded-for"];
+  const parts = (
+    Array.isArray(forwardedFor) ? forwardedFor.join(",") : (forwardedFor ?? "")
+  )
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 
-  // Optional: normalize IPv4-mapped IPv6 addresses like ::ffff:208.123.24.44
-  return remote.startsWith("::ffff:") ? remote.slice(7) : remote;
+  if (parts.length === 0) {
+    return socketIp;
+  }
+
+  // Count from the right: the outermost trusted proxy's appended entry. Clamp to
+  // the leftmost when the chain is shorter than the configured hop count.
+  const index = Math.max(0, parts.length - trustedProxyCount);
+  return normalizeIp(parts[index]);
 }

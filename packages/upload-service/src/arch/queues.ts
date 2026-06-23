@@ -30,6 +30,10 @@ export type EnqueueFinalizeUpload = {
   uploadId: UploadId;
   token: string;
   paidBy?: string[];
+  // Client IP captured at the HTTP finalize request, carried through to the
+  // worker so per-IP free-upload metering (PE-9011) is enforced on the async
+  // validation path too — not skipped because the queued message lost the IP.
+  ipAddress?: string;
 };
 export type EnqueuedOffsetsBatch = {
   offsets: DataItemOffsetsInfo[];
@@ -64,7 +68,7 @@ export type QueueType = keyof QueueTypeToMessageType;
 export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T],
-  options?: { delay?: number; timeout?: number }
+  options?: { delay?: number; timeout?: number },
 ) => {
   const queue = getQueue(queueType);
 
@@ -93,7 +97,7 @@ export const enqueue = async <T extends QueueType>(
 
 export const enqueueBatch = async <T extends QueueType>(
   queueType: T,
-  messages: QueueTypeToMessageType[T][]
+  messages: QueueTypeToMessageType[T][],
 ) => {
   if (messages.length === 0) return;
 
@@ -102,7 +106,7 @@ export const enqueueBatch = async <T extends QueueType>(
     messages.map((message) => ({
       name: queueType,
       data: message,
-    }))
+    })),
   );
 };
 
@@ -131,7 +135,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   queueType: T,
   schedulerId: string,
   pattern: string,
-  data: QueueTypeToMessageType[T]
+  data: QueueTypeToMessageType[T],
 ): Promise<void> => {
   const queue = getQueue(queueType);
   const trimmed = pattern.trim();
@@ -145,7 +149,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   await queue.upsertJobScheduler(
     schedulerId,
     { pattern: trimmed },
-    { name: queueType, data }
+    { name: queueType, data },
   );
 };
 
