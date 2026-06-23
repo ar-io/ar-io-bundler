@@ -70,4 +70,9 @@ describe("payment resolveServerTimeouts", () => {
     process.env.PAYMENT_HEADERS_TIMEOUT_MS = "30000";
     expect(resolveServerTimeouts().headersTimeout).to.equal(30000);
   });
+
+  it("CLAMPS an oversized headersTimeout to the short ceiling (fail-closed)", () => {
+    process.env.PAYMENT_HEADERS_TIMEOUT_MS = "630000";
+    expect(resolveServerTimeouts().headersTimeout).to.equal(60000);
+  });
 });

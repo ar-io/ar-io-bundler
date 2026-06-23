@@ -67,4 +67,10 @@ describe("upload resolveServerTimeouts", () => {
     process.env.HEADERS_TIMEOUT_MS = "abc";
     expect(resolveServerTimeouts().headersTimeout).to.equal(60000);
   });
+
+  it("CLAMPS an oversized headersTimeout to the short ceiling (fail-closed)", () => {
+    // A stale .env left over from before the slowloris fix must not reopen it.
+    process.env.HEADERS_TIMEOUT_MS = "630000";
+    expect(resolveServerTimeouts().headersTimeout).to.equal(60000);
+  });
 });

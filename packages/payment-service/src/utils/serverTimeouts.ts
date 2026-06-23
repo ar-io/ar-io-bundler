@@ -37,6 +37,13 @@ function parsePositiveInt(
 }
 
 /**
+ * Hard ceiling on headersTimeout. Header parsing never legitimately needs more
+ * than this; enforcing it keeps the slowloris guard FAIL-CLOSED even if a stale
+ * or misconfigured env tries to set a long value.
+ */
+const MAX_HEADERS_TIMEOUT_MS = 60000;
+
+/**
  * Resolve HTTP server timeouts for the payment service.
  *
  * SECURITY: payment operations are fast, so all three timeouts stay short — a
@@ -55,9 +62,13 @@ export function resolveServerTimeouts(): ServerTimeouts {
       process.env.PAYMENT_KEEPALIVE_TIMEOUT_MS,
       65000
     ),
-    headersTimeout: parsePositiveInt(
-      process.env.PAYMENT_HEADERS_TIMEOUT_MS,
-      60000
+    // Clamped to MAX_HEADERS_TIMEOUT_MS so an override can only make it shorter.
+    headersTimeout: Math.min(
+      parsePositiveInt(
+        process.env.PAYMENT_HEADERS_TIMEOUT_MS,
+        MAX_HEADERS_TIMEOUT_MS
+      ),
+      MAX_HEADERS_TIMEOUT_MS
     ),
   };
 }

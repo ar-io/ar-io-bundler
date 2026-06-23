@@ -37,6 +37,14 @@ function parsePositiveInt(
 }
 
 /**
+ * Hard ceiling on headersTimeout. Header parsing never legitimately needs more
+ * than this; enforcing it keeps the slowloris guard FAIL-CLOSED even if a stale
+ * or misconfigured env (e.g. a pre-existing HEADERS_TIMEOUT_MS=630000 left over
+ * from before this fix) tries to set a long value.
+ */
+const MAX_HEADERS_TIMEOUT_MS = 60000;
+
+/**
  * Resolve HTTP server timeouts for the upload service.
  *
  * SECURITY: headersTimeout must stay SHORT regardless of body size. Headers are
@@ -57,6 +65,10 @@ export function resolveServerTimeouts(): ServerTimeouts {
       process.env.KEEPALIVE_TIMEOUT_MS,
       620000
     ),
-    headersTimeout: parsePositiveInt(process.env.HEADERS_TIMEOUT_MS, 60000),
+    // Clamped to MAX_HEADERS_TIMEOUT_MS so an override can only make it shorter.
+    headersTimeout: Math.min(
+      parsePositiveInt(process.env.HEADERS_TIMEOUT_MS, MAX_HEADERS_TIMEOUT_MS),
+      MAX_HEADERS_TIMEOUT_MS
+    ),
   };
 }
