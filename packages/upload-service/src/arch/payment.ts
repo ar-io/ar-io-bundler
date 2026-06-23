@@ -877,6 +877,10 @@ export class TurboPaymentService implements PaymentService {
     logger.debug("Finalizing x402 payment...");
 
     try {
+      // x402 finalize is a protected inter-service route on the payment service;
+      // authenticate with the shared PRIVATE_ROUTE_SECRET JWT like the other
+      // payment-service calls (check/reserve/refund-balance).
+      const token = sign({}, secret, { expiresIn: "1h" });
       const { status, statusText, data } = await this.axios.post<
         X402FinalizeResult | string
       >(
@@ -886,6 +890,9 @@ export class TurboPaymentService implements PaymentService {
           actualByteCount,
         },
         {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
           validateStatus: () => true, // Accept all status codes, handle errors after
         }
       );

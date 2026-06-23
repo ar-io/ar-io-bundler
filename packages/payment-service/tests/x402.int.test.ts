@@ -18,6 +18,7 @@ import { expect } from "chai";
 import { Server } from "http";
 import { stub, restore } from "sinon";
 import { ethers } from "ethers";
+import { sign } from "jsonwebtoken";
 
 import { createServer } from "../src/server";
 import { x402PricingOracle } from "../src/pricing/x402PricingOracle";
@@ -277,42 +278,73 @@ describe("x402 Integration Tests", function () {
   });
 
   describe("POST /v1/x402/finalize", () => {
+    // finalize is a protected inter-service route (validateAuthorizedRoute) — it
+    // requires the shared PRIVATE_ROUTE_SECRET JWT that testSetup.ts configures.
+    const authHeaders = () => ({
+      Authorization: `Bearer ${sign(
+        {},
+        process.env.PRIVATE_ROUTE_SECRET as string
+      )}`,
+    });
+
+    it("rejects finalization without authorization (401)", async () => {
+      // SECURITY regression: no Authorization header -> validateAuthorizedRoute
+      // returns 401 before any finalization (src/routes/x402Finalize.ts).
+      const { status } = await axios.post(`/v1/x402/finalize`, {
+        dataItemId: "test-data-item-id",
+        actualByteCount: 1048576,
+      });
+      expect(status).to.equal(401);
+    });
+
     // validateStatus: () => true -> assert on the resolved status. The finalize
     // route throws X402PaymentError (a BadRequest -> 400 via the global handler)
     // for missing required params and for a non-positive byteCount; a not-found
     // data item returns an explicit 404. Each test cites the source.
     it("rejects finalization without dataItemId", async () => {
       // Missing dataItemId: throws X402PaymentError (src/routes/x402Finalize.ts:43-46).
-      const { status } = await axios.post(`/v1/x402/finalize`, {
-        actualByteCount: 1048576,
-      });
+      const { status } = await axios.post(
+        `/v1/x402/finalize`,
+        { actualByteCount: 1048576 },
+        { headers: authHeaders() }
+      );
       expect(status).to.equal(400);
     });
 
     it("rejects finalization without actualByteCount", async () => {
       // Missing actualByteCount: throws X402PaymentError (x402Finalize.ts:43-46).
-      const { status } = await axios.post(`/v1/x402/finalize`, {
-        dataItemId: "test-data-item-id",
-      });
+      const { status } = await axios.post(
+        `/v1/x402/finalize`,
+        { dataItemId: "test-data-item-id" },
+        { headers: authHeaders() }
+      );
       expect(status).to.equal(400);
     });
 
     it("returns error for non-existent data item", async () => {
       // No payment row for the data item -> 404 (x402Finalize.ts:62-66).
-      const { status } = await axios.post(`/v1/x402/finalize`, {
-        dataItemId: "non-existent-data-item-id",
-        actualByteCount: 1048576,
-      });
+      const { status } = await axios.post(
+        `/v1/x402/finalize`,
+        {
+          dataItemId: "non-existent-data-item-id",
+          actualByteCount: 1048576,
+        },
+        { headers: authHeaders() }
+      );
       expect(status).to.equal(404);
     });
 
     it("validates actualByteCount is positive integer", async () => {
       // A non-positive actualByteCount throws X402PaymentError (BadRequest)
       // before ByteCount(); the global error handler maps it to 400.
-      const { status } = await axios.post(`/v1/x402/finalize`, {
-        dataItemId: "test-data-item-id",
-        actualByteCount: -1,
-      });
+      const { status } = await axios.post(
+        `/v1/x402/finalize`,
+        {
+          dataItemId: "test-data-item-id",
+          actualByteCount: -1,
+        },
+        { headers: authHeaders() }
+      );
       expect(status).to.equal(400);
     });
   });
