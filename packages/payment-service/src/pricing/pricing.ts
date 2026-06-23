@@ -1049,14 +1049,29 @@ export class TurboPricingService implements PricingService {
 
     const { finalPrice } = await this.getWCForBytes(ByteCount(totalBytes));
 
+    // Apply the flat per-data-item surcharge (USD_PRICE_PER_DATA_ITEM), once per
+    // item. The traditional price/reserve/check paths add this via
+    // getWCForDataItem; the x402 quote (x402Price) and verify/settle (x402Payment)
+    // paths both price through here, so x402 uploads would otherwise underpay the
+    // surcharge that signed/credit uploads are charged. Mirror getWCForDataItem's
+    // AR/USD conversion so the per-item amount matches exactly.
+    const wincPerUsd =
+      oneARInWinston /
+      (await this.tokenToFiatOracle.getUsdPriceForOneToken("arweave"));
+    const surcharge =
+      Math.ceil(usdPricePerDataItem * wincPerUsd) * dataItems.length;
+    const reward = +finalPrice.winc + surcharge;
+
     this.logger.debug("Calculated tx attributes for data items", {
       dataItems,
       totalBytes,
-      reward: +finalPrice.winc,
+      itemCount: dataItems.length,
+      surcharge,
+      reward,
     });
 
     return {
-      reward: +finalPrice.winc,
+      reward,
     };
   }
 }
