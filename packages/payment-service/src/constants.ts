@@ -496,3 +496,19 @@ export const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET;
 // Used to enable Coinbase Onramp widget in browser paywall
 // Leave empty to disable Onramp (payment still works without it)
 export const cdpClientKey = process.env.X_402_CDP_CLIENT_KEY;
+
+/**
+ * Trusted parent (opener) origins the browser x402 paywall is allowed to send a
+ * signed payment authorization to via postMessage. SECURITY: the paywall must
+ * NEVER postMessage the signed authorization with targetOrigin '*' — that leaks
+ * the victim's bearer-style payment capability to any opener. When this list is
+ * empty (default), the paywall does not post to the opener at all and instead
+ * shows the X-PAYMENT header for the user to copy. Comma-separated, e.g.
+ * "https://app.ar.io,https://turbo.ardrive.io".
+ */
+export const paywallAllowedOrigins = (
+  process.env.X402_PAYWALL_ALLOWED_ORIGINS ?? ""
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
