@@ -491,7 +491,7 @@ When the AR.IO Gateway runs on a different server but same local network, use LA
 ```bash
 # On bundler server
 hostname -I | awk '{print $1}'
-# Example output: 192.168.2.253
+# Example output: <BUNDLER_PRIVATE_IP>
 ```
 
 **2. Configure DNS on Gateway Server**:
@@ -500,9 +500,9 @@ Add these entries to `/etc/hosts` on the **gateway server**:
 
 ```bash
 # MinIO on bundler server (replace with your actual IP)
-192.168.2.253 ar-io-bundler-minio
-192.168.2.253 raw-data-items.ar-io-bundler-minio
-192.168.2.253 backup-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> raw-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> backup-data-items.ar-io-bundler-minio
 ```
 
 **3. Gateway Configuration** (on gateway server `.env`):
@@ -511,7 +511,7 @@ Add these entries to `/etc/hosts` on the **gateway server**:
 # S3/MinIO Configuration (use LAN IP)
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
-AWS_ENDPOINT=http://192.168.2.253:9000  # Use your bundler server LAN IP
+AWS_ENDPOINT=http://<BUNDLER_PRIVATE_IP>:9000  # Use your bundler server LAN IP
 # Dedicated READ-ONLY MinIO user (NOT root). See the same-server note above.
 AWS_ACCESS_KEY_ID=gateway-readonly
 AWS_SECRET_ACCESS_KEY=readonly-change-me   # CHANGE THIS; must equal the bundler's GATEWAY_S3_SECRET_ACCESS_KEY
@@ -533,7 +533,7 @@ docker compose restart core
 ```bash
 # On gateway server, verify DNS resolves
 ping -c 1 raw-data-items.ar-io-bundler-minio
-# Should resolve to bundler server IP (e.g., 192.168.2.253)
+# Should resolve to bundler server IP (e.g., <BUNDLER_PRIVATE_IP>)
 ```
 
 #### Technical Details

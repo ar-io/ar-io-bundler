@@ -1294,14 +1294,14 @@ docker network connect ar-io-bundler_default <gateway-core-container>
 If on different servers (same LAN):
 ```bash
 # On gateway server, add to /etc/hosts:
-192.168.2.253 ar-io-bundler-minio
-192.168.2.253 raw-data-items.ar-io-bundler-minio
-192.168.2.253 backup-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> raw-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> backup-data-items.ar-io-bundler-minio
 
 # Configure gateway .env
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
-AWS_ENDPOINT=http://192.168.2.253:9000  # Bundler server IP
+AWS_ENDPOINT=http://<BUNDLER_PRIVATE_IP>:9000  # Bundler server IP
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin123
 AWS_REGION=us-east-1

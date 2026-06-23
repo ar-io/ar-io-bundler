@@ -17,7 +17,7 @@
 - **Hostnames** for the three roles (e.g. for perma.online: `turbo.services.perma.online`,
   `upload.services.perma.online`, `payment.services.perma.online`). Confirm exact names with the operator.
 - **Bundler backend address.** This router is a **separate box**, so the upstreams point at the bundler's
-  **private IP**, not localhost — e.g. `192.168.2.253:3001` (upload) and `:4001` (payment). Confirm the IP.
+  **private IP**, not localhost — e.g. `<BUNDLER_PRIVATE_IP>:3001` (upload) and `:4001` (payment). Confirm the IP.
 - **TLS cert** that covers all three names. The router already manages Let's Encrypt certs (e.g.
   `perma.online-0001`). Confirm whether the existing cert's SAN list includes the three names; if not,
   expand it (see §4).
@@ -34,8 +34,8 @@ Copy the five files from `infrastructure/nginx/snippets/` to `/etc/nginx/snippet
 Start from `infrastructure/nginx/ar-io-bundler.conf` and change exactly three things:
 1. **`upstream` targets** → the bundler private IP (separate-router):
    ```nginx
-   upstream bundler_upload  { server 192.168.2.253:3001; keepalive 32; }
-   upstream bundler_payment { server 192.168.2.253:4001; keepalive 32; }
+   upstream bundler_upload  { server <BUNDLER_PRIVATE_IP>:3001; keepalive 32; }
+   upstream bundler_payment { server <BUNDLER_PRIVATE_IP>:4001; keepalive 32; }
    ```
 2. **`server_name`** in each of the three `:443` blocks (and the `:80` redirect block) → the confirmed
    hostnames for this domain.
