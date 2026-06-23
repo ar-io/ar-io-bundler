@@ -34,7 +34,12 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
-import { parseRawDataRequest, validateRawData } from "../utils/rawDataUtils";
+import {
+  RawBodyTooLargeError,
+  bufferRequestBodyWithLimit,
+  parseRawDataRequest,
+  validateRawData,
+} from "../utils/rawDataUtils";
 import { signReceipt } from "../utils/signReceipt";
 import { MINIMUM_USDC_PRICE } from "./x402Pricing";
 
@@ -74,32 +79,26 @@ export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
  * Used by: POST /x402/upload/unsigned
  */
 export async function rawDataUploadRoute(ctx: KoaContext): Promise<void> {
-  // Enforce the byte ceiling from the declared Content-Length BEFORE buffering
-  // the body. Otherwise a request that declares a huge size must be fully read
-  // into memory before being rejected (a memory-amplification vector), and a
-  // request that lies (declares 4 GiB but sends a few bytes) makes this loop
-  // wait for a body that never arrives — the request hangs until a timeout
-  // instead of failing fast. handleRawDataUpload still re-checks post-buffer.
-  const contentLengthHeader = ctx.headers["content-length"];
-  if (contentLengthHeader !== undefined) {
-    const declaredByteCount = +contentLengthHeader;
-    if (
-      !isNaN(declaredByteCount) &&
-      declaredByteCount > maxSingleDataItemByteCount
-    ) {
+  // Buffer the body bounded by the max data-item size. This rejects oversized
+  // requests by declared Content-Length BEFORE reading, AND tracks the running
+  // size while reading (covering chunked / Content-Length-lying requests) — so
+  // an unauthenticated client can't force unbounded memory allocation before the
+  // size/payment checks in handleRawDataUpload.
+  let rawBody: Buffer;
+  try {
+    rawBody = await bufferRequestBodyWithLimit(
+      ctx.req,
+      maxSingleDataItemByteCount
+    );
+  } catch (error) {
+    if (error instanceof RawBodyTooLargeError) {
       return errorResponse(ctx, {
-        errorMessage: `Data is too large (${declaredByteCount} bytes). Maximum allowed is ${maxSingleDataItemByteCount} bytes.`,
+        errorMessage: `Data is too large. Maximum allowed is ${maxSingleDataItemByteCount} bytes.`,
         status: 413,
       });
     }
+    throw error;
   }
-
-  // Buffer the entire request body
-  const chunks: Buffer[] = [];
-  for await (const chunk of ctx.req) {
-    chunks.push(chunk);
-  }
-  const rawBody = Buffer.concat(chunks);
 
   return handleRawDataUpload(ctx, rawBody);
 }
@@ -127,9 +126,13 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   const contentType = ctx.req.headers?.["content-type"];
   const parsedRequest = parseRawDataRequest(rawBody, contentType, ctx.req.headers);
 
-  // Validate raw data
-  const maxSize = 10 * 1024 * 1024 * 1024; // 10 GB
-  const validation = validateRawData(parsedRequest.data, maxSize);
+  // Validate raw data against the configured single-item ceiling (defense in
+  // depth; the body is already bounded to this size before buffering). Was a
+  // hardcoded 10 GB, larger than the actual accepted item size.
+  const validation = validateRawData(
+    parsedRequest.data,
+    maxSingleDataItemByteCount
+  );
   if (!validation.valid) {
     return errorResponse(ctx, {
       errorMessage: validation.error || "Invalid data",
