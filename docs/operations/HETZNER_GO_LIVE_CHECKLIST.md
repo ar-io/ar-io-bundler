@@ -140,7 +140,9 @@
       creds, and prioritize `s3` in `ON_DEMAND_RETRIEVAL_ORDER`. Different-host gateways: route the MinIO aliases to
       this box's private IP.
 - [ ] **Gateway-side chunk-ingest cache** (set in each *gateway's* `.env`, startup-read): `CHUNK_INGEST_CACHE_ENABLED=true`,
-      `CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200`, allowlist TODO — confirm the bundler's apparent source IP as core sees it.
+      `CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200`. **Set `CHUNK_INGEST_CACHE_ALLOWLIST` to the bundler's source IP as core sees it
+      before going live** — an empty allowlist on a public gateway is unauthenticated open chunk ingest (fillable to the 25 GiB cap;
+      see §13). If the IP can't be confirmed yet, keep the cache disabled rather than running open ingest publicly.
 
 ## Phase 11 — TLS / reverse proxy (nginx co-located on the bundler box) (→ §14)
 

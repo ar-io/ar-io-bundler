@@ -394,18 +394,44 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
 
 Optimistic chunk cache holds posted chunk bytes until their `data_root` confirms on-chain, then GC reclaims junk. Tuned 2026-06-20 from observed confirm latency (p50 ~7.5m / p90 ~51m / p99 ~59m over an 8h window):
 
+> ⚠️ **SECURITY — populate `CHUNK_INGEST_CACHE_ALLOWLIST` before enabling this on a publicly-reachable gateway.**
+> An **empty** allowlist means **open ingest**: gateway core caches *any* well-formed chunk POSTed to it
+> (`ingestCacheOrigin()` returns the OPEN origin when the allowlist is empty). `POST /chunk` is reachable over
+> the public envoy path (`:3000`) regardless of whether core `:4000` is firewalled, and well-formed chunks
+> **cost no AR**, so on a public gateway an unauthenticated remote caller can cheaply fill the pending cache
+> to its 25 GiB backstop — triggering `disk_pressure` eviction of the legitimate bundler's *unconfirmed*
+> chunks (degrading optimistic availability). Bounded but remotely triggerable. Seeding to Arweave is
+> unaffected (it posts direct to core and never depends on this cache), and content integrity is never at
+> risk (`validateChunk` proves bytes hash into `data_root`).
+>
+> **Production posture: set the allowlist to the bundler's source IP** so non-allowlisted posters are
+> *relay-only, not cached* (`ingestCacheOrigin()` returns `null` for a populated-but-unmatched poster). Leave
+> it empty **only** during a controlled soak on a gateway whose `/chunk` is not publicly reachable. Two
+> caveats on what the allowlist does and does not buy you:
+> - **It is not a hard DoS boundary.** The match is IP-based via `X-Forwarded-For`/`X-Real-IP`, which core
+>   currently trusts without trusted-proxy hop parsing — a caller can forge an allowlisted source IP. The
+>   real, non-spoofable backstop is the synchronous `CHUNK_INGEST_MAX_PENDING_BYTES` (25 GiB) disk cap; the
+>   durable network control is not exposing `POST /chunk` to untrusted callers (firewall core `:4000` to
+>   localhost/private; rate-limit/restrict `/chunk` at the public edge if feasible).
+> - **A wrong allowlist value fails safe, not open** — the bundler's chunks simply aren't cached (lost
+>   optimization, no security exposure), so prefer a populated best-guess to an empty allowlist.
+
 ```
 CHUNK_INGEST_CACHE_ENABLED=true
-CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200    # 2h leash, open ingest (~2x p99). Default is 6h.
+CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200    # 2h leash, open-ingest tier (~2x p99). Default is 6h.
 CHUNK_INGEST_ALLOWLIST_CONFIRMATION_TIMEOUT_SECONDS=14400  # 4h leash, allowlisted posters. Default is 24h.
-# CHUNK_INGEST_MAX_PENDING_BYTES   unset -> 25 GiB disk backstop (keep default)
+# CHUNK_INGEST_MAX_PENDING_BYTES   unset -> 25 GiB disk backstop (keep default; this is the hard, non-spoofable cap)
 # CHUNK_INGEST_GC_INTERVAL_MS      unset -> 5 min sweep (keep default)
-CHUNK_INGEST_CACHE_ALLOWLIST=     # see TODO below
+# Restrict caching to the bundler — set to its source IP AS CORE SEES IT (do NOT leave empty on a
+# public gateway; empty = open ingest, see the warning above). Same-host docker bridge: ~172.18.0.1.
+# Hetzner multi-box (bundler on its own box, vSwitch to the gateway): the bundler's private vSwitch
+# address. Confirm empirically against live bundler traffic, then force-recreate core.
+CHUNK_INGEST_CACHE_ALLOWLIST=<bundler-source-ip-as-core-sees-it>
 ```
 
 - **Verified working** (disk_pressure + ttl eviction both fire; only *unconfirmed* chunks evicted) via synthetic well-formed chunks — costs no AR (only TXs cost AR; the ~0.0025 AR/$0.005 per-tx floor makes an unbundled tiny-tx loop ~$400+/day, so bundle).
 - **Caveat:** `CHUNK_INGEST_*` are **startup-read** — changing any of them needs `docker compose up -d --force-recreate core`. The `chunk_ingest_pending_bytes` metric is GC-lagged (refreshes only on sweep); use `chunk_ingest_cache_total` for live confirmation.
-- **TODO (allowlist, do at cutover):** `CHUNK_INGEST_CACHE_ALLOWLIST` is empty = open ingest (any valid chunk cached at the 2h tier; the 4h tier only activates once populated). To restrict caching to the local bundler and enable the 4h tier, set it to the bundler's apparent source IP **as core sees it** — confirm empirically against live bundler traffic (expected ~`172.18.0.1`, the docker bridge gateway). Re-verify after the Hetzner cutover in case the bridge IP or bundler deployment model changes.
+- **Determining the allowlist IP (do this when enabling the cache, not after):** the value is the bundler's apparent source IP **as core sees it**, which depends on topology — `~172.18.0.1` (docker bridge) for a same-host bundler, or the bundler's private vSwitch address for the Hetzner multi-box layout. Confirm empirically against live bundler traffic and re-verify after the cutover if the deployment model changes. Until you can confirm it, keep `CHUNK_INGEST_CACHE_ENABLED=false` (or the gateway's `/chunk` off the public path) rather than running open ingest on a public gateway.
 
 ---
 
