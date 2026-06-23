@@ -109,11 +109,16 @@
 - [ ] **Gateway-side chunk-ingest cache** (set in each *gateway's* `.env`, startup-read): `CHUNK_INGEST_CACHE_ENABLED=true`,
       `CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200`, allowlist TODO — confirm the bundler's apparent source IP as core sees it.
 
-## Phase 11 — TLS / reverse proxy (→ §14)
+## Phase 11 — TLS / reverse proxy (nginx co-located on the bundler box) (→ §14)
 
-- [ ] HTTPS at nginx/Caddy → `127.0.0.1:3001` (upload), `127.0.0.1:4001` (payment).
-- [ ] Large bodies + long timeouts (`client_max_body_size` for 10 GiB, `proxy_read_timeout 600s`).
-- [ ] Bull Board `:3002` stays **off** the public proxy (admin/VPN only).
+- [ ] DNS: `turbo.ardrive.io` + `upload.ardrive.io` + `payment.ardrive.io` → this box's public IP. (Bundler `:3001`/`:4001` stay **localhost-only** per §2 — nginx proxies from `127.0.0.1`.)
+- [ ] Install `infrastructure/nginx/ar-io-bundler.conf` (sites-available → sites-enabled); `nginx -t` → reload. (`turbo.*` = unified path-mux; `upload.*`/`payment.*` = dedicated.)
+- [ ] **Certs (Let's Encrypt, single SAN cert for all 3):** `certbot certonly --webroot -w /var/www/certbot -d turbo.ardrive.io -d upload.ardrive.io -d payment.ardrive.io --deploy-hook "systemctl reload nginx"`; then `certbot renew --dry-run`.
+- [ ] Smoke-test the unified mux: `curl https://turbo.ardrive.io/v1/price/bytes/1000000` (→ payment), `curl https://turbo.ardrive.io/info` (→ upload), a `/v1/tx` upload (→ upload).
+- [ ] 🔴 If on Cloudflare: keep `upload.<domain>` **DNS-only (grey cloud)** — CF's 100 MB body cap.
+- [ ] Confirm `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (bundler trusts `X-Forwarded-Proto`).
+- [ ] Verify the config encodes: **CORS + OPTIONS preflight**, upload `client_max_body_size 100M` + `proxy_request_buffering off`, payment `10M` + `proxy_request_buffering on` (and payment does **not** override `Content-Type`). Bull Board `:3002` / MinIO console / metrics get **no** public server block.
+- [ ] *(Dev/test only)* if using a separate nginx router, point `proxy_pass` at the bundler's private IP and open `:3001`/`:4001` from the router IP only.
 
 ## Phase 12 — Smoke tests (→ §15)
 

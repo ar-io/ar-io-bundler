@@ -411,12 +411,68 @@ CHUNK_INGEST_CACHE_ALLOWLIST=     # see TODO below
 
 ## 14. TLS / reverse proxy
 
-Terminate HTTPS at nginx/Caddy/Traefik and upstream to the localhost API ports:
-- `https://upload.<domain>` → `127.0.0.1:3001`
-- `https://payment.<domain>` → `127.0.0.1:4001`
-- Set `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (x402 depends on the real public URL).
-- Keep Bull Board (`:3002`) off the public proxy — admin/VPN only.
-- Allow large bodies + long timeouts (10 GiB uploads, `client_max_body_size`, `proxy_read_timeout 600s`).
+**Topology:** in **prod/Hetzner, nginx runs ON THE BUNDLER BOX** (co-located) and proxies to localhost —
+so the bundler's `:3001`/`:4001` stay **localhost-only** (firewall as in §2) and the public edge is this
+box's `:443`:
+
+```
+PROD:      [Internet] ──TLS──► [nginx on bundler box] ──► 127.0.0.1:3001 / :4001
+DEV/TEST:  [Internet] ──TLS──► [separate nginx router] ──private net──► [bundler-ip]:3001 / :4001
+```
+
+The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** + the reusable snippets in
+**`infrastructure/nginx/snippets/`** (`bundler-ssl-params`, `bundler-headers`, `bundler-loc-{upload,
+payment,unified}`). Copy the snippets to `/etc/nginx/snippets/`, the main file to `sites-available` (→
+`sites-enabled`), `nginx -t`, reload. **Flexibility (use other URLs):** all routing/TLS/CORS logic lives in
+the snippets, so a new URL is just a thin `server` block (change `server_name` + its `ssl_certificate`);
+the **backend address is in one place** — the two `upstream` blocks. For the **dev/test separate-router**
+variant, change the upstream targets from `127.0.0.1` to the bundler's private IP and open the bundler
+firewall for `:3001`/`:4001` **from the router IP only**. (Validated with `nginx -t` + an empirical
+per-path routing test.) The three prod hostnames (mirrors the proven perma.online / vilenarios.com config):
+- `https://upload.ardrive.io` → `:3001`; `https://payment.ardrive.io` → `:4001`.
+- `https://turbo.ardrive.io` — **unified, path-muxed**: explicit payment prefixes (`/v1/balance`,
+  `/v1/account`, `/v1/price`, `/v1/rates|currencies|countries|redeem|reserve-balance|refund-balance|
+  check-balance`, `/v1/x402` (non-upload), `/v1/arns`, `/v1/stripe-webhook`, `/account/balance`, `/price`)
+  → `:4001`; **everything else → `:3001`** (upload owns the default + `/`, `/info`, `/health`, `/tx`,
+  `/chunks`, `/x402/upload`). nginx longest-prefix routing sends the upload x402 overrides
+  (`/v1/price/x402/`, `/v1/x402/upload/`, `/v1/x402/data-item/`) back to `:3001` over the broader payment
+  prefixes. ⚠️ `/info` & `/v1/info` on `turbo.*` resolve to **upload** (root→upload, confirmed) — flip the
+  default location if the SDK ever needs payment's `/v1/info`.
+- **CORS** (`Access-Control-Allow-*` + an `OPTIONS` → 204 preflight) — browser dapp clients need it.
+- **Upload:** `client_max_body_size 100M` — large uploads go through **multipart** (the Turbo SDK chunks
+  them into small parts), so single requests stay under this; raise only if you accept single-request data
+  items >100M. `proxy_request_buffering off` + `proxy_buffering off` (stream, don't buffer to disk),
+  300s timeouts, HTTP/1.1 + keepalive (`Connection ""`), and it **passes `Content-Type` through**.
+- **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
+  and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST
+  body parsing — learned the hard way).
+- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block**.
+
+TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-Forwarded-Proto`, so
+**`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL** (x402 depends on it).
+
+### TLS certificates — Let's Encrypt (free, auto-renewing)
+
+No wildcards needed, so a **single SAN cert** for all three names is simplest. On the box running nginx
+(the **bundler box** in prod):
+
+```bash
+apt install certbot                       # nginx plugin optional; we use webroot
+# one cert, all three names (live dir is named after the first -d → turbo.ardrive.io):
+certbot certonly --webroot -w /var/www/certbot \
+  -d turbo.ardrive.io -d upload.ardrive.io -d payment.ardrive.io \
+  --deploy-hook "systemctl reload nginx"
+certbot renew --dry-run                   # confirm the auto-renew systemd timer works
+```
+
+- 90-day certs, auto-renewed at ~60 days by certbot's systemd timer; `--deploy-hook` reloads nginx. All
+  three server blocks reference `/etc/letsencrypt/live/turbo.ardrive.io/...`. (The existing perma.online
+  router uses one SAN cert, e.g. `perma.online-0001`, covering the `*.services` endpoints — same idea.)
+- The `:80` block serves `/.well-known/acme-challenge/` from `/var/www/certbot` and redirects the rest to
+  HTTPS (HTTP-01 needs `:80` reachable — already public per §2).
+- 🔴 **Cloudflare gotcha:** if `<domain>` is on Cloudflare, keep **`upload.<domain>` DNS-only (grey
+  cloud)** — CF's proxy caps request bodies at **100 MB on Free/Pro/Business**. (Wildcard or
+  locked-down-`:80` cases would use certbot's DNS-01 challenge instead — not needed here.)
 
 ---
 
