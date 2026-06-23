@@ -411,12 +411,50 @@ CHUNK_INGEST_CACHE_ALLOWLIST=     # see TODO below
 
 ## 14. TLS / reverse proxy
 
-Terminate HTTPS at nginx/Caddy/Traefik and upstream to the localhost API ports:
-- `https://upload.<domain>` → `127.0.0.1:3001`
-- `https://payment.<domain>` → `127.0.0.1:4001`
-- Set `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (x402 depends on the real public URL).
-- Keep Bull Board (`:3002`) off the public proxy — admin/VPN only.
-- Allow large bodies + long timeouts (10 GiB uploads, `client_max_body_size`, `proxy_read_timeout 600s`).
+**Topology:** a **separate nginx router box** is the single public ingress. It terminates TLS and
+upstreams to the bundler over the **private network**, not localhost:
+
+```
+[Internet] ──TLS──► [nginx router (separate box)] ──plain HTTP, private net──► [bundler :3001 / :4001]
+```
+
+The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** — drop it on the router,
+replace `BUNDLER_PRIVATE_IP` + `<domain>`, `nginx -t`, reload. Key points it encodes:
+- `https://upload.<domain>` → `bundler_private_ip:3001`, `https://payment.<domain>` → `:4001`.
+- **Large-upload tuning (the part that bites if omitted):** `client_max_body_size 11G` (10 GiB items +
+  ANS-104 overhead), `proxy_request_buffering off` (stream the upload through — don't buffer 10 GiB to
+  disk on the router), `proxy_read_timeout/send_timeout 600s`, `proxy_http_version 1.1` + keepalive.
+- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block** —
+  admin/VPN only.
+
+**Because TLS terminates at the router** (the bundler sees plain HTTP):
+- The bundler trusts `X-Forwarded-Proto`; **`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL**
+  (x402 depends on it) even though the bundler itself speaks HTTP behind the proxy.
+- ⚠️ **Firewall (amends §2):** the bundler's `:3001`/`:4001` are **not** localhost-only in this topology —
+  they must be reachable **from the nginx router's private IP only** (still never public; the public edge
+  is the router's `:443`).
+
+### TLS certificates — Let's Encrypt (free, auto-renewing)
+
+No wildcards needed, so a **single SAN cert** for both names is simplest. On the **router** box:
+
+```bash
+apt install certbot                       # nginx plugin optional; we use webroot
+# one cert, both subdomains (live dir is named after the first -d):
+certbot certonly --webroot -w /var/www/certbot -d upload.<domain> -d payment.<domain> \
+  --deploy-hook "systemctl reload nginx"
+certbot renew --dry-run                   # confirm the auto-renew systemd timer works
+```
+
+- 90-day certs, renewed automatically at ~60 days by certbot's systemd timer; the `--deploy-hook` reloads
+  nginx on renewal. The `infrastructure/nginx/ar-io-bundler.conf` server blocks reference the resulting
+  `/etc/letsencrypt/live/upload.<domain>/...` paths.
+- The `:80` server block serves `/.well-known/acme-challenge/` from `/var/www/certbot` and redirects
+  everything else to HTTPS (HTTP-01 challenge needs `:80` reachable — already public per §2).
+- 🔴 **Cloudflare gotcha:** if `<domain>` is on Cloudflare, keep **`upload.<domain>` DNS-only (grey
+  cloud)** — CF's proxy caps request bodies at **100 MB on Free/Pro/Business**, which silently breaks
+  10 GiB uploads. `payment.<domain>` may be proxied (no large bodies). (Wildcard/locked-down-`:80` cases
+  would instead use certbot's DNS-01 challenge with a DNS-provider API token — not needed here.)
 
 ---
 

@@ -109,11 +109,15 @@
 - [ ] **Gateway-side chunk-ingest cache** (set in each *gateway's* `.env`, startup-read): `CHUNK_INGEST_CACHE_ENABLED=true`,
       `CHUNK_INGEST_CONFIRMATION_TIMEOUT_SECONDS=7200`, allowlist TODO — confirm the bundler's apparent source IP as core sees it.
 
-## Phase 11 — TLS / reverse proxy (→ §14)
+## Phase 11 — TLS / reverse proxy (on the separate nginx router box) (→ §14)
 
-- [ ] HTTPS at nginx/Caddy → `127.0.0.1:3001` (upload), `127.0.0.1:4001` (payment).
-- [ ] Large bodies + long timeouts (`client_max_body_size` for 10 GiB, `proxy_read_timeout 600s`).
-- [ ] Bull Board `:3002` stays **off** the public proxy (admin/VPN only).
+- [ ] DNS: `upload.<domain>` + `payment.<domain>` → the **nginx router's** public IP.
+- [ ] Bundler firewall: open `:3001`/`:4001` **from the router's private IP only** (amends §2 — not localhost-only in this topology; still never public).
+- [ ] Deploy `infrastructure/nginx/ar-io-bundler.conf` on the router; replace `BUNDLER_PRIVATE_IP` + `<domain>`; `nginx -t` → reload.
+- [ ] **Certs (Let's Encrypt, single SAN cert):** `certbot certonly --webroot -w /var/www/certbot -d upload.<domain> -d payment.<domain> --deploy-hook "systemctl reload nginx"`; then `certbot renew --dry-run`.
+- [ ] 🔴 If on Cloudflare: keep `upload.<domain>` **DNS-only (grey cloud)** — CF's 100 MB body cap breaks 10 GiB uploads.
+- [ ] Confirm `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (bundler trusts `X-Forwarded-Proto`; TLS terminates at the router).
+- [ ] Verify the config encodes: `client_max_body_size 11G`, `proxy_request_buffering off`, `proxy_read_timeout 600s`. Bull Board `:3002` / MinIO console / metrics get **no** public server block.
 
 ## Phase 12 — Smoke tests (→ §15)
 
