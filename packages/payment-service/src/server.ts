@@ -210,7 +210,7 @@ export async function createServer(
     arch.stripe ?? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 
   const jwk: JWKInterface =
-    process.env.ARIO_SIGNING_JWK !== undefined
+    process.env.ARIO_SIGNING_JWK
       ? JSON.parse(process.env.ARIO_SIGNING_JWK)
       : undefined;
 

@@ -47,7 +47,7 @@ export async function creditPendingTransactionsHandler({
     ario: new ARIOGateway({
       logger,
       jwk:
-        process.env.ARIO_SIGNING_JWK !== undefined
+        process.env.ARIO_SIGNING_JWK
           ? JSON.parse(process.env.ARIO_SIGNING_JWK)
           : undefined,
     }),
