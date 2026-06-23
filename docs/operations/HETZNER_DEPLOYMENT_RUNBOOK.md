@@ -95,6 +95,21 @@ finality — the "never lose user data" gate); Arweave is the durability backsto
   (defaults are conservative).
 - Size the private vSwitch NIC for **gateway read-pull**: both gateways fetch data items from this box's MinIO.
 
+**Buying off-the-shelf (Hetzner Server Auction — they no longer let you customize):** storage is the binding
+constraint and compute is comfortably adequate at modest tiers, so filter by two hard rules:
+1. **Postgres needs SSD/NVMe** — rule out *all-HDD* boxes (PG WAL/fsync on spinning disk is slow under load),
+   even tempting high-capacity ones.
+2. **Cold MinIO needs ≥ 3 TB** for 90-day retention at ~1 TB/mo — rule out boxes with only 0.5–2 TB of SSD.
+
+Preferred shape (cheapest that satisfies both): a **fast SSD/NVMe pair for OS + Postgres + FS hot-cache**, plus
+**bulk capacity for cold MinIO** — either a large HDD (cheap, lots of runway; cold reads masked by RAM) **or** a
+second large SSD pair (all-flash + redundant; needs ≥ 3.84 TB, prefer datacenter SSDs for MinIO's write churn).
+Prefer **ECC** (money-handling node) and a **modern CPU** (Zen 4 single-thread ≫ Zen 2). Two good 2026-06 picks:
+- **Ryzen 7 7700 / 64 GB ECC / 2× 1 TB SSD + 1× 16 TB HDD** — modern CPU, NVMe-hot + HDD-cold, most cold runway, cheapest.
+- **Ryzen 5 3600 / 128 GB ECC / 2× 512 GB SSD + 2× 3.84 TB DC SSD** — all-flash + redundant cold tier, weaker CPU.
+
+The **end-to-end execution checklist** for the install is `docs/operations/HETZNER_GO_LIVE_CHECKLIST.md`.
+
 **OS:** Ubuntu 22.04/24.04 LTS (matches current tooling). Create a non-root deploy user (the runbook
 assumes `bundler`; **do not** hardcode `/home/vilenarios` — see ⚠️ ACTION in §10/§12).
 
