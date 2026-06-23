@@ -18,7 +18,7 @@
 
 ## 0. Topology: dev/test vs Hetzner prod
 
-| | Dev/test (`hypernarios`, current) | Hetzner prod (this runbook) |
+| | Dev/test (current) | Hetzner prod (this runbook) |
 |---|---|---|
 | Hardware | Supermicro baremetal, shared with the AR.IO node + other apps | Dedicated Hetzner box (sized below) |
 | Services | PM2 (often partial — e.g. only payment API up) | PM2, all 5 processes, boot-persistent |
@@ -133,8 +133,9 @@ internet. Everything else binds to localhost or the private network to the gatew
 | 6379 / 6381 | Redis cache / queues | localhost only |
 | 9090 | Prometheus metrics | admin only |
 
-⚠️ ACTION: the dev/test box exposes Bull Board, MinIO console, Postgres, and both Redis on `0.0.0.0`.
-On Hetzner, bind infra to `127.0.0.1` / the private gateway interface and firewall the rest.
+⚠️ ACTION: the default `docker-compose.yml` publishes Bull Board, MinIO console, Postgres, and both
+Redis on `0.0.0.0`. On Hetzner, bind infra to `127.0.0.1` / the private gateway interface and firewall
+the rest — do not leave these reachable on a public interface.
 
 ---
 
