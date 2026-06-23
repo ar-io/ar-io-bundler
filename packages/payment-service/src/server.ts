@@ -23,7 +23,6 @@ import { Logger } from "winston";
 
 import { Architecture } from "./architecture";
 import {
-  TEST_PRIVATE_ROUTE_SECRET,
   defaultPort,
   isGiftingEnabled,
   migrateOnStartup,
@@ -49,6 +48,7 @@ import { TurboPricingService } from "./pricing/pricing";
 import router from "./router";
 import { JWKInterface } from "./types/jwkTypes";
 import { loadSecretsToEnv } from "./utils/loadSecretsToEnv";
+import { resolvePrivateRouteSecret } from "./utils/privateRouteSecret";
 import { X402Service } from "./x402/x402Service";
 
 type KoaState = DefaultState & Architecture & { logger: Logger };
@@ -80,12 +80,10 @@ export async function createServer(
   await loadSecretsToEnv();
   const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
   const MANDRILL_API_KEY = process.env.MANDRILL_API_KEY;
-  const sharedSecret =
-    process.env.PRIVATE_ROUTE_SECRET ?? TEST_PRIVATE_ROUTE_SECRET;
+  // SECURITY: fail closed if PRIVATE_ROUTE_SECRET is unset outside tests — never
+  // authenticate protected routes with the public hard-coded test secret.
+  const sharedSecret = resolvePrivateRouteSecret();
 
-  if (!sharedSecret) {
-    throw new Error("Shared secret not set");
-  }
   if (!STRIPE_SECRET_KEY) {
     throw new Error("Stripe secret key or webhook secret not set");
   }
