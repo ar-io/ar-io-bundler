@@ -70,6 +70,9 @@ backups/
 
 # Claude Code: keep shared skills + settings.json, ignore personal local settings
 .claude/settings.local.json
+# turbo-bundler deployment overlay skill — source of truth lives in
+# permaweb-services/turbo-bundler/skill/, symlinked in on this box only
+.claude/skills/turbo-bundler
 
 # perf baseline run outputs
 scripts/perf/results/
