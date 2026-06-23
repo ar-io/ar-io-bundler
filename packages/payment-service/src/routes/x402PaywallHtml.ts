@@ -34,6 +34,11 @@ interface PaywallHtmlParams {
   cdpClientKey?: string;
   appName?: string;
   appLogo?: string;
+  /**
+   * Trusted opener origins the signed payment authorization may be posted to.
+   * Empty (default) => never postMessage to the opener (show the header instead).
+   */
+  allowedOrigins?: string[];
 }
 
 /**
@@ -60,6 +65,7 @@ export function generatePaywallHtml(params: PaywallHtmlParams): string {
     cdpClientKey,
     appName = "AR.IO Bundler",
     appLogo,
+    allowedOrigins = [],
   } = params;
 
   const usdcFormatted = formatUSDC(paymentRequirement.maxAmountRequired);
@@ -388,15 +394,27 @@ export function generatePaywallHtml(params: PaywallHtmlParams): string {
 
         showStatus('Payment authorized successfully!', 'success');
 
-        // Return payment to parent window
-        if (window.opener) {
-          window.opener.postMessage({
-            type: 'X402_PAYMENT_AUTHORIZED',
-            payment: paymentHeader
-          }, '*');
-          setTimeout(() => window.close(), 1000);
+        // SECURITY: the payment header is a bearer-style signed authorization
+        // (the victim's funds). Return it to the opener ONLY via explicitly
+        // trusted origins — never with a wildcard targetOrigin, which would leak
+        // it to any opener (e.g. a malicious site that popped this paywall).
+        // Posting
+        // with a SPECIFIC targetOrigin means the browser delivers it only to a
+        // window actually at that origin, so a non-allowlisted opener gets
+        // nothing. If no trusted origins are configured, do not post at all —
+        // fall back to showing the header for the user to copy.
+        var ALLOWED_PARENT_ORIGINS = ${JSON.stringify(allowedOrigins)};
+        if (window.opener && ALLOWED_PARENT_ORIGINS.length > 0) {
+          ALLOWED_PARENT_ORIGINS.forEach(function (trustedOrigin) {
+            window.opener.postMessage({
+              type: 'X402_PAYMENT_AUTHORIZED',
+              payment: paymentHeader
+            }, trustedOrigin);
+          });
+          setTimeout(function () { window.close(); }, 1000);
         } else {
-          // No parent window, show payment header
+          // No trusted opener configured (or opened directly) — show the header
+          // for the user to copy. Never broadcast it to an untrusted opener.
           document.getElementById('status').innerHTML =
             '<strong>Payment Ready!</strong><br><br>' +
             'Add this header to your upload request:<br>' +

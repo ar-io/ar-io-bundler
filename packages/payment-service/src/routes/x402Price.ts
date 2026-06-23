@@ -22,6 +22,7 @@ import {
   x402PaymentTimeoutMs,
   x402PricingBufferPercent,
   cdpClientKey,
+  paywallAllowedOrigins,
 } from "../constants";
 import { BadQueryParam, BadRequest } from "../database/errors";
 import { x402PricingOracle } from "../pricing/x402PricingOracle";
@@ -204,6 +205,9 @@ export async function x402PriceRoute(ctx: KoaContext, next: Next) {
         paymentRequirement: accepts[0], // Use first enabled network
         cdpClientKey: cdpClientKey,
         appName: "AR.IO Bundler",
+        // Only trusted opener origins may receive the signed payment via
+        // postMessage (no wildcard). Empty => show the header instead.
+        allowedOrigins: paywallAllowedOrigins,
         // appLogo can be added via env var if desired
       });
 
