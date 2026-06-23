@@ -411,32 +411,38 @@ CHUNK_INGEST_CACHE_ALLOWLIST=     # see TODO below
 
 ## 14. TLS / reverse proxy
 
-**Topology:** a **separate nginx router box** is the single public ingress. It terminates TLS and
-upstreams to the bundler over the **private network**, not localhost:
+**Topology:** in **prod/Hetzner, nginx runs ON THE BUNDLER BOX** (co-located) and proxies to localhost —
+so the bundler's `:3001`/`:4001` stay **localhost-only** (firewall as in §2) and the public edge is this
+box's `:443`:
 
 ```
-[Internet] ──TLS──► [nginx router (separate box)] ──plain HTTP, private net──► [bundler :3001 / :4001]
+PROD:      [Internet] ──TLS──► [nginx on bundler box] ──► 127.0.0.1:3001 / :4001
+DEV/TEST:  [Internet] ──TLS──► [separate nginx router] ──private net──► [bundler-ip]:3001 / :4001
 ```
 
-The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** — drop it on the router,
-replace `BUNDLER_PRIVATE_IP` + `<domain>`, `nginx -t`, reload. Key points it encodes:
-- `https://upload.<domain>` → `bundler_private_ip:3001`, `https://payment.<domain>` → `:4001`.
-- **Large-upload tuning (the part that bites if omitted):** `client_max_body_size 11G` (10 GiB items +
-  ANS-104 overhead), `proxy_request_buffering off` (stream the upload through — don't buffer 10 GiB to
-  disk on the router), `proxy_read_timeout/send_timeout 600s`, `proxy_http_version 1.1` + keepalive.
-- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block** —
-  admin/VPN only.
+The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** — drop it in `sites-available`,
+replace `<domain>`, `nginx -t`, reload. For the **dev/test separate-router** variant, change the two
+`proxy_pass` targets from `127.0.0.1` to the bundler's private IP and open the bundler firewall for
+`:3001`/`:4001` **from the router IP only**. Key points it encodes (mirrors the proven perma.online /
+vilenarios.com router config):
+- `https://upload.<domain>` → `:3001`, `https://payment.<domain>` → `:4001`.
+- **CORS** (`Access-Control-Allow-*` + an `OPTIONS` → 204 preflight) — browser dapp clients need it.
+- **Upload:** `client_max_body_size 100M` — large uploads go through **multipart** (the Turbo SDK chunks
+  them into small parts), so single requests stay under this; raise only if you accept single-request data
+  items >100M. `proxy_request_buffering off` + `proxy_buffering off` (stream, don't buffer to disk),
+  300s timeouts, HTTP/1.1 + keepalive (`Connection ""`), and it **passes `Content-Type` through**.
+- **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
+  and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST
+  body parsing — learned the hard way).
+- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block**.
 
-**Because TLS terminates at the router** (the bundler sees plain HTTP):
-- The bundler trusts `X-Forwarded-Proto`; **`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL**
-  (x402 depends on it) even though the bundler itself speaks HTTP behind the proxy.
-- ⚠️ **Firewall (amends §2):** the bundler's `:3001`/`:4001` are **not** localhost-only in this topology —
-  they must be reachable **from the nginx router's private IP only** (still never public; the public edge
-  is the router's `:443`).
+TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-Forwarded-Proto`, so
+**`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL** (x402 depends on it).
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 
-No wildcards needed, so a **single SAN cert** for both names is simplest. On the **router** box:
+No wildcards needed, so a **single SAN cert** for both names is simplest. On the box running nginx (the
+**bundler box** in prod):
 
 ```bash
 apt install certbot                       # nginx plugin optional; we use webroot
@@ -446,15 +452,14 @@ certbot certonly --webroot -w /var/www/certbot -d upload.<domain> -d payment.<do
 certbot renew --dry-run                   # confirm the auto-renew systemd timer works
 ```
 
-- 90-day certs, renewed automatically at ~60 days by certbot's systemd timer; the `--deploy-hook` reloads
-  nginx on renewal. The `infrastructure/nginx/ar-io-bundler.conf` server blocks reference the resulting
-  `/etc/letsencrypt/live/upload.<domain>/...` paths.
-- The `:80` server block serves `/.well-known/acme-challenge/` from `/var/www/certbot` and redirects
-  everything else to HTTPS (HTTP-01 challenge needs `:80` reachable — already public per §2).
+- 90-day certs, auto-renewed at ~60 days by certbot's systemd timer; `--deploy-hook` reloads nginx. The
+  config's server blocks reference `/etc/letsencrypt/live/<domain>/...`. (The existing perma.online router
+  uses one SAN cert, e.g. `perma.online-0001`, covering the `*.services.<domain>` endpoints — same idea.)
+- The `:80` block serves `/.well-known/acme-challenge/` from `/var/www/certbot` and redirects the rest to
+  HTTPS (HTTP-01 needs `:80` reachable — already public per §2).
 - 🔴 **Cloudflare gotcha:** if `<domain>` is on Cloudflare, keep **`upload.<domain>` DNS-only (grey
-  cloud)** — CF's proxy caps request bodies at **100 MB on Free/Pro/Business**, which silently breaks
-  10 GiB uploads. `payment.<domain>` may be proxied (no large bodies). (Wildcard/locked-down-`:80` cases
-  would instead use certbot's DNS-01 challenge with a DNS-provider API token — not needed here.)
+  cloud)** — CF's proxy caps request bodies at **100 MB on Free/Pro/Business**. (Wildcard or
+  locked-down-`:80` cases would use certbot's DNS-01 challenge instead — not needed here.)
 
 ---
 
