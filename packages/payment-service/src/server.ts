@@ -47,6 +47,7 @@ import { architectureMiddleware, loggerMiddleware } from "./middleware";
 import { TurboPricingService } from "./pricing/pricing";
 import router from "./router";
 import { JWKInterface } from "./types/jwkTypes";
+import { resolveBodyParserLimits } from "./utils/bodyLimits";
 import { loadSecretsToEnv } from "./utils/loadSecretsToEnv";
 import { resolvePrivateRouteSecret } from "./utils/privateRouteSecret";
 import { resolveServerTimeouts } from "./utils/serverTimeouts";
@@ -119,6 +120,12 @@ export async function createServer(
   // CORS handled by nginx reverse proxy
   // app.use(cors({ allowMethods: ["GET", "POST"] }));
 
+  // Request-body size limits — kept small to bound how much an unauthenticated
+  // client can make the process buffer before JWT/route validation (see
+  // resolveBodyParserLimits). Used by both the Content-Type fix middleware below
+  // and the global body parser.
+  const bodyLimits = resolveBodyParserLimits();
+
   // Middleware to fix Content-Type mismatch from turbo-sdk
   // SDK sometimes sends JSON body with form-urlencoded Content-Type
   // This must run BEFORE bodyParser
@@ -131,7 +138,7 @@ export async function createServer(
         const getRawBody = (await import('raw-body')).default;
         const rawBody = await getRawBody(ctx.req, {
           length: ctx.request.length,
-          limit: '10mb',
+          limit: bodyLimits.jsonLimit,
           encoding: 'utf8',
         });
 
@@ -165,12 +172,15 @@ export async function createServer(
     await next();
   });
 
-  // Support both JSON and form-urlencoded request bodies
+  // Support both JSON and form-urlencoded request bodies. Limits intentionally
+  // small (resolveBodyParserLimits) — bodyParser buffers the whole body in
+  // memory before auth, so a large limit on these public, tiny-payload endpoints
+  // is a pre-auth memory-amplification DoS vector.
   app.use(bodyParser({
     enableTypes: ['json', 'form', 'text'],
-    formLimit: '10mb',
-    jsonLimit: '10mb',
-    textLimit: '10mb',
+    formLimit: bodyLimits.formLimit,
+    jsonLimit: bodyLimits.jsonLimit,
+    textLimit: bodyLimits.textLimit,
   }));
 
   // NOTE: Middleware that use the JWT must handle ctx.state.user being undefined and throw
