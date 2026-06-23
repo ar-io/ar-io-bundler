@@ -12,6 +12,23 @@
 
 ---
 
+## Live deployment status — pre-prod · updated 2026-06-23
+
+**Box:** Hetzner Ryzen 7 7700 · 8C/16T · 64 GB · 2× 1 TB NVMe (RAID1) + 16 TB HDD · **Ubuntu 22.04 LTS**.
+**Endpoints:** `turbo.services.ardrive.net` (unified) · `upload.services.ardrive.net` · `payment.services.ardrive.net`.
+**Gateways:** turbo-gateway.com — node1 `167.235.37.213`, node2 `167.235.37.218`.
+
+- [x] **Phase 0** — server provisioned
+- [x] **Phase 1** — NVMe RAID1; 16 TB HDD → xfs `/mnt/minio`; **Node 22 (system, `/usr/bin/node`)**; Docker 29.x + compose v5; `bundler` user
+- [x] **Phase 4** — repo cloned on `develop` + `yarn build`
+- [ ] **Phase 5** — `.env` ← **current step** (paste from the secure handoff; see §7 / `.env.sample`)
+- [ ] **Phases 2, 3, 6–14** — pending (firewall, wallets, migrate, start, gateway wiring, TLS, smoke, backups, S1)
+
+> Secrets + the real `.env` are handed off out-of-band (not in git). Tuning for this box:
+> `API_INSTANCES=4`, `PG_SHARED_BUFFERS=16GB`, `DB_POOL_MAX=20`.
+
+---
+
 ## Phase 0 — Procure the server (tonight)
 
 - [ ] Pick a box per the **two filters** (→ §1 "Buying off-the-shelf"): **(1)** has SSD/NVMe for Postgres,
@@ -26,7 +43,7 @@
 - [ ] 🔴 **Disk layout — do NOT use the installimage default (`SWRAIDLEVEL 5` across all 3 drives):** RAID5
       sizes to the smallest disk (would waste ~15 TB of the HDD) and runs the NVMe at HDD speed. Instead:
       - **2× NVMe → RAID 1** (`SWRAID 1`, `SWRAIDLEVEL 1`, list only `DRIVE1`/`DRIVE2`; **comment out
-        `DRIVE3`**) → OS + `/var/lib/postgresql` + FS hot dirs (`TEMP_DIR`, `UPLOAD_SERVICE_DATA_DIR`).
+        `DRIVE3`**) → OS + `/var/lib/postgresql` + FS hot dirs (`TEMP_DIR`, `FS_DATA_PATH`).
         UEFI PART layout (all on the mirror): `PART /boot/efi esp 256M` · `PART swap swap 8G` ·
         `PART /boot ext4 1024M` · `PART / ext4 all`. installimage handles ESP-on-RAID automatically; data
         is fully mirrored — only a cold boot off the survivor after the *first* NVMe dies may need a manual
@@ -86,8 +103,12 @@
       = an RPC that allows `getProgramAccounts`, `ARIO_SOLANA_SIGNER_SECRET_KEY` (else ArNS is read-only).
 - [ ] **x402:** `X402_PAYMENT_ADDRESS`, `CDP_API_KEY_ID`/`SECRET` (mainnet), `X402_FEE_PERCENT`,
       `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (x402 signing needs the real public URL).
+- [ ] **FS hot-cache dirs:** `TEMP_DIR` + **`FS_DATA_PATH`** (on the NVMe). ⚠️ Use `FS_DATA_PATH` — **not**
+      `UPLOAD_SERVICE_DATA_DIR` (that's a vestige of the old bash-cron cleanup; the app code + the MQ
+      `cleanup-fs` worker read `FS_DATA_PATH`). Drop the legacy `ARIO_SIGNING_JWK` (ArNS writes use
+      `ARIO_SOLANA_SIGNER_SECRET_KEY`).
 - [ ] **Cleanup + basics:** `FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`, `NODE_ENV=production`,
-      `REQUEST_TIMEOUT_MS=600000`, `PROMETHEUS_PORT=9090`. `chmod 600 .env`.
+      `REQUEST_TIMEOUT_MS=600000`. `chmod 600 .env`.
 
 ## Phase 6 — Database migrations (→ §8)
 
