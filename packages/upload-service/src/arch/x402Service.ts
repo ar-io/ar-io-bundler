@@ -369,7 +369,8 @@ export class X402Service {
     requirements: X402PaymentRequirements
   ): Promise<X402SettlementResult> {
     try {
-      // Parse payload to get network config, but send original header to facilitator
+      // Decode the payment header to get the network config AND the decoded
+      // paymentPayload that standard facilitators require in the /settle body.
       const paymentPayload: X402PaymentPayload = JSON.parse(
         Buffer.from(paymentHeader, "base64").toString("utf-8")
       );
@@ -392,13 +393,11 @@ export class X402Service {
 
         try {
           const isCoinbaseFacilitator = networkConfig.facilitatorUrl.includes("api.cdp.coinbase.com");
-          const isCommunityFacilitator = networkConfig.facilitatorUrl.includes("x402.rs");
 
           logger.info("Settling x402 payment via facilitator", {
             facilitator: networkConfig.facilitatorUrl,
             network: paymentPayload.network,
             isCoinbaseFacilitator,
-            isCommunityFacilitator,
           });
 
           // Use SDK for Coinbase facilitator
@@ -432,8 +431,11 @@ export class X402Service {
             }
           }
 
-          // Community facilitator: manual request with string timestamps
-          if (isCommunityFacilitator && paymentPayload.payload?.authorization) {
+          // Standard x402 facilitator protocol (/settle) requires the DECODED
+          // paymentPayload (NOT the base64 paymentHeader) for ALL non-Coinbase
+          // facilitators — not just x402.rs. Normalize EIP-3009 authorization
+          // timestamps to strings (some facilitators reject numeric values).
+          if (paymentPayload.payload?.authorization) {
             const auth = paymentPayload.payload.authorization as any;
             if (typeof auth.validAfter === "number") {
               auth.validAfter = auth.validAfter.toString();
@@ -443,17 +445,11 @@ export class X402Service {
             }
           }
 
-          const requestPayload = isCommunityFacilitator
-            ? {
-                x402Version: 1,
-                paymentPayload,
-                paymentRequirements: requirements,
-              }
-            : {
-                x402Version: 1,
-                paymentHeader,
-                paymentRequirements: requirements,
-              };
+          const requestPayload = {
+            x402Version: 1,
+            paymentPayload,
+            paymentRequirements: requirements,
+          };
 
           const response = await axios.post(
             `${networkConfig.facilitatorUrl}/settle`,
@@ -782,7 +778,6 @@ export class X402Service {
   ): Promise<X402VerificationResult> {
     try {
       const isCoinbaseFacilitator = facilitatorUrl.includes("api.cdp.coinbase.com");
-      const isCommunityFacilitator = facilitatorUrl.includes("x402.rs");
 
       // Decode payment header
       const paymentPayload = JSON.parse(
@@ -865,8 +860,13 @@ export class X402Service {
         }
       }
 
-      // Community facilitator: manual request with string timestamps
-      if (isCommunityFacilitator && paymentPayload.payload?.authorization) {
+      // The standard x402 facilitator protocol (/verify, /settle) requires the
+      // DECODED paymentPayload (NOT the base64 paymentHeader) for ALL non-Coinbase
+      // facilitators — e.g. the canonical https://x402.org/facilitator, not just
+      // x402.rs. Sending paymentHeader yields HTTP 400 "missing_parameters
+      // (Missing paymentPayload or paymentRequirements)". Normalize the EIP-3009
+      // authorization timestamps to strings (some facilitators reject numerics).
+      if (paymentPayload.payload?.authorization) {
         const auth = paymentPayload.payload.authorization as any;
         if (typeof auth.validAfter === "number") {
           auth.validAfter = auth.validAfter.toString();
@@ -876,17 +876,11 @@ export class X402Service {
         }
       }
 
-      const requestPayload = isCommunityFacilitator
-        ? {
-            x402Version: 1,
-            paymentPayload,
-            paymentRequirements: requirements,
-          }
-        : {
-            x402Version: 1,
-            paymentHeader, // x402.org testnet uses base64 string
-            paymentRequirements: requirements,
-          };
+      const requestPayload = {
+        x402Version: 1,
+        paymentPayload,
+        paymentRequirements: requirements,
+      };
 
       const response = await axios.post(
         `${facilitatorUrl}/verify`,
@@ -955,6 +949,23 @@ export class X402Service {
   }
 }
 
+/**
+ * Resolve a facilitator URL accepting BOTH naming conventions:
+ *  - the upload-service's historical SINGULAR `X402_FACILITATOR_URL_*`, and
+ *  - the payment-service's PLURAL, comma-separated `X402_FACILITATOR_URLS_*`.
+ * The upload service uses a single facilitator per network, so when only the
+ * plural list is set we take its first entry. Singular wins for back-compat.
+ * (See .env.sample: the PLURAL name is the canonical, cross-service convention.)
+ */
+export function resolveFacilitatorUrl(
+  singular: string | undefined,
+  plural: string | undefined
+): string | undefined {
+  if (singular) return singular;
+  const first = plural?.split(",")[0]?.trim();
+  return first || undefined;
+}
+
 // Network configurations (read from environment)
 export const x402Networks: Record<string, X402NetworkConfig> = {
   // Base mainnet (primary name used by AR.IO Gateway)
@@ -962,7 +973,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
     minConfirmations: +(process.env.X402_BASE_MIN_CONFIRMATIONS || 1),
   },
@@ -971,7 +982,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
     minConfirmations: +(process.env.X402_BASE_MIN_CONFIRMATIONS || 1),
   },
@@ -980,7 +991,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
     usdcAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     rpcUrl:
       process.env.ETHEREUM_MAINNET_RPC_URL || "https://cloudflare-eth.com/",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_ETH,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_ETH, process.env.X402_FACILITATOR_URLS_ETH),
     enabled: process.env.X402_ETH_ENABLED === "true", // Default: false (enable Base first)
     minConfirmations: +(process.env.X402_ETH_MIN_CONFIRMATIONS || 3),
   },
@@ -988,7 +999,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
     chainId: 137,
     usdcAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
     rpcUrl: process.env.POLYGON_MAINNET_RPC_URL || "https://polygon-rpc.com/",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_POLYGON,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_POLYGON, process.env.X402_FACILITATOR_URLS_POLYGON),
     enabled: process.env.X402_POLYGON_ENABLED === "true", // Default: false
     minConfirmations: +(process.env.X402_POLYGON_MIN_CONFIRMATIONS || 10),
   },
@@ -996,7 +1007,7 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
     chainId: 84532,
     usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE_TESTNET,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE_TESTNET, process.env.X402_FACILITATOR_URLS_BASE_TESTNET),
     enabled: process.env.X402_BASE_TESTNET_ENABLED === "true",
     minConfirmations: 1,
   },
