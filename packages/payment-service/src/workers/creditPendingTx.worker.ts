@@ -41,7 +41,7 @@ export function createPendingTxWorker(): Worker {
     ario: new ARIOGateway({
       logger: globalLogger,
       jwk:
-        process.env.ARIO_SIGNING_JWK !== undefined
+        process.env.ARIO_SIGNING_JWK
           ? JSON.parse(process.env.ARIO_SIGNING_JWK)
           : undefined,
     }),
