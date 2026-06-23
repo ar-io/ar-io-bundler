@@ -131,7 +131,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (12 queues)
+- Asynchronous job processing via BullMQ (13 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
@@ -187,16 +187,18 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 12 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "12 queues"):
+BullMQ with 13 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "13 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`
+
+**Durable balance refunds (`refund-balance`):** when a reserved payment must be returned (e.g. the upload fails after a balance reserve) and the synchronous refund to the payment service fails on the critical path, the refund is enqueued here. The worker retries `refundBalanceForData` (`throwOnFailure: true` → BullMQ attempts/backoff) until it lands, so a wallet is always credited back even through an extended payment-service outage. Added in the "fast-fail payment reserve + durable refund retry" work (commit c0b92c5).
 
 **Posted-bundle recovery (`redrive-posted`, #40):** a bundle whose `seed-bundle` exhausts its retries used to be stranded forever in `posted_bundle`. The `redrive-posted` scheduler re-enqueues seeding for stale `posted_bundle` rows (`POSTED_STALE_THRESHOLD_MS`, default 30 min) and after `MAX_SEED_REDRIVES` (default 5) demotes the bundle to `failed_bundle` (items repacked to `new_data_item`), emitting `posted_bundle_failed_to_seed_total`. Attempt counts live in the `posted_bundle_redrive` table.
 
 **Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
 - `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
-- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1, redrive-posted=1
+- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1, redrive-posted=1, refund-balance=3
 
 **Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
 
