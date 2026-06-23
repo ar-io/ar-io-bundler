@@ -22,6 +22,7 @@ import { BadRequest, X402PaymentError } from "../database/errors";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
+import { validateAuthorizedRoute } from "../utils/validators";
 
 /**
  * Finalize an x402 payment after upload validation
@@ -30,6 +31,16 @@ import { W } from "../types/winston";
 export async function x402FinalizeRoute(ctx: KoaContext, next: Next) {
   const logger = ctx.state.logger;
   const { paymentDatabase } = ctx.state;
+
+  // SECURITY: finalization is an INTERNAL upload→payment callback that mutates
+  // financial state (sets confirmed/refunded/fraud_penalty, credits refundWinc
+  // to the user's balance, deletes the x402 reservation) based on a caller-
+  // supplied actualByteCount. Require the shared inter-service JWT
+  // (PRIVATE_ROUTE_SECRET) — same as reserve/refund/check-balance — so an
+  // unauthenticated caller can't force a refund of a pending x402 payment.
+  if (validateAuthorizedRoute(ctx) === false) {
+    return next();
+  }
 
   const {
     dataItemId,
