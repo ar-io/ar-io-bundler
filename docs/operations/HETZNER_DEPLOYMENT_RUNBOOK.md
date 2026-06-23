@@ -421,11 +421,18 @@ DEV/TEST:  [Internet] ──TLS──► [separate nginx router] ──private n
 ```
 
 The ready-to-use config is **`infrastructure/nginx/ar-io-bundler.conf`** — drop it in `sites-available`,
-replace `<domain>`, `nginx -t`, reload. For the **dev/test separate-router** variant, change the two
-`proxy_pass` targets from `127.0.0.1` to the bundler's private IP and open the bundler firewall for
-`:3001`/`:4001` **from the router IP only**. Key points it encodes (mirrors the proven perma.online /
-vilenarios.com router config):
-- `https://upload.<domain>` → `:3001`, `https://payment.<domain>` → `:4001`.
+`nginx -t`, reload. For the **dev/test separate-router** variant, change every `127.0.0.1` `proxy_pass`
+target to the bundler's private IP and open the bundler firewall for `:3001`/`:4001` **from the router IP
+only**. The three prod hostnames (mirrors the proven perma.online / vilenarios.com router config):
+- `https://upload.ardrive.io` → `:3001`; `https://payment.ardrive.io` → `:4001`.
+- `https://turbo.ardrive.io` — **unified, path-muxed**: explicit payment prefixes (`/v1/balance`,
+  `/v1/account`, `/v1/price`, `/v1/rates|currencies|countries|redeem|reserve-balance|refund-balance|
+  check-balance`, `/v1/x402` (non-upload), `/v1/arns`, `/v1/stripe-webhook`, `/account/balance`, `/price`)
+  → `:4001`; **everything else → `:3001`** (upload owns the default + `/`, `/info`, `/health`, `/tx`,
+  `/chunks`, `/x402/upload`). nginx longest-prefix routing sends the upload x402 overrides
+  (`/v1/price/x402/`, `/v1/x402/upload/`, `/v1/x402/data-item/`) back to `:3001` over the broader payment
+  prefixes. ⚠️ `/info` & `/v1/info` on `turbo.*` resolve to **upload** (root→upload, confirmed) — flip the
+  default location if the SDK ever needs payment's `/v1/info`.
 - **CORS** (`Access-Control-Allow-*` + an `OPTIONS` → 204 preflight) — browser dapp clients need it.
 - **Upload:** `client_max_body_size 100M` — large uploads go through **multipart** (the Turbo SDK chunks
   them into small parts), so single requests stay under this; raise only if you accept single-request data
@@ -441,20 +448,21 @@ TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 
-No wildcards needed, so a **single SAN cert** for both names is simplest. On the box running nginx (the
-**bundler box** in prod):
+No wildcards needed, so a **single SAN cert** for all three names is simplest. On the box running nginx
+(the **bundler box** in prod):
 
 ```bash
 apt install certbot                       # nginx plugin optional; we use webroot
-# one cert, both subdomains (live dir is named after the first -d):
-certbot certonly --webroot -w /var/www/certbot -d upload.<domain> -d payment.<domain> \
+# one cert, all three names (live dir is named after the first -d → turbo.ardrive.io):
+certbot certonly --webroot -w /var/www/certbot \
+  -d turbo.ardrive.io -d upload.ardrive.io -d payment.ardrive.io \
   --deploy-hook "systemctl reload nginx"
 certbot renew --dry-run                   # confirm the auto-renew systemd timer works
 ```
 
-- 90-day certs, auto-renewed at ~60 days by certbot's systemd timer; `--deploy-hook` reloads nginx. The
-  config's server blocks reference `/etc/letsencrypt/live/<domain>/...`. (The existing perma.online router
-  uses one SAN cert, e.g. `perma.online-0001`, covering the `*.services.<domain>` endpoints — same idea.)
+- 90-day certs, auto-renewed at ~60 days by certbot's systemd timer; `--deploy-hook` reloads nginx. All
+  three server blocks reference `/etc/letsencrypt/live/turbo.ardrive.io/...`. (The existing perma.online
+  router uses one SAN cert, e.g. `perma.online-0001`, covering the `*.services` endpoints — same idea.)
 - The `:80` block serves `/.well-known/acme-challenge/` from `/var/www/certbot` and redirects the rest to
   HTTPS (HTTP-01 needs `:80` reachable — already public per §2).
 - 🔴 **Cloudflare gotcha:** if `<domain>` is on Cloudflare, keep **`upload.<domain>` DNS-only (grey
