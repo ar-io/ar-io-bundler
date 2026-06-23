@@ -68,7 +68,17 @@ export function requiredPermanenceSources(arweaveGateway: Gateway): number {
     arweaveGateway instanceof MultiGatewayArweaveGateway
       ? arweaveGateway.gatewayCount
       : 1;
-  return Math.max(1, Math.min(permanenceConfirmationSources, gatewayCount));
+  // Read PERMANENCE_CONFIRMATION_SOURCES live (not from the import-time constant)
+  // so the requirement can be tuned without a rebuild — and so the gate is
+  // exercisable in tests. `permanenceConfirmationSources` remains the default.
+  const configured = Math.max(
+    1,
+    +(
+      process.env.PERMANENCE_CONFIRMATION_SOURCES ||
+      permanenceConfirmationSources
+    ),
+  );
+  return Math.max(1, Math.min(configured, gatewayCount));
 }
 
 /**
@@ -86,7 +96,7 @@ export async function countPermanenceSources(
   logger: winston.Logger,
   // The number of sources the caller actually needs (the capped requirement).
   // The GQL second-source lookup is skipped once gateway status alone meets it.
-  requiredSources: number = permanenceConfirmationSources
+  requiredSources: number = permanenceConfirmationSources,
 ): Promise<{ sources: number; indexedOnGQL: boolean }> {
   if (!(arweaveGateway instanceof MultiGatewayArweaveGateway)) {
     // Legacy path: the single getTransactionStatus already established `found`
@@ -96,7 +106,7 @@ export async function countPermanenceSources(
 
   const confirmingGateways = await arweaveGateway.countConfirmingSources(
     bundleId,
-    txPermanentThreshold
+    txPermanentThreshold,
   );
 
   // Only consult GQL as an extra source if we still need one (a second gateway
@@ -123,17 +133,16 @@ async function hasBundleBeenPostedLongerThanTheDroppedThreshold(
   objectStore: ObjectStore,
   arweaveGateway: Gateway,
   bundleId: TransactionId,
-  transactionByteCount?: ByteCount
+  transactionByteCount?: ByteCount,
 ): Promise<boolean> {
   const bundleTx = await getBundleTx(
     objectStore,
     bundleId,
-    transactionByteCount
+    transactionByteCount,
   );
   const txAnchor = bundleTx.last_tx;
-  const blockHeightOfTxAnchor = await arweaveGateway.getBlockHeightForTxAnchor(
-    txAnchor
-  );
+  const blockHeightOfTxAnchor =
+    await arweaveGateway.getBlockHeightForTxAnchor(txAnchor);
 
   const currentBlockHeight = await arweaveGateway.getCurrentBlockHeight();
 
@@ -181,9 +190,8 @@ export async function verifyBundleHandler({
     } = bundle;
 
     try {
-      const transactionStatus = await arweaveGateway.getTransactionStatus(
-        bundleId
-      );
+      const transactionStatus =
+        await arweaveGateway.getTransactionStatus(bundleId);
 
       if (transactionStatus.status !== "found") {
         if (
@@ -191,7 +199,7 @@ export async function verifyBundleHandler({
             objectStore,
             arweaveGateway,
             bundleId,
-            transactionByteCount
+            transactionByteCount,
           )
         ) {
           logger.warn("Updating bundle as dropped", {
@@ -207,6 +215,45 @@ export async function verifyBundleHandler({
 
         // Ensure bundle has the appropriate confirmations for the permanent threshold
         if (number_of_confirmations >= txPermanentThreshold) {
+          // Multi-source permanence gate — evaluated BEFORE promoting any data
+          // items. Do not irreversibly promote (and thus make the off-chain copy
+          // eligible for tiered cleanup) on one gateway's word: require >=
+          // PERMANENCE_CONFIRMATION_SOURCES independent sources to confirm. The
+          // first source is the getTransactionStatus above; the rest come from
+          // other gateways agreeing on >= txPermanentThreshold confs, or a second
+          // gateway's GQL index of the bundle tx.
+          //
+          // Running this gate first keeps data-item permanence and bundle
+          // permanence consistent: a data item is never written to
+          // permanent_data_items (which the public status route reports as
+          // FINALIZED, and which cleanup treats as eligible) unless its bundle
+          // also reaches permanent_bundle in this same pass. If the gate is not
+          // met we leave everything in seeded_bundle / planned_data_item and let a
+          // later verify tick retry — no inconsistent half-promoted state, and no
+          // wasted bundle-header download / batch work on the skip path.
+          const requiredSources = requiredPermanenceSources(arweaveGateway);
+          const { sources, indexedOnGQL } = await countPermanenceSources(
+            arweaveGateway,
+            bundleId,
+            logger,
+            requiredSources,
+          );
+
+          if (sources < requiredSources) {
+            logger.warn(
+              "Bundle confirmed by fewer independent sources than required; not yet promoting to permanent",
+              {
+                planId,
+                bundleId,
+                block_height,
+                sources,
+                requiredSources,
+                indexedOnGQL,
+              },
+            );
+            continue;
+          }
+
           const plannedDataItems =
             await database.getPlannedDataItemsForVerification(planId);
           const bundleHeaderInfo = await getBundleHeaderInfo({
@@ -237,7 +284,7 @@ export async function verifyBundleHandler({
                 payloadByteCount ?? 0,
                 logger,
                 planId,
-                cacheService
+                cacheService,
               ).catch(async (error) => {
                 if (error instanceof DataItemsStillPendingWarning) {
                   dataItemsStillPending = true;
@@ -258,7 +305,7 @@ export async function verifyBundleHandler({
                   const dataItemIdsWithNaNDeadlineHeight = batch
                     .filter(
                       ({ deadlineHeight }) =>
-                        !deadlineHeight || isNaN(Number(deadlineHeight))
+                        !deadlineHeight || isNaN(Number(deadlineHeight)),
                     )
                     .map(({ dataItemId }) => dataItemId);
                   logger.error(
@@ -267,10 +314,10 @@ export async function verifyBundleHandler({
                       bundleId,
                       planId,
                       dataItemIds: dataItemIdsWithNaNDeadlineHeight,
-                    }
+                    },
                   );
                   await database.updatePlannedDataItemsToDefaultDeadlineHeight(
-                    dataItemIdsWithNaNDeadlineHeight
+                    dataItemIdsWithNaNDeadlineHeight,
                   );
                   bundleNeedsReprocess = true;
                   return;
@@ -280,8 +327,8 @@ export async function verifyBundleHandler({
                 // inside updateDataItemsAsPermanent, so reaching here means a
                 // genuinely unexpected (e.g. transient) failure. Make it loud.
                 batchFailedUnexpectedly = true;
-              })
-            )
+              }),
+            ),
           );
           await Promise.all(promises);
 
@@ -293,7 +340,7 @@ export async function verifyBundleHandler({
               {
                 bundleId,
                 planId,
-              }
+              },
             );
             continue;
           } else if (bundleNeedsReprocess) {
@@ -302,7 +349,7 @@ export async function verifyBundleHandler({
               {
                 bundleId,
                 planId,
-              }
+              },
             );
             continue;
           } else if (dataItemsStillPending) {
@@ -311,40 +358,14 @@ export async function verifyBundleHandler({
               {
                 bundleId,
                 planId,
-              }
+              },
             );
             continue;
           }
 
-          // Multi-source permanence gate: do not irreversibly promote (and thus
-          // make the off-chain copy eligible for tiered cleanup) on one gateway's
-          // word. Require >= PERMANENCE_CONFIRMATION_SOURCES independent sources to
-          // confirm. The first source is the getTransactionStatus above; the rest
-          // come from other gateways agreeing on >= txPermanentThreshold confs, or
-          // a second gateway's GQL index of the bundle tx.
-          const requiredSources = requiredPermanenceSources(arweaveGateway);
-          const { sources, indexedOnGQL } = await countPermanenceSources(
-            arweaveGateway,
-            bundleId,
-            logger,
-            requiredSources
-          );
-
-          if (sources < requiredSources) {
-            logger.warn(
-              "Bundle confirmed by fewer independent sources than required; not yet promoting to permanent",
-              {
-                planId,
-                bundleId,
-                block_height,
-                sources,
-                requiredSources,
-                indexedOnGQL,
-              }
-            );
-            continue;
-          }
-
+          // The multi-source permanence gate already passed above (before any
+          // promotion), so the bundle is safe to irreversibly promote here using
+          // the source count established for this pass.
           MetricRegistry.permanenceConfirmationSourcesUsed.inc({
             sources: String(sources),
           });
@@ -358,7 +379,7 @@ export async function verifyBundleHandler({
           await database.updateBundleAsPermanent(
             planId,
             block_height,
-            indexedOnGQL
+            indexedOnGQL,
           );
         }
       }
@@ -380,7 +401,7 @@ export async function verifyBundleHandler({
         bundlesStuckUnexpectedly.length
       } bundle(s) failed permanent insert unexpectedly and remain in seeded_bundle: ${bundlesStuckUnexpectedly
         .map(({ bundleId }) => bundleId)
-        .join(", ")}`
+        .join(", ")}`,
     );
   }
 }
@@ -388,7 +409,7 @@ export async function verifyBundleHandler({
 export async function handler(eventPayload?: unknown) {
   defaultLogger.info(
     `Verify bundle job has been triggered with event payload:`,
-    eventPayload
+    eventPayload,
   );
   return verifyBundleHandler(defaultArchitecture);
 }
@@ -403,7 +424,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
   payloadSize: ByteCount,
   logger: winston.Logger,
   planId: string,
-  cacheService: CacheService
+  cacheService: CacheService,
 ) {
   const dataItemsInHeader: PlannedDataItem[] = [];
   const dataItemsNotInHeader: PlannedDataItem[] = [];
@@ -412,7 +433,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
     {};
 
   const dataItemIdsInHeaderSet = new Set(
-    bundleHeaderInfo.dataItems.map(({ id }) => id)
+    bundleHeaderInfo.dataItems.map(({ id }) => id),
   );
   for (const dataItem of dataItemBatch) {
     if (dataItemIdsInHeaderSet.has(dataItem.dataItemId)) {
@@ -441,7 +462,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
       ? await removeDataItemsFromCache(
           cacheService,
           dataItemIdsInHeader,
-          logger
+          logger,
         ).catch((error) => {
           // Treat these as soft errors to allow the job to continue
           logger.error("Error removing data items from cache", {
@@ -453,7 +474,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
   logger.debug(
     `Removed ${numRemovedItems} of up to ${
       dataItemIdsInHeader.length * 2
-    } metadata and data item cache entries from Elasticache`
+    } metadata and data item cache entries from Elasticache`,
   );
   logger.debug("Updated data items as permanent", {
     bundleId,
@@ -464,7 +485,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
 
   if (dataItemsNotInHeader.length > 0) {
     const notFoundDataItemIds = dataItemsNotInHeader.map(
-      ({ dataItemId }) => dataItemId
+      ({ dataItemId }) => dataItemId,
     );
 
     const byteCountBasedRepackThresholdBlockCount =
@@ -480,7 +501,7 @@ async function checkHeaderForItemsThenUpdateDataItemBatch(
           planId,
           block_height,
           notFoundDataItemIds,
-        }
+        },
       );
       throw new DataItemsStillPendingWarning();
     }
