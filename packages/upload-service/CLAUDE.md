@@ -198,7 +198,7 @@ Design decisions:
   latency to the on-chain post.
 
 **Internal job schedulers (no cron needed):** at startup the worker process
-(`src/workers/allWorkers.ts`) registers two BullMQ job schedulers via
+(`src/workers/allWorkers.ts`) registers three BullMQ job schedulers via
 `upsertRepeatable()` (`src/arch/queues.ts`):
 - `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
 - `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)

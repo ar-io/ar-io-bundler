@@ -41,10 +41,12 @@ deeper references.
 - [**X402_INTEGRATION_GUIDE.md**](./guides/X402_INTEGRATION_GUIDE.md) — Integrating
   x402 USDC payments (signed and unsigned uploads).
 
-### [archive/](./archive/) and [migration/](./migration/)
-Historical artifacts only — the completed AWS → open-source migration phases,
-superseded plans, status reports, and decision analyses. **Not current state.**
-Kept for reference; do not treat as authoritative.
+### [archive/](./archive/)
+Historical decision analyses and audits kept for reference only (gateway/x402
+analysis, the Hetzner-migration feasibility study, HA/DR design). **Not current
+state.** Superseded plans, status reports, testing checklists, and the completed
+AWS → open-source migration phase logs were removed in a docs cleanup (still in
+git history). Do not treat as authoritative.
 
 ## Quick links
 
