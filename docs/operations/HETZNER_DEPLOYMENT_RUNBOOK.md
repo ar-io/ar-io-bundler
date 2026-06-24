@@ -654,6 +654,17 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
   (service/infra down, pipeline/wallet/payment/queue issues), with anti-spam reminders + resolved messages. See
   §7 for setup; complements (does not replace) Prometheus/Grafana alerting.
 - **Logs:** install `pm2-logrotate` (PM2 logs) and logrotate for cron logs; the dev box rotates neither.
+- **DB query tuning & visibility (set in `docker-compose.yml`, overridable via `.env`):**
+  - `PG_EFFECTIVE_CACHE_SIZE` — planner hint; set ≈50-75% of RAM on the prod box (stock 4GB default understates a big box and biases away from index scans).
+  - `pg_stat_statements` is enabled via `shared_preload_libraries`. **Enabling it (or any `shared_preload_libraries` change) requires a full postgres CONTAINER restart, not a reload.** On a **fresh** data volume `init-databases.sql` runs `CREATE EXTENSION` automatically; on an **existing** volume run it once per DB after the restart:
+    ```bash
+    for db in payment_service upload_service; do \
+      docker exec ar-io-bundler-postgres psql -U "$DB_USER" -d "$db" \
+        -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"; done
+    ```
+    Then inspect hot/slow queries with `SELECT query, calls, mean_exec_time FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 20;`.
+  - `PG_LOG_MIN_DURATION_MS` — logs any statement slower than this (ms); `-1` disables.
+  - **App-connection safety timeouts** (`DB_STATEMENT_TIMEOUT_MS` / `DB_IDLE_IN_TX_TIMEOUT_MS`, default 60s) are applied to every service connection but NOT to the migration runner, so long DDL (e.g. `CREATE INDEX CONCURRENTLY`, partition re-carve) is never killed. Keep them above the largest legitimate app statement.
 
 ---
 

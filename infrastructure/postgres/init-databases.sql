@@ -11,4 +11,14 @@ CREATE DATABASE upload_service;
 GRANT ALL PRIVILEGES ON DATABASE payment_service TO turbo_admin;
 GRANT ALL PRIVILEGES ON DATABASE upload_service TO turbo_admin;
 
-\echo 'Databases created: payment_service, upload_service'
+-- Enable pg_stat_statements per database for slow/hot query observability.
+-- Requires shared_preload_libraries=pg_stat_statements (set in the postgres
+-- command in docker-compose.yml). This runs ONLY on a fresh data volume; on an
+-- existing volume, run the same CREATE EXTENSION manually after restarting with
+-- the preload library enabled (see runbook §17).
+\connect payment_service
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+\connect upload_service
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+\echo 'Databases created: payment_service, upload_service (pg_stat_statements enabled)'
