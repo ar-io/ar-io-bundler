@@ -85,10 +85,10 @@ diverge** — these are recorded choices, not gaps:
   base-bridged $ARIO (PE-8763),
   turbo-gateway.com host-swap + SSM optical keys, `$U` mint tags, DynamoDB RCU
   autoscaling.
-  - **Now adopted (de-AWS port):** per-chunk broadcast (PE-8879/8967) — the
-    `broadcast-chunks` BullMQ queue broadcasts each chunk to `AR_IO_NODE_URLS`
-    distributor nodes (shuffle + failover), replacing the original AWS node-fleet
-    design.
+- **Adopted from upstream (de-AWS port):** per-chunk broadcast (PE-8879/8967) — the
+  `broadcast-chunks` BullMQ queue broadcasts each chunk to `AR_IO_NODE_URLS`
+  distributor nodes (shuffle + failover), replacing the original AWS node-fleet
+  design.
 - **Platform:** Node 22+ (required — `@ar.io/sdk` v4 is ESM-only), TypeScript 5.
 - **Open decision:** `usd_equiv` is *computed* on crypto funding but not persisted
   (PE-8705) — adopt only if USD-denominated crypto-funding accounting is needed.
@@ -243,7 +243,7 @@ Located in `infrastructure/pm2/ecosystem.config.js`:
       name: "upload-workers",
       instances: WORKER_INSTANCES || 1,
       exec_mode: "fork",
-      script: "./lib/workers/allWorkers.js"   // 12 BullMQ queues
+      script: "./lib/workers/allWorkers.js"   // 14 BullMQ queues
     },
     {
       name: "admin-dashboard",   // admin stats + embedded Bull Board
@@ -606,7 +606,7 @@ Handles all data upload operations including:
 - Block height tracking
 
 **Workers** (`src/workers/allWorkers.ts`):
-- 12 BullMQ workers processing async jobs
+- 14 BullMQ workers processing async jobs
 - Each worker handles specific job type
 - Graceful shutdown support
 
@@ -781,7 +781,9 @@ Located in `packages/upload-service/src/workers/allWorkers.ts`:
 ```
 POST /v1/tx
   ↓
-newDataItem → planBundle → prepareBundle → postBundle → verifyBundle
+newDataItem → planBundle → prepareBundle → postBundle → seedBundle → verifyBundle
+                                                            ↓
+                                          broadcastChunks (per-chunk fan-out → AR_IO_NODE_URLS)
                                               ↓
                                           opticalPost (parallel)
                                               ↓

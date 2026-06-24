@@ -190,12 +190,11 @@ and the default-off ones leave behavior unchanged until flipped on.
 | 3 | Bundle chunks (cache) | `ArweaveInterface.pushChunksToGatewayCache` (fired from `seed.ts`) | `CHUNK_CACHE_BRIDGE_ENABLED` == "true" (**OFF**) | `void`, swallows errors | `chunk_cache_bridge_total{result=cached\|error\|disabled}` |
 
 Design decisions:
-- **Seeding is separate from surface 3.** Seeding broadcasts each chunk to real
-  AR.IO chunk-distributor nodes (`AR_IO_NODE_URLS`, via the `broadcast-chunks`
-  queue; unset → the single `ARWEAVE_UPLOAD_NODE`) so on-chain landing never
-  depends on the read gateway supporting `/chunk` or being healthy. Surface 3 is
-  an *additional* best-effort push to the read gateway's `/chunk` cache
-  (`ARWEAVE_GATEWAY`); it never affects seeding.
+- **Seeding is separate from surface 3.** Seeding (the `broadcast-chunks` queue →
+  `AR_IO_NODE_URLS`, see the pipeline bullets above) is what actually lands chunks
+  on-chain, so it must never depend on the read gateway. Surface 3 is an
+  *additional* best-effort push of the same chunks to the read gateway's `/chunk`
+  cache (`ARWEAVE_GATEWAY`) to warm reads before mining; it never affects seeding.
 - **Surface 2 URL hardening.** The endpoint is read from explicit
   `OPTIMISTIC_TX_BRIDGE_URL` first, falling back to deriving it from
   `OPTICAL_BRIDGE_URL` (`…/queue-data-item` → `…/queue-optimistic-tx`). If neither
@@ -316,8 +315,12 @@ See the repo-root `.env.sample` for the full list. Commonly relevant here:
 - `TURBO_JWK_FILE` (bundle-signing wallet, absolute path),
   `RAW_DATA_ITEM_JWK_FILE` (unsigned-upload signing wallet)
 - `PAYMENT_SERVICE_BASE_URL` (no protocol prefix), `PRIVATE_ROUTE_SECRET`
-- `ARWEAVE_GATEWAY`, `OPTICAL_BRIDGING_ENABLED`, `OPTICAL_BRIDGE_URL`,
-  `AR_IO_ADMIN_KEY`
+- `ARWEAVE_GATEWAY` (reads + bundle-tx POST), `ARWEAVE_GATEWAYS` (failover),
+  `OPTICAL_BRIDGING_ENABLED`, `OPTICAL_BRIDGE_URL`, `AR_IO_ADMIN_KEY`
+- Chunk seeding: `AR_IO_NODE_URLS` (comma-separated distributor list; unset →
+  single `ARWEAVE_UPLOAD_NODE`), `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10),
+  `CHUNK_POST_MAX_TRIES` (3), `CHUNK_POST_RETRY_DELAY_MS` (2000),
+  `CHUNK_POST_TIMEOUT_MS` (60000), `CHUNKS_S3_PREFIX` (staging key prefix, default `chunks`)
 - `X402_FEE_PERCENT`, `MAX_DATA_ITEM_SIZE` (default 10 GiB),
   `FILESYSTEM_CLEANUP_DAYS`, `MINIO_CLEANUP_DAYS`
 

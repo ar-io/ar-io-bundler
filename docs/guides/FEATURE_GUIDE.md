@@ -46,7 +46,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 **Enterprise Features:**
 - ✅ **Microservice Architecture** - Separate payment and upload services
 - ✅ **Horizontal Scaling** - PM2 cluster mode for APIs
-- ✅ **Async Job Processing** - 12 BullMQ queues for fulfillment pipeline
+- ✅ **Async Job Processing** - 14 BullMQ queues for fulfillment pipeline
 - ✅ **Circuit Breakers** - Resilience against service failures
 - ✅ **Comprehensive Monitoring** - Prometheus metrics, Winston logging, OpenTelemetry tracing
 - ✅ **Multi-Region Support** - PostgreSQL, Redis, MinIO S3-compatible storage
@@ -122,8 +122,8 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 - **Responsibilities:** Data upload, ANS-104 bundling, Arweave posting, optical caching
 - **Database:** `upload_service` (PostgreSQL)
 - **API Port:** 3001
-- **Workers:** 12 asynchronous job processors
-- **Queues:** 12 BullMQ queues
+- **Workers:** 14 asynchronous job processors
+- **Queues:** 14 BullMQ queues
 
 **Communication Pattern:** Upload Service → Payment Service (HTTP REST with JWT authentication)
 
@@ -1102,7 +1102,7 @@ SKIP_BALANCE_CHECKS=false  # Development only, bypasses all checks
 4. **upload-workers** (Fork, 1 instance) **CRITICAL**
    - Mode: Fork (MUST be 1 to avoid duplicate job execution)
    - Script: `./packages/upload-service/lib/workers/allWorkers.js`
-   - Workers: 12 BullMQ workers
+   - Workers: 14 BullMQ workers
    - Kill timeout: 30 seconds (graceful shutdown)
 
 5. **admin-dashboard** (Fork, 1 instance)
