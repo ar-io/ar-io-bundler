@@ -52,7 +52,7 @@ const { enqueue } = require(uploadServicePath + '/lib/arch/queues');
 
 const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
-const { initializeStatsCollector, getStats, lookupEntity, getHistory, cleanup } = require("./admin/statsCollector");
+const { initializeStatsCollector, getStats, lookupEntity, getHistory, sampleHistory, cleanup } = require("./admin/statsCollector");
 
 const app = new Koa();
 const router = new Router();
@@ -94,12 +94,14 @@ const config = {
   redisPort: process.env.REDIS_CACHE_PORT || '6379',
   redisQueueHost: process.env.REDIS_QUEUE_HOST || 'localhost',
   redisQueuePort: process.env.REDIS_QUEUE_PORT || '6381',
-  uploadDbHost: process.env.DB_HOST || 'localhost',
+  // Admin stats are read-only analytics — prefer the read replica
+  // (DB_READER_ENDPOINT) so heavy aggregates never load the primary/writer.
+  uploadDbHost: process.env.DB_READER_ENDPOINT || process.env.DB_HOST || 'localhost',
   uploadDbPort: process.env.DB_PORT || '5432',
   uploadDbName: 'upload_service',  // ALWAYS use upload_service for upload stats
   uploadDbUser: process.env.DB_USER || 'postgres',
   uploadDbPassword: process.env.DB_PASSWORD,
-  paymentDbHost: process.env.DB_HOST || 'localhost',
+  paymentDbHost: process.env.DB_READER_ENDPOINT || process.env.DB_HOST || 'localhost',
   paymentDbPort: process.env.DB_PORT || '5432',
   paymentDbName: 'payment_service',  // ALWAYS use payment_service for payment stats
   paymentDbUser: process.env.DB_USER || 'postgres',
@@ -438,7 +440,8 @@ const HISTORY_SAMPLE_MS = process.env.ADMIN_HISTORY_SAMPLE_MS != null
 let historyTimer = null;
 if (HISTORY_SAMPLE_MS > 0) {
   historyTimer = setInterval(() => {
-    getStats(queues).catch((e) => console.warn('history sampler:', e.message));
+    // Light sample (cheap queries only) — NOT the full dashboard compute.
+    sampleHistory(queues).catch((e) => console.warn('history sampler:', e.message));
   }, HISTORY_SAMPLE_MS);
   if (typeof historyTimer.unref === 'function') historyTimer.unref();
 }

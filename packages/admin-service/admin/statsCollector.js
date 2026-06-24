@@ -26,7 +26,7 @@ const { getUploadStats } = require('./queries/uploadStats');
 const { getPaymentStats } = require('../../payment-service/admin/queries/paymentStats');
 const { getX402Stats } = require('./queries/x402Stats');
 const { getBundleStats } = require('./queries/bundleStats');
-const { getSystemHealth } = require('./queries/systemHealth');
+const { getSystemHealth, getQueueHealth } = require('./queries/systemHealth');
 const { getPipelineStats } = require('./queries/pipelineStats');
 const { getWalletStats } = require('./queries/walletStats');
 const { getThroughputStats } = require('./queries/throughputStats');
@@ -36,6 +36,8 @@ const Knex = require('knex');
 
 const CACHE_TTL = 30; // seconds
 const CACHE_KEY = 'admin:stats';
+// Server-side cap on every admin query so the dashboard can never load the DB.
+const STATEMENT_TIMEOUT_MS = parseInt(process.env.ADMIN_DB_STATEMENT_TIMEOUT_MS || '15000');
 
 let cacheRedis = null;
 let uploadDb = null;
@@ -92,7 +94,10 @@ function initializeStatsCollector(config) {
           port: parseInt(config.uploadDbPort || '5432'),
           database: config.uploadDbName || 'upload_service',
           user: config.uploadDbUser || 'postgres',
-          password: config.uploadDbPassword
+          password: config.uploadDbPassword,
+          // Hard cap so a dashboard query can never run away and load the DB.
+          statement_timeout: STATEMENT_TIMEOUT_MS,
+          application_name: 'ar-io-admin-dashboard'
         },
         pool: { min: 1, max: 3 }
       });
@@ -113,7 +118,10 @@ function initializeStatsCollector(config) {
           port: parseInt(config.paymentDbPort || '5432'),
           database: config.paymentDbName || 'payment_service',
           user: config.paymentDbUser || 'postgres',
-          password: config.paymentDbPassword
+          password: config.paymentDbPassword,
+          // Hard cap so a dashboard query can never run away and load the DB.
+          statement_timeout: STATEMENT_TIMEOUT_MS,
+          application_name: 'ar-io-admin-dashboard'
         },
         pool: { min: 1, max: 3 }
       });
@@ -132,6 +140,8 @@ function initializeStatsCollector(config) {
  * @param {array} queues - BullMQ queue adapters from Bull Board
  * @returns {Promise<object>} Dashboard statistics
  */
+let computeInFlight = null;
+
 async function getStats(queues = []) {
   // Try cache first
   if (cacheRedis) {
@@ -148,6 +158,15 @@ async function getStats(queues = []) {
     }
   }
 
+  // Single-flight: coalesce concurrent cache-miss requests onto ONE compute so a
+  // burst of refreshes (or multiple tabs) can't fan out into N full query sets
+  // and exhaust the small connection pool.
+  if (computeInFlight) return computeInFlight;
+  computeInFlight = computeStats(queues).finally(() => { computeInFlight = null; });
+  return computeInFlight;
+}
+
+async function computeStats(queues = []) {
   // Compute stats from databases
   const startTime = Date.now();
   console.log('📊 Computing admin dashboard stats...');
@@ -552,6 +571,39 @@ async function recordHistoryPoint(stats) {
 }
 
 /**
+ * LIGHT history sample for the background sampler — runs only the cheap queries
+ * the sparklines need (pipeline in-flight/failed counts, windowed throughput,
+ * wallet over HTTP, queue depths from Redis). Deliberately avoids the heavy
+ * full-table aggregates + recent-uploads UNION that the full dashboard computes,
+ * so the always-on 2-min cadence costs almost nothing on the DB.
+ */
+async function sampleHistory(queues) {
+  if (!uploadDb) return;
+  try {
+    const [pipeline, throughput, wallet, queueHealth] = await Promise.all([
+      getPipelineStats(uploadDb, { stuckPostedAgeSec: runtimeConfig.stuckPostedAgeSec }).catch(() => null),
+      getThroughputStats(uploadDb).catch(() => null),
+      getWalletStats({
+        gateway: runtimeConfig.arweaveGateway,
+        address: runtimeConfig.arweaveAddress,
+        jwkFile: runtimeConfig.jwkFile,
+        lowAr: runtimeConfig.walletLowAr,
+      }).catch(() => null),
+      getQueueHealth(queues).catch(() => null),
+    ]);
+    await recordHistoryPoint({
+      pipeline: pipeline || {},
+      throughput: throughput || {},
+      wallet: wallet || {},
+      system: { queues: queueHealth || {} },
+      health: {},
+    });
+  } catch (error) {
+    console.warn('Light history sample failed:', error.message);
+  }
+}
+
+/**
  * Return trend datapoints (oldest→newest) within the last `hours`.
  */
 async function getHistory(hours = 24) {
@@ -576,5 +628,6 @@ module.exports = {
   lookupEntity,
   getHistory,
   recordHistoryPoint,
+  sampleHistory,
   cleanup
 };

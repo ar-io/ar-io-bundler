@@ -303,36 +303,32 @@ async function getTopUploaders(db, limit = 10) {
  * Get recent uploads (last 50)
  */
 async function getRecentUploads(db, limit = 50) {
-  // Query ALL three tables and combine
+  // Push ORDER BY + LIMIT INTO each subquery so each uses its date index and
+  // returns only `limit` rows, instead of UNION-ing three FULL tables and then
+  // sorting the entire dataset (which scans everything on a large deployment).
   const results = await db.raw(`
     SELECT * FROM (
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        uploaded_date as timestamp
-      FROM ${tableNames.newDataItem}
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, uploaded_date as timestamp
+       FROM ${tableNames.newDataItem}
+       ORDER BY uploaded_date DESC LIMIT ?)
       UNION ALL
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        planned_date as timestamp
-      FROM ${tableNames.plannedDataItem}
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, planned_date as timestamp
+       FROM ${tableNames.plannedDataItem}
+       ORDER BY planned_date DESC LIMIT ?)
       UNION ALL
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        permanent_date as timestamp
-      FROM permanent_data_items
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, permanent_date as timestamp
+       FROM permanent_data_items
+       ORDER BY permanent_date DESC LIMIT ?)
     ) combined
     ORDER BY timestamp DESC
     LIMIT ?
-  `, [limit]);
+  `, [limit, limit, limit, limit]);
 
   // Format results
   return results.rows.map(row => ({
