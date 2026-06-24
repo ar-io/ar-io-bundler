@@ -147,7 +147,7 @@ function renderSparklines(points) {
   renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
   renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
   renderSparkline('spark-bundles', points, p => p.bp, '#16a34a');
-  renderSparkline('spark-wallet', points, p => p.w, '#0070f3');
+  renderSparkline('spark-wallet', points, p => p.w, '#5427C8');
 }
 
 /**
@@ -587,7 +587,7 @@ function updateCryptoTokenChart(byToken) {
     labels: data.map(d => d.label),
     datasets: [{
       data: data.map(d => d.value),
-      backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'],
+      backgroundColor: ['#5427C8', '#8B5CF6', '#D4C6FF', '#16a34a', '#f5a623', '#06b6d4'],
       borderWidth: 2,
       borderColor: '#ffffff'
     }]
@@ -636,11 +636,12 @@ function updateSignatureChart(byType) {
     datasets: [{
       data: data.map(d => d.value),
       backgroundColor: [
-        '#3b82f6', // Blue (Ethereum)
-        '#10b981', // Green (Arweave)
-        '#f59e0b', // Amber (Solana)
-        '#8b5cf6', // Purple
-        '#ec4899', // Pink
+        '#5427C8', // ar.io purple
+        '#8B5CF6', // violet
+        '#D4C6FF', // accent lavender
+        '#16a34a', // green
+        '#f5a623', // amber
+        '#ec4899', // pink
       ],
       borderWidth: 2,
       borderColor: '#ffffff'
@@ -702,9 +703,9 @@ function updatePaymentTypeChart(byMode) {
     datasets: [{
       data: data.map(d => d.value),
       backgroundColor: [
-        '#06b6d4', // Cyan (PAYG)
-        '#8b5cf6', // Purple (TopUp)
-        '#10b981', // Green (Hybrid)
+        '#5427C8', // ar.io purple (PAYG)
+        '#8B5CF6', // violet (TopUp)
+        '#D4C6FF', // accent lavender (Hybrid)
       ],
       borderWidth: 2,
       borderColor: '#ffffff'
@@ -765,14 +766,14 @@ function updateNetworkChart(byNetwork) {
       {
         label: 'Payment Count',
         data: data.map(d => d.count),
-        backgroundColor: '#3b82f6',
+        backgroundColor: '#5427C8',
         borderRadius: 6,
         yAxisID: 'y'
       },
       {
         label: 'Total USDC',
         data: data.map(d => d.amount),
-        backgroundColor: '#10b981',
+        backgroundColor: '#D4C6FF',
         borderRadius: 6,
         yAxisID: 'y1'
       }
