@@ -745,3 +745,22 @@ table td .copyable-id {
 .copy-icon svg, .copy-feedback svg { vertical-align: -2px; }
 .queue-name svg { vertical-align: -1px; opacity: .7; }
 .refresh-btn svg, .btn svg { vertical-align: -2px; }
+
+/* ---------- Sticky topbar + section nav ---------- */
+html { scroll-behavior: smooth; }
+.topbar { position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 22px rgba(14, 10, 28, 0.40); }
+.navbar { position: static; box-shadow: none; }
+.section-nav {
+  background: var(--deep-dark);
+  border-top: 1px solid rgba(212, 198, 255, 0.10);
+  display: flex; gap: 4px; padding: 0 24px 10px; overflow-x: auto;
+}
+.section-nav a {
+  color: rgba(255, 255, 255, 0.6); text-decoration: none;
+  font-size: 13px; font-weight: 600; padding: 6px 13px; border-radius: 9999px;
+  white-space: nowrap; transition: all .15s;
+}
+.section-nav a:hover { color: #fff; background: rgba(212, 198, 255, 0.14); }
+/* offset anchor scroll so it clears the sticky header */
+[id^="sec-"] { scroll-margin-top: 108px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

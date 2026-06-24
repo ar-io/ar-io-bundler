@@ -1437,6 +1437,20 @@ async function logout() {
   window.location.href = '/admin/login';
 }
 
+/**
+ * Toggle the Recent x402 Activity table between payment-service and upload-service.
+ */
+function showX402(which) {
+  const payEl = document.getElementById('x402-tab-payment');
+  const upEl = document.getElementById('x402-tab-upload');
+  if (payEl) payEl.style.display = which === 'payment' ? '' : 'none';
+  if (upEl) upEl.style.display = which === 'upload' ? '' : 'none';
+  document.querySelectorAll('#x402-tabs button').forEach((b) => {
+    const isPay = b.textContent.indexOf('Payment') !== -1;
+    b.classList.toggle('active', which === 'payment' ? isPay : !isPay);
+  });
+}
+
 // Initial load
 restoreAutoRefresh();
 fetchStats();

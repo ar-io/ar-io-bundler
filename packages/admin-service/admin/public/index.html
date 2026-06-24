@@ -13,6 +13,7 @@
 </head>
 <body>
   <!-- Navigation -->
+  <header class="topbar">
   <nav class="navbar">
     <div class="nav-left">
       <img class="nav-logo" src="/admin/dashboard/brand/ario-full-white.svg" alt="ar.io">
@@ -36,6 +37,17 @@
       <button id="logout-btn" class="nav-link" onclick="logout()">Sign out</button>
     </div>
   </nav>
+  <nav class="section-nav">
+    <a href="#sec-health">Health</a>
+    <a href="#sec-pipeline">Pipeline</a>
+    <a href="#sec-system">System</a>
+    <a href="#sec-queues">Queues</a>
+    <a href="#sec-failures">Failures</a>
+    <a href="#sec-find">Find</a>
+    <a href="#sec-money">Money</a>
+    <a href="#sec-business">Business</a>
+  </nav>
+  </header>
 
   <div class="container">
     <!-- Loading State -->
@@ -57,7 +69,7 @@
       <div id="status-banner" class="status-banner"></div>
 
       <!-- Windowed pipeline health (good/bad over 1h/24h/7d) -->
-      <section class="section">
+      <section class="section" id="sec-health">
         <div class="section-head">
           <h2>Pipeline Health</h2>
           <div class="window-selector" id="window-selector">
@@ -70,7 +82,7 @@
       </section>
 
       <!-- Pipeline (data flowing to permanence) -->
-      <section class="section">
+      <section class="section" id="sec-pipeline">
         <div class="section-head">
           <h2>Bundle Pipeline</h2>
           <div class="section-actions">
@@ -107,7 +119,7 @@
       </section>
 
       <!-- System Health Section -->
-      <section class="section">
+      <section class="section" id="sec-system">
         <h2>System Health</h2>
         <div id="health-grid" class="health-grid">
           <!-- Populated by JS -->
@@ -119,7 +131,7 @@
       </section>
 
       <!-- Queue Health -->
-      <section class="section">
+      <section class="section" id="sec-queues">
         <h2>Queue Status</h2>
         <div class="queue-summary" id="queue-summary">
           <!-- Populated by JS -->
@@ -130,7 +142,7 @@
       </section>
 
       <!-- Failed Bundles (with reason) -->
-      <section class="section">
+      <section class="section" id="sec-failures">
         <h2>Failed Bundles</h2>
         <div class="table-container">
           <table id="failed-bundles-table"><!-- Populated by JS --></table>
@@ -146,7 +158,7 @@
       </section>
 
       <!-- Lookup (investigate a specific id) -->
-      <section class="section lookup-section">
+      <section class="section lookup-section" id="sec-find">
         <div class="section-head"><h2>Find an item</h2></div>
         <div class="lookup-bar">
           <input type="text" id="lookup-input" placeholder="Find a data item, bundle, or wallet by id…"
@@ -157,7 +169,7 @@
       </section>
 
       <!-- Stats Overview Cards -->
-      <section class="section">
+      <section class="section" id="sec-business">
         <h2>Overview</h2>
         <div class="stats-grid">
           <div class="stat-card">
@@ -292,7 +304,7 @@
       </section>
 
       <!-- Money Integrity -->
-      <section class="section">
+      <section class="section" id="sec-money">
         <h2>Money Integrity</h2>
         <div id="integrity-grid" class="atrisk-grid"></div>
         <div class="table-container">
@@ -300,23 +312,20 @@
         </div>
       </section>
 
-      <!-- Recent x402 Payments (payment service) -->
+      <!-- Recent x402 activity — payment service + upload service (tabbed) -->
       <section class="section">
-        <h2>Recent x402 Payments — Payment Service (USDC)</h2>
-        <div class="table-container">
-          <table id="recent-traditional-payments-table">
-            <!-- Populated by JS -->
-          </table>
+        <div class="section-head">
+          <h2>Recent x402 Activity (USDC)</h2>
+          <div class="window-selector" id="x402-tabs">
+            <button type="button" class="active" onclick="showX402('payment')">Payment Service</button>
+            <button type="button" onclick="showX402('upload')">Upload Service</button>
+          </div>
         </div>
-      </section>
-
-      <!-- Recent x402 Uploads (upload service) -->
-      <section class="section">
-        <h2>Recent x402 Uploads — Upload Service (USDC)</h2>
-        <div class="table-container">
-          <table id="recent-x402-payments-table">
-            <!-- Populated by JS -->
-          </table>
+        <div id="x402-tab-payment" class="table-container">
+          <table id="recent-traditional-payments-table"><!-- Populated by JS --></table>
+        </div>
+        <div id="x402-tab-upload" class="table-container" style="display:none;">
+          <table id="recent-x402-payments-table"><!-- Populated by JS --></table>
         </div>
       </section>
 
