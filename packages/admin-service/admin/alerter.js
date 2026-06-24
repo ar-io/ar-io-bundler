@@ -18,28 +18,42 @@
 /**
  * Health Alerter
  *
- * Periodically evaluates getSystemHealth() and pushes Slack alerts ONLY on
- * meaningful state changes. The whole point is high signal / low noise:
+ * Pushes Slack alerts that MATCH what the admin dashboard shows. The dashboard's
+ * verdict is computed once by computeHealthRollup() and attached to getStats() as
+ * `stats.health` ({ status, counts, issues:[{severity, area, message}] }). This
+ * alerter consumes that exact object, so an operator never sees the dashboard say
+ * "degraded" while Slack says "critical" — they share one source of truth and one
+ * set of (env-tunable) thresholds.
  *
- *   - SUSTAINED conditions (a service down, Postgres/Redis/MinIO down):
- *       * fire ONCE when it first goes bad,
- *       * send a reminder only every ALERT_REMINDER_MS while still bad,
- *       * send a single ✅ RECOVERED message when it heals.
- *     => no re-alerting every tick.
+ * The rollup is pipeline/money/wallet-aware but deliberately does NOT cover raw
+ * datastore liveness or the non-worker API processes. We add a thin "liveness
+ * supplement" for those gaps (Postgres/Redis down; an API/admin process missing).
  *
- *   - EVENT conditions (new queue failures, a crash-looping service, a growing
- *     backlog): throttled per-key by ALERT_REMINDER_MS so a persistent problem
- *     pings at most once per reminder window, never every tick.
+ * High signal / low noise via one anti-spam state machine over the issue SET:
+ *   - a new issue alerts ONCE,
+ *   - while it persists, it reminds at most every ALERT_REMINDER_MS,
+ *   - when it clears, it sends a single ✅ resolved message.
+ * Issue keys normalize embedded numbers, so "5 items stuck" → "7 items stuck"
+ * is the SAME ongoing issue (no re-alert on every count wobble).
  *
- * Everything is opt-in (ALERTS_ENABLED) and best-effort: a failure to evaluate
- * or send never throws into the caller.
+ * Opt-in (ALERTS_ENABLED) and best-effort: evaluation/sending never throws into
+ * the caller.
  */
 
-const { getSystemHealthSnapshot } = require("./statsCollector");
+const { getStats } = require("./statsCollector");
 const { sendAlert, sendSlackMessage, isConfigured } = require("./notifier/slack");
 
-// Which PM2 processes we expect to always be online. Anything here that is not
-// "healthy" is CRITICAL. (Matches infrastructure/pm2/ecosystem.config.js.)
+// Raw datastore liveness the rollup doesn't check (down => CRITICAL).
+const INFRA_LABELS = {
+  postgresUpload: "PostgreSQL (upload_service)",
+  postgresPayment: "PostgreSQL (payment_service)",
+  redisCache: "Redis cache (6379)",
+  redisQueues: "Redis queues (6381)",
+};
+
+// PM2 processes we expect to always be online. The rollup already reports the
+// two money/pipeline workers when they're PRESENT-but-unhealthy, so for those we
+// only add the MISSING case here (rollup can't see a process absent from PM2).
 const EXPECTED_SERVICES = [
   "payment-service",
   "upload-api",
@@ -47,6 +61,7 @@ const EXPECTED_SERVICES = [
   "payment-workers",
   "admin-dashboard",
 ];
+const ROLLUP_COVERED_SERVICES = new Set(["upload-workers", "payment-workers"]);
 
 function num(name, def) {
   const v = parseInt(process.env[name] || "", 10);
@@ -57,21 +72,10 @@ const config = {
   enabled: process.env.ALERTS_ENABLED === "true",
   intervalMs: num("ALERT_CHECK_INTERVAL_MS", 60_000),
   reminderMs: num("ALERT_REMINDER_MS", 30 * 60_000),
-  // Alert when this many NEW failures appear across a single check interval.
-  queueFailedDelta: num("ALERT_QUEUE_FAILED_DELTA", 5),
-  // Alert when a single queue's waiting backlog exceeds this.
-  queueWaitingMax: num("ALERT_QUEUE_WAITING_MAX", 1000),
-  // Alert when a service's PM2 restart count grows by this much in one interval.
-  restartDelta: num("ALERT_RESTART_DELTA", 3),
 };
 
-// Per-key tracking for sustained conditions: key -> { firing, lastNotified }.
+// key -> { firing, lastNotified, severity, title }
 const sustained = new Map();
-// Per-key throttle for event conditions: key -> lastNotified ms.
-const eventThrottle = new Map();
-// Last-seen counters for delta detection.
-let lastFailedByQueue = null;
-let lastRestartsByService = null;
 
 let timer = null;
 let running = false;
@@ -81,156 +85,107 @@ function now() {
   return Date.now();
 }
 
+// Normalize embedded numbers so an issue whose count changes keeps a stable key.
+function issueKey(area, message) {
+  return `${area}:${String(message).replace(/\d[\d.,]*/g, "N")}`;
+}
+
 /**
- * Record/clear a sustained condition and decide whether to notify.
- * Returns one of: "fire" (new), "remind" (still bad, past reminder window),
- * "recover" (was bad, now good), or null (no change worth sending).
+ * Translate a full getStats() blob into a Map of current issues:
+ *   key -> { severity: "critical"|"warning", title, detail }
  */
-function evaluateSustained(key, isBad) {
-  const prev = sustained.get(key);
-  const t = now();
-  if (isBad) {
-    if (!prev || !prev.firing) {
-      sustained.set(key, { firing: true, lastNotified: t });
-      return "fire";
+function collectIssues(stats) {
+  const current = new Map();
+  const add = (key, severity, title, detail) => {
+    if (!current.has(key)) current.set(key, { severity, title, detail });
+  };
+
+  const system = stats.system || {};
+
+  // 1) PRIMARY: the dashboard's own rollup verdict (pipeline/money/wallet/etc).
+  const health = stats.health || {};
+  for (const issue of health.issues || []) {
+    const severity = issue.severity === "critical" ? "critical" : "warning";
+    add(
+      issueKey(`rollup:${issue.area}`, issue.message),
+      severity,
+      issue.message,
+      `area: ${issue.area}`
+    );
+  }
+
+  // 2) SUPPLEMENT: raw datastore liveness (rollup doesn't check these).
+  const infra = system.infrastructure || {};
+  for (const [k, label] of Object.entries(INFRA_LABELS)) {
+    const comp = infra[k];
+    if (comp && comp.status !== "healthy") {
+      add(
+        `infra:${k}`,
+        "critical",
+        `${label} is unreachable`,
+        comp.error ? `Error: ${comp.error}` : undefined
+      );
     }
-    if (t - prev.lastNotified >= config.reminderMs) {
-      sustained.set(key, { firing: true, lastNotified: t });
-      return "remind";
-    }
-    return null;
   }
-  // not bad
-  if (prev && prev.firing) {
-    sustained.set(key, { firing: false, lastNotified: t });
-    return "recover";
-  }
-  return null;
-}
 
-/** Throttle an event-style alert; returns true if it's allowed to send now. */
-function allowEvent(key) {
-  const t = now();
-  const last = eventThrottle.get(key);
-  if (last === undefined || t - last >= config.reminderMs) {
-    eventThrottle.set(key, t);
-    return true;
-  }
-  return false;
-}
-
-async function evaluate(snapshot) {
-  const { services = {}, infrastructure = {}, queues = {} } = snapshot || {};
-
-  // ---- PM2 services (sustained: down/up) -------------------------------
+  // 3) SUPPLEMENT: API/admin process liveness. Cover the missing case for all
+  //    (rollup can't see an absent process); cover present-unhealthy only for
+  //    services the rollup doesn't already report, to avoid double-alerting.
+  const services = system.services || {};
   for (const name of EXPECTED_SERVICES) {
     const svc = services[name];
-    const isBad = !svc || svc.status !== "healthy";
-    const action = evaluateSustained(`service:${name}`, isBad);
-    if (action === "fire" || action === "remind") {
-      const prefix = action === "remind" ? "Still down: " : "";
-      await sendAlert({
-        severity: "critical",
-        title: `${prefix}PM2 service "${name}" is ${svc ? svc.status : "missing"}`,
-        detail: svc
+    const missing = !svc;
+    const unhealthy = svc && svc.status !== "healthy";
+    if (unhealthy && ROLLUP_COVERED_SERVICES.has(name)) continue;
+    if (missing || unhealthy) {
+      add(
+        `service:${name}`,
+        "critical",
+        `PM2 service "${name}" is ${svc ? svc.status : "missing"}`,
+        svc
           ? `uptime: ${svc.uptime} · restarts: ${svc.restarts} · mem: ${svc.memory}`
-          : "Process not found in PM2 list.",
+          : "Process not found in PM2 list."
+      );
+    }
+  }
+
+  return current;
+}
+
+/**
+ * Diff the current issue set against tracked state and emit fire/remind/resolve.
+ * Exported for testing — accepts a full getStats() blob.
+ */
+async function evaluate(stats) {
+  const current = collectIssues(stats || {});
+  const t = now();
+
+  // Fire new issues / remind on persistent ones.
+  for (const [key, iss] of current) {
+    const prev = sustained.get(key);
+    if (!prev || !prev.firing) {
+      sustained.set(key, {
+        firing: true,
+        lastNotified: t,
+        severity: iss.severity,
+        title: iss.title,
       });
-    } else if (action === "recover") {
+      await sendAlert({ severity: iss.severity, title: iss.title, detail: iss.detail });
+    } else if (t - prev.lastNotified >= config.reminderMs) {
+      sustained.set(key, { ...prev, lastNotified: t });
       await sendAlert({
-        severity: "recovered",
-        title: `PM2 service "${name}" is back online`,
-        detail: svc ? `uptime: ${svc.uptime}` : undefined,
+        severity: iss.severity,
+        title: `Still: ${iss.title}`,
+        detail: iss.detail,
       });
     }
   }
 
-  // ---- PM2 restart storms (event: crash loop) --------------------------
-  const restartsByService = {};
-  for (const name of EXPECTED_SERVICES) {
-    restartsByService[name] = services[name] ? services[name].restarts || 0 : 0;
-  }
-  if (lastRestartsByService) {
-    for (const name of EXPECTED_SERVICES) {
-      const delta = restartsByService[name] - (lastRestartsByService[name] || 0);
-      if (delta >= config.restartDelta && allowEvent(`restart:${name}`)) {
-        await sendAlert({
-          severity: "warning",
-          title: `PM2 service "${name}" is restarting repeatedly`,
-          detail: `${delta} restarts in the last ${Math.round(
-            config.intervalMs / 1000
-          )}s (total: ${restartsByService[name]}) — likely crash-looping.`,
-        });
-      }
-    }
-  }
-  lastRestartsByService = restartsByService;
-
-  // ---- Infrastructure (sustained: down/up) -----------------------------
-  const infraLabels = {
-    postgresUpload: "PostgreSQL (upload_service)",
-    postgresPayment: "PostgreSQL (payment_service)",
-    redisCache: "Redis cache (6379)",
-    redisQueues: "Redis queues (6381)",
-    minio: "MinIO object store",
-  };
-  for (const [key, label] of Object.entries(infraLabels)) {
-    const comp = infrastructure[key];
-    if (!comp) continue; // not checked (e.g. minio not wired) → skip
-    const isBad = comp.status !== "healthy";
-    const action = evaluateSustained(`infra:${key}`, isBad);
-    if (action === "fire" || action === "remind") {
-      const prefix = action === "remind" ? "Still down: " : "";
-      await sendAlert({
-        severity: "critical",
-        title: `${prefix}${label} is unreachable`,
-        detail: comp.error ? `Error: ${comp.error}` : undefined,
-      });
-    } else if (action === "recover") {
-      await sendAlert({
-        severity: "recovered",
-        title: `${label} is reachable again`,
-      });
-    }
-  }
-
-  // ---- Queue failures (event: new failures since last check) -----------
-  const byQueue = Array.isArray(queues.byQueue) ? queues.byQueue : [];
-  const failedByQueue = {};
-  for (const q of byQueue) {
-    failedByQueue[q.name] = q.failed || 0;
-  }
-  if (lastFailedByQueue) {
-    for (const q of byQueue) {
-      const delta = (failedByQueue[q.name] || 0) - (lastFailedByQueue[q.name] || 0);
-      if (delta >= config.queueFailedDelta && allowEvent(`qfail:${q.name}`)) {
-        await sendAlert({
-          severity: "warning",
-          title: `Queue "${q.name}" is accumulating failures`,
-          detail: `${delta} new failed jobs since last check (total failed: ${q.failed}). Check Bull Board → ${q.name}.`,
-        });
-      }
-    }
-  }
-  lastFailedByQueue = failedByQueue;
-
-  // ---- Queue backlog (sustained: waiting over threshold) ---------------
-  for (const q of byQueue) {
-    const isBad = (q.waiting || 0) > config.queueWaitingMax;
-    const action = evaluateSustained(`qwait:${q.name}`, isBad);
-    if (action === "fire" || action === "remind") {
-      const prefix = action === "remind" ? "Still backed up: " : "";
-      await sendAlert({
-        severity: "warning",
-        title: `${prefix}Queue "${q.name}" backlog is high`,
-        detail: `${q.waiting} jobs waiting (threshold ${config.queueWaitingMax}). Workers may be stalled or under-provisioned.`,
-      });
-    } else if (action === "recover") {
-      await sendAlert({
-        severity: "recovered",
-        title: `Queue "${q.name}" backlog has cleared`,
-        detail: `${q.waiting} waiting.`,
-      });
+  // Resolve issues that were firing and are no longer present.
+  for (const [key, prev] of sustained) {
+    if (prev.firing && !current.has(key)) {
+      sustained.set(key, { ...prev, firing: false });
+      await sendAlert({ severity: "recovered", title: `Resolved: ${prev.title}` });
     }
   }
 }
@@ -239,8 +194,8 @@ async function tick() {
   if (running) return; // guard against overlap on a slow check
   running = true;
   try {
-    const snapshot = await getSystemHealthSnapshot(monitoredQueues);
-    await evaluate(snapshot);
+    const stats = await getStats(monitoredQueues);
+    await evaluate(stats);
   } catch (error) {
     console.error("❌ Alerter tick failed:", error.message);
   } finally {
@@ -250,7 +205,7 @@ async function tick() {
 
 /**
  * Start the periodic health alerter. No-op unless ALERTS_ENABLED=true.
- * @param {array} queues - BullMQ queue adapters to monitor for backlog/failures
+ * @param {array} queues - BullMQ queue adapters (passed through to getStats)
  */
 function startAlerter(queues = []) {
   monitoredQueues = queues;
@@ -266,11 +221,13 @@ function startAlerter(queues = []) {
   console.log(
     `🔔 Health alerter started (every ${Math.round(
       config.intervalMs / 1000
-    )}s, reminders every ${Math.round(config.reminderMs / 60000)}m)`
+    )}s, reminders every ${Math.round(
+      config.reminderMs / 60000
+    )}m, verdict from dashboard rollup)`
   );
   // Announce startup so we know the channel is wired.
   sendSlackMessage({
-    message: `:satellite: *Bundler health alerter online* — watching ${EXPECTED_SERVICES.length} services + infra + ${"queues"}. Check interval ${Math.round(
+    message: `:satellite: *Bundler health alerter online* — mirroring the admin dashboard health rollup. Check interval ${Math.round(
       config.intervalMs / 1000
     )}s.`,
     icon_emoji: ":satellite:",
@@ -287,4 +244,4 @@ function stopAlerter() {
   }
 }
 
-module.exports = { startAlerter, stopAlerter, tick, evaluate, config };
+module.exports = { startAlerter, stopAlerter, tick, evaluate, collectIssues, config };
