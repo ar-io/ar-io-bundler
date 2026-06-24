@@ -11,7 +11,7 @@
 #   - Set up Arweave wallet
 #   - Initialize infrastructure (PostgreSQL, Redis, MinIO)
 #   - Run database migrations
-#   - Configure bundle planning cron job
+#   - Confirm in-process bundle-planning schedulers (no cron job needed)
 #   - Start all services
 #
 # Run this script ONCE for initial setup.
@@ -303,34 +303,23 @@ echo -e "${GREEN}✅ Database migrations complete${NC}"
 echo ""
 
 # ============================================================================
-# 8. Configure Bundle Planning Cron Job
+# 8. Bundle Planning Schedule (in-process — NO cron job needed)
 # ============================================================================
 
-echo -e "${BLUE}[8/9]${NC} Configuring bundle planning cron job..."
+echo -e "${BLUE}[8/9]${NC} Bundle planning schedule..."
 echo ""
 
-CRON_SCRIPT="$PROJECT_ROOT/packages/upload-service/cron-trigger-plan.sh"
-CRON_LOG="/tmp/bundle-plan-cron.log"
-
-# Check if cron job already exists
-if crontab -l 2>/dev/null | grep -q "$CRON_SCRIPT"; then
-  echo -e "${GREEN}✓${NC} Cron job already configured"
-else
-  echo "Adding cron job to trigger bundle planning every 5 minutes..."
-
-  # Add cron job
-  (crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $CRON_SCRIPT >> $CRON_LOG 2>&1") | crontab -
-
-  if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓${NC} Cron job added successfully"
-    echo "   The bundler will plan new bundles every 5 minutes"
-    echo "   View logs at: $CRON_LOG"
-  else
-    echo -e "${YELLOW}⚠️  Failed to add cron job${NC}"
-    echo "   You can add it manually with:"
-    echo "   */5 * * * * $CRON_SCRIPT >> $CRON_LOG 2>&1"
-  fi
+# Bundle planning, tiered cleanup, and posted-bundle redrive are registered as
+# in-process BullMQ repeatable schedulers by the upload-workers process at startup
+# (tuned via PLAN_SCHEDULE_CRON / CLEANUP_SCHEDULE_CRON / POSTED_REDRIVE_SCHEDULE_CRON
+# in .env). There is NO crontab to install. A leftover `cron-trigger-plan` crontab
+# entry would DOUBLE-FIRE alongside the in-process scheduler, so remove any stale one.
+if crontab -l 2>/dev/null | grep -q "trigger-plan"; then
+  echo -e "${YELLOW}⚠️${NC}  Removing a stale cron-trigger-plan crontab entry (planning is in-process now)..."
+  crontab -l 2>/dev/null | grep -v "trigger-plan" | crontab -
 fi
+echo -e "${GREEN}✓${NC} Planning runs in-process (no crontab). Verify after services start:"
+echo "   pm2 logs upload-workers --nostream | grep 'Registered BullMQ job schedulers'"
 
 echo ""
 
@@ -377,7 +366,7 @@ echo "  pm2 logs                   # All services"
 echo "  pm2 logs upload-api        # Upload API"
 echo "  pm2 logs upload-workers    # Bundling workers"
 echo "  pm2 logs payment-service   # Payment API"
-echo "  tail -f $CRON_LOG  # Cron job logs"
+echo "  pm2 logs upload-workers --nostream | grep 'job schedulers'  # Confirm in-process schedulers"
 echo ""
 echo "Manage Services:"
 echo "  ./scripts/stop.sh          # Stop everything"

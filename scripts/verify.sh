@@ -5,7 +5,10 @@
 # Checks all services and infrastructure
 #############################
 
-set -e
+# NOTE: deliberately NOT `set -e`. This is a tally-style health check — `check()`
+# returns non-zero on a failed check, and under `set -e` the first failing check
+# would abort the whole script before the summary/exit-code logic runs. We run
+# every check, count pass/fail, and exit based on FAILED_CHECKS at the end.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -74,6 +77,13 @@ check "Redis Queues container running" "docker ps | grep -q ar-io-bundler-redis-
 check "Redis Queues is healthy" "docker ps | grep ar-io-bundler-redis-queues | grep -q '(healthy)'"
 check "MinIO container running" "docker ps | grep -q ar-io-bundler-minio"
 check "MinIO is healthy" "docker ps | grep ar-io-bundler-minio | grep -q '(healthy)'"
+
+# Two-tier MinIO: only relevant when the HDD archive tier is enabled via ARCHIVE_*.
+# SSD-only deployments leave ARCHIVE_DATA_ITEM_BUCKET unset → these checks are skipped.
+if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
+  check "Archive (HDD) MinIO container running" "docker ps | grep -q ar-io-bundler-minio-hdd"
+  check "Archive (HDD) MinIO is healthy" "docker ps | grep ar-io-bundler-minio-hdd | grep -q '(healthy)'"
+fi
 echo ""
 
 # Section: PM2 Processes
@@ -81,6 +91,8 @@ echo -e "${BLUE}━━━ PM2 Services ━━━${NC}"
 check "PM2 is running" "pm2 list > /dev/null 2>&1"
 check "payment-service process exists" "pm2 list | grep -q payment-service"
 check "payment-service is online" "pm2 list | grep payment-service | grep -q online"
+check "payment-workers process exists" "pm2 list | grep -q payment-workers"
+check "payment-workers is online" "pm2 list | grep payment-workers | grep -q online"
 check "upload-api process exists" "pm2 list | grep -q upload-api"
 check "upload-api is online" "pm2 list | grep upload-api | grep -q online"
 check "upload-workers process exists" "pm2 list | grep -q upload-workers"
@@ -94,7 +106,10 @@ echo -e "${BLUE}━━━ HTTP Endpoints ━━━${NC}"
 check_with_output "Payment service health endpoint" "curl -s http://localhost:4001/health" "OK"
 check_with_output "Upload service health endpoint" "curl -s http://localhost:3001/health" "OK"
 check_with_output "Payment service pricing endpoint" "curl -s http://localhost:4001/v1/price/bytes/1000000" "winc"
-check "Admin dashboard endpoint (requires auth)" "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002/admin/dashboard | grep -q '401'"
+# Auth-gated: since the dashboard overhaul (#86) an unauthenticated request
+# redirects (302) to /admin/login rather than returning 401. Accept either as
+# "protected" — a 200 here would mean the dashboard is wide open.
+check "Admin dashboard is auth-protected (302→login or 401)" "curl -s -o /dev/null -w '%{http_code}' http://localhost:3002/admin/dashboard | grep -qE '302|401'"
 check "Payment service port 4001 listening" "ss -tlnp 2>/dev/null | grep -q ':4001' || netstat -tln 2>/dev/null | grep -q ':4001'"
 check "Upload service port 3001 listening" "ss -tlnp 2>/dev/null | grep -q ':3001' || netstat -tln 2>/dev/null | grep -q ':3001'"
 check "Admin dashboard port 3002 listening" "ss -tlnp 2>/dev/null | grep -q ':3002' || netstat -tln 2>/dev/null | grep -q ':3002'"
@@ -107,33 +122,34 @@ check "Upload service listening on port" "pm2 logs upload-api --lines 50 --nostr
 check "Upload → Payment communication configured" "pm2 logs upload-api --lines 50 --nostream 2>&1 | grep -q 'Communicating with payment service'"
 echo ""
 
-# Section: Cron Jobs
+# Section: Background Jobs (in-process BullMQ schedulers — NOT crontab)
 echo -e "${BLUE}━━━ Background Jobs ━━━${NC}"
-check "Bundle planning cron job configured" "crontab -l 2>/dev/null | grep -q trigger-plan"
+# Bundle planning, tiered cleanup, and posted-bundle redrive are registered as
+# in-process BullMQ repeatable schedulers by upload-workers at startup (since the
+# cron→scheduler migration). The real "is planning scheduled" signal is a repeat
+# key in the queues Redis — NOT a crontab entry. A stale `trigger-plan` crontab
+# entry would actually be a BUG (it double-fires alongside the in-process scheduler).
+check "Bundle-planning scheduler registered (BullMQ, not crontab)" \
+  "docker exec ar-io-bundler-redis-queues redis-cli -p 6381 --scan --pattern 'bull:upload-plan-bundle:repeat:*' 2>/dev/null | grep -q ."
 echo ""
 
-# Section: Log Checks (No Critical Errors)
+# Section: Log Checks (recent critical errors)
+# NOTE: the previous form `grep -qi … | head -1` was a no-op — `grep -q` emits no
+# output, so the pipeline's exit status came from `head` (always 0) and the result
+# was meaningless. This checks grep's own exit status (recent errors = a non-fatal
+# warning, so it never flips the overall exit code; only check()s set FAILED).
 echo -e "${BLUE}━━━ Error Checks ━━━${NC}"
-if pm2 logs payment-service --lines 100 --nostream 2>&1 | grep -qi "error.*failed\|critical\|cannot start" | head -1; then
-  echo -e "${YELLOW}⚠${NC}  Payment service has recent errors (check logs)"
+for proc in payment-service payment-workers upload-api upload-workers; do
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-else
-  check "Payment service: no critical errors" "true"
-fi
-
-if pm2 logs upload-api --lines 100 --nostream 2>&1 | grep -v "OTEL" | grep -qi "error.*failed\|critical\|cannot start" | head -1; then
-  echo -e "${YELLOW}⚠${NC}  Upload service has recent errors (check logs)"
-  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-else
-  check "Upload service: no critical errors" "true"
-fi
-
-if pm2 logs upload-workers --lines 100 --nostream 2>&1 | grep -qi "error.*failed\|critical\|cannot start" | head -1; then
-  echo -e "${YELLOW}⚠${NC}  Upload workers have recent errors (check logs)"
-  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-else
-  check "Upload workers: no critical errors" "true"
-fi
+  if pm2 logs "$proc" --lines 100 --nostream 2>&1 \
+       | grep -v "OTEL" \
+       | grep -qiE "error.*failed|critical|cannot start|ERR_REQUIRE_ESM"; then
+    echo -e "${YELLOW}⚠${NC}  $proc has recent errors (check: pm2 logs $proc --err)"
+  else
+    echo -e "${GREEN}✓${NC} $proc: no critical errors"
+    PASSED_CHECKS=$((PASSED_CHECKS + 1))
+  fi
+done
 echo ""
 
 # Summary

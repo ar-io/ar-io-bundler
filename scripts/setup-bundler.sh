@@ -1931,35 +1931,23 @@ else
 fi
 
 #############################################################################################
-# 28. Configure Bundle Planning Cron Job
+# 28. Bundle Planning Schedule (in-process — NO cron job needed)
 #############################################################################################
 
-print_header "Step 28: Bundle Planning Cron Job"
+print_header "Step 28: Bundle Planning Schedule"
 
-CRON_SCRIPT="$PROJECT_ROOT/packages/upload-service/cron-trigger-plan.sh"
-
-if crontab -l 2>/dev/null | grep -q "$CRON_SCRIPT"; then
-    print_success "Cron job already configured"
-else
-    echo "The bundler requires a cron job to trigger bundle planning."
-    echo "This groups uploaded data items into bundles every 5 minutes."
-    echo ""
-
-    if [ "$QUICK_MODE" = false ]; then
-        if ! confirm "Configure cron job now?" "y"; then
-            print_warning "Skipping cron job setup"
-            echo "Configure manually:"
-            echo "  crontab -e"
-            echo "  Add: */5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1"
-        else
-            (crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-            print_success "Cron job configured (every 5 minutes)"
-        fi
-    else
-        (crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-        print_success "Cron job configured"
-    fi
+# Bundle planning, tiered cleanup, and posted-bundle redrive are registered as
+# in-process BullMQ repeatable schedulers by the upload-workers process at startup
+# (tuned via PLAN_SCHEDULE_CRON / CLEANUP_SCHEDULE_CRON / POSTED_REDRIVE_SCHEDULE_CRON
+# in .env). There is NO crontab to install — and a leftover `cron-trigger-plan`
+# crontab entry would DOUBLE-FIRE alongside the in-process scheduler.
+echo "Bundle planning runs in-process (BullMQ schedulers in upload-workers) — no cron job needed."
+if crontab -l 2>/dev/null | grep -q "trigger-plan"; then
+    print_warning "Removing a stale cron-trigger-plan crontab entry (planning is in-process now)"
+    crontab -l 2>/dev/null | grep -v "trigger-plan" | crontab -
 fi
+print_success "Scheduling is in-process. Verify after services start:"
+echo "  pm2 logs upload-workers --nostream | grep 'Registered BullMQ job schedulers'"
 
 #############################################################################################
 # 29. Start Services

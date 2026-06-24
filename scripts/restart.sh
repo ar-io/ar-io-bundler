@@ -32,13 +32,21 @@ echo ""
 if [ "$RESTART_DOCKER" = true ]; then
   echo "🐳 Restarting Docker infrastructure..."
   cd "$PROJECT_ROOT"
-  docker compose restart postgres redis-cache redis-queues minio
+  # Two-tier MinIO: include the HDD archive override when ARCHIVE_DATA_ITEM_BUCKET is
+  # set in .env so minio-hdd restarts alongside the rest (and minio-init-hdd re-runs).
+  # No-op on SSD-only boxes that leave ARCHIVE_* unset. Mirrors start.sh / stop.sh.
+  ARCHIVE_COMPOSE=""; ARCHIVE_SVC=""
+  if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
+    ARCHIVE_COMPOSE="-f docker-compose.yml -f docker-compose.hdd.yml"; ARCHIVE_SVC="minio-hdd"
+  fi
+  docker compose $ARCHIVE_COMPOSE restart postgres redis-cache redis-queues minio $ARCHIVE_SVC
   echo "   Waiting for services to be ready..."
   sleep 5
 
   # Ensure MinIO buckets exist (safe to run multiple times)
   echo "   Ensuring MinIO buckets are initialized..."
-  docker compose up minio-init
+  docker compose $ARCHIVE_COMPOSE up minio-init
+  [ -n "$ARCHIVE_SVC" ] && docker compose $ARCHIVE_COMPOSE up minio-init-hdd
 
   echo -e "${GREEN}✓${NC} Docker infrastructure restarted"
   echo ""
@@ -46,7 +54,7 @@ fi
 
 # Restart PM2 services
 echo "🔄 Restarting PM2 services..."
-if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|bull-board"; then
+if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|admin-dashboard"; then
   pm2 restart all
   echo -e "${GREEN}✓${NC} PM2 services restarted"
 else
