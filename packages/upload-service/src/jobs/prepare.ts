@@ -57,8 +57,10 @@ import {
 import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
 import { getArweaveWallet } from "../utils/getArweaveWallet";
 import {
+  bundlePayloadPrefix,
   getBundlePayload,
   getS3ObjectStore,
+  isArchiveEnabled,
   putBundlePayload,
   putBundleTx,
 } from "../utils/objectStoreUtils";
@@ -241,6 +243,24 @@ export async function prepareBundleHandler(
   logger.debug("Successfully cached bundle payload.", {
     planId,
   });
+
+  // Two-tier MinIO: mirror the assembled bundle payload to the archive (HDD)
+  // store now that it's written to the SSD. Best-effort — a failed enqueue must
+  // not fail bundle preparation; the post-permanence SSD cleanup HEAD-gates the
+  // bundle-payload delete on the archive copy, so a missed copy only delays SSD
+  // reclamation.
+  if (isArchiveEnabled()) {
+    try {
+      await enqueue(jobLabels.archiveCopy, {
+        key: `${bundlePayloadPrefix}/${planId}`,
+      });
+    } catch (error) {
+      logger.error("Failed to enqueue archive-copy for bundle payload", {
+        planId,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+  }
   // TODO: OPTIMIZE THIS! Potentially by splitting streams above? Consider stream consumer rates...
   const bundleTx = await arweave.createTransactionFromPayloadStream(
     await getBundlePayload(objectStore, planId),

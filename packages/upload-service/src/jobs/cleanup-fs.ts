@@ -30,7 +30,13 @@ import { PermanentDataItemDBResult, Timestamp } from "../types/dbTypes";
 import { TransactionId } from "../types/types";
 import { Deferred } from "../utils/deferred";
 import { UPLOAD_DATA_PATH } from "../utils/fileSystemUtils";
-import { dataItemPrefix } from "../utils/objectStoreUtils";
+import {
+  bundlePayloadPrefix,
+  bundleTxPrefix,
+  dataItemPrefix,
+  getArchiveS3ObjectStore,
+  isArchiveEnabled,
+} from "../utils/objectStoreUtils";
 
 const QUERY_BATCH_SIZE = 500;
 const DELETE_CONCURRENCY_LIMIT = 8;
@@ -41,6 +47,14 @@ const DEFAULT_START_DATE = "2025-03-17T00:00:00";
 // Configurable retention periods (in days)
 const FILESYSTEM_CLEANUP_DAYS = +(process.env.FILESYSTEM_CLEANUP_DAYS || 7);
 const MINIO_CLEANUP_DAYS = +(process.env.MINIO_CLEANUP_DAYS || 90);
+
+// Two-tier MinIO: when the archive (HDD) store is configured, the SSD MinIO is
+// reclaimed POST-PERMANENCE (as soon as a bundle is permanent and its HDD copy
+// is confirmed) rather than on the 90-day MINIO_CLEANUP_DAYS rule. An optional
+// grace margin holds SSD copies for a few extra days after permanence.
+const SSD_CLEANUP_GRACE_DAYS = +(process.env.SSD_CLEANUP_GRACE_DAYS || 0);
+const ARCHIVE_SSD_CURSOR_KEY = "archive-ssd-cleanup-cursor";
+const PERMANENT_BUNDLE_BATCH_SIZE = 200;
 
 // Multi-source permanence gating for cleanup: only delete a data item's off-chain
 // (FS/MinIO) copy once its parent bundle is in `permanent_bundle`. The bundle only
@@ -126,11 +140,16 @@ async function cleanupFsHandler({
   knexClient,
   objectStore,
   teardownComplete,
+  // In archive (two-tier) mode the SSD MinIO is reclaimed by the separate
+  // post-permanence sweep (cleanupSsdAfterArchive), so this age-based pass only
+  // does the filesystem tier. Default false → unchanged single-MinIO behavior.
+  skipMinioCleanup = false,
 }: {
   logger?: winston.Logger;
   knexClient: Knex;
   objectStore: ObjectStore;
   teardownComplete: Deferred<void>;
+  skipMinioCleanup?: boolean;
 }) {
   const startTimestamp = new Date();
   let filesystemDeletedCount = 0;
@@ -336,8 +355,9 @@ async function cleanupFsHandler({
             ));
           }
 
-          // MinIO cleanup (90 days default)
-          if (shouldCleanMinio) {
+          // MinIO cleanup (90 days default). Skipped in archive mode — the SSD
+          // MinIO is reclaimed post-permanence by cleanupSsdAfterArchive.
+          if (shouldCleanMinio && !skipMinioCleanup) {
             tasks.push(
               fileLimit(async () => {
                 const s3Key = `${dataItemPrefix}/${row.data_item_id}`;
@@ -417,6 +437,279 @@ async function cleanupFsHandler({
   }
 }
 
+// Generic PostgreSQL `config` table get/set (mirrors getLastCursor/saveCursor,
+// reused for the archive SSD-cleanup cursor).
+async function getConfigValue(key: string): Promise<string | undefined> {
+  const knexWriter = knex(getWriterConfig());
+  try {
+    const result = await knexWriter("config").where({ key }).first();
+    return result?.value;
+  } finally {
+    await knexWriter.destroy();
+  }
+}
+
+async function setConfigValue(key: string, value: string): Promise<void> {
+  const knexWriter = knex(getWriterConfig());
+  try {
+    await knexWriter("config")
+      .insert({ key, value })
+      .onConflict("key")
+      .merge();
+  } finally {
+    await knexWriter.destroy();
+  }
+}
+
+interface ArchiveCleanupCursor {
+  permanentDate: Timestamp;
+  bundleId: TransactionId | undefined;
+}
+
+async function headExists(
+  objectStore: ObjectStore,
+  key: string
+): Promise<boolean> {
+  return objectStore
+    .headObject(key)
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function deleteIfPresent(
+  objectStore: ObjectStore,
+  key: string,
+  logger: winston.Logger
+): Promise<boolean> {
+  try {
+    await objectStore.deleteObject(key);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "NoSuchKey" || error?.name === "NoSuchKey") {
+      // Already gone — idempotent re-run.
+      return false;
+    }
+    logger.error("Failed to delete SSD object during archive cleanup", {
+      key,
+      error: error instanceof Error ? error.message : error,
+    });
+    throw error;
+  }
+}
+
+export interface ReclaimBundleResult {
+  /** True if this bundle should be revisited (a HDD copy wasn't confirmed yet). */
+  deferred: boolean;
+  payloadDeleted: boolean;
+  txDeleted: boolean;
+  rawDeleted: number;
+}
+
+/**
+ * Reclaim one permanent bundle's copies from the primary (SSD) store, gated on
+ * the archive (HDD) copies being confirmed present. Pure of the DB — the caller
+ * supplies the bundle's permanent data-item ids.
+ *
+ * Safety guard: the SSD copy is NEVER deleted until the corresponding HDD copy
+ * is confirmed via `headObject`. If the bundle-payload isn't on the HDD yet,
+ * nothing is deleted and the bundle is deferred. If some raw items lag, the
+ * (confirmed) bundle-payload + on-chain bundle tx are still dropped, but the
+ * bundle is deferred so the remaining raw items are retried.
+ */
+export async function reclaimBundleFromSsd({
+  objectStore,
+  archiveObjectStore,
+  planId,
+  bundleId,
+  dataItemIds,
+  logger,
+}: {
+  objectStore: ObjectStore;
+  archiveObjectStore: ObjectStore;
+  planId: string;
+  bundleId: string;
+  dataItemIds: string[];
+  logger: winston.Logger;
+}): Promise<ReclaimBundleResult> {
+  const payloadKey = `${bundlePayloadPrefix}/${planId}`;
+
+  // Gate the whole bundle on its HDD bundle-payload copy.
+  if (!(await headExists(archiveObjectStore, payloadKey))) {
+    logger.info(
+      "Bundle payload not yet on archive; deferring SSD cleanup for this bundle",
+      { planId, bundleId }
+    );
+    return {
+      deferred: true,
+      payloadDeleted: false,
+      txDeleted: false,
+      rawDeleted: 0,
+    };
+  }
+
+  // Reclaim each permanent data item's raw object, gated on its HDD copy.
+  let rawDeleted = 0;
+  let bundleComplete = true;
+  for (const dataItemId of dataItemIds) {
+    const rawKey = `${dataItemPrefix}/${dataItemId}`;
+    if (await headExists(archiveObjectStore, rawKey)) {
+      if (await deleteIfPresent(objectStore, rawKey, logger)) rawDeleted++;
+    } else {
+      // This item's HDD copy isn't ready; leave its SSD copy and revisit.
+      bundleComplete = false;
+    }
+  }
+
+  // bundle-payload is confirmed on the HDD → safe to drop the SSD copy.
+  // bundle/{txid} is permanent on-chain (not mirrored to the HDD), so it is
+  // safe to drop alongside the payload.
+  const payloadDeleted = await deleteIfPresent(objectStore, payloadKey, logger);
+  const txDeleted = await deleteIfPresent(
+    objectStore,
+    `${bundleTxPrefix}/${bundleId}`,
+    logger
+  );
+
+  return { deferred: !bundleComplete, payloadDeleted, txDeleted, rawDeleted };
+}
+
+/**
+ * Two-tier MinIO post-permanence SSD reclamation.
+ *
+ * For each bundle in `permanent_bundle` (forward cursor on permanent_date), once
+ * its HDD copies are CONFIRMED present, delete its copies from the primary (SSD)
+ * store to free the small fast disk quickly:
+ *   - `bundle-payload/{plan_id}` and `bundle/{bundle_id}` once the HDD
+ *     bundle-payload copy is confirmed.
+ *   - each `raw-data-item/{id}` (from `permanent_data_items`) once that item's
+ *     HDD copy is confirmed.
+ *
+ * The archive HEAD gate is the critical safety guard: we NEVER delete the SSD
+ * copy until the HDD copy is confirmed (the gateway reads only the HDD). If any
+ * copy for a bundle isn't on the HDD yet, that bundle is deferred (the cursor is
+ * not advanced past it) so it's retried on the next run.
+ */
+async function cleanupSsdAfterArchive({
+  logger,
+  knexClient,
+  objectStore,
+  archiveObjectStore,
+}: {
+  logger: winston.Logger;
+  knexClient: Knex;
+  objectStore: ObjectStore;
+  archiveObjectStore: ObjectStore;
+}): Promise<void> {
+  const graceCutoff = new Date(
+    Date.now() - SSD_CLEANUP_GRACE_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const stored = await getConfigValue(ARCHIVE_SSD_CURSOR_KEY);
+  let cursor: ArchiveCleanupCursor = stored
+    ? JSON.parse(stored)
+    : { permanentDate: "1970-01-01T00:00:00.000Z", bundleId: undefined };
+
+  let bundlesSwept = 0;
+  let payloadsDeleted = 0;
+  let txDeleted = 0;
+  let rawDeleted = 0;
+  let deferredBundles = 0;
+
+  logger.info("Archive SSD cleanup started", {
+    cursor,
+    graceCutoff,
+    grace_days: SSD_CLEANUP_GRACE_DAYS,
+  });
+
+  for (;;) {
+    const bundles: {
+      plan_id: string;
+      bundle_id: string;
+      permanent_date: string;
+    }[] = await knexClient(tableNames.permanentBundle)
+      .select(
+        columnNames.planId,
+        columnNames.bundleId,
+        columnNames.permanentDate
+      )
+      .andWhere(columnNames.permanentDate, "<=", graceCutoff)
+      .andWhere(function () {
+        void this.where(
+          columnNames.permanentDate,
+          ">",
+          cursor.permanentDate
+        ).orWhere(function () {
+          void this.where(
+            columnNames.permanentDate,
+            "=",
+            cursor.permanentDate
+          ).andWhere(columnNames.bundleId, ">", cursor.bundleId ?? "");
+        });
+      })
+      .orderBy(columnNames.permanentDate)
+      .orderBy(columnNames.bundleId)
+      .limit(PERMANENT_BUNDLE_BATCH_SIZE);
+
+    if (bundles.length === 0) break;
+
+    let advanced = false;
+    let deferred = false;
+
+    for (const bundle of bundles) {
+      const items: { data_item_id: string }[] = await knexClient(
+        tableNames.permanentDataItems
+      )
+        .select(columnNames.dataItemId)
+        .where(columnNames.bundleId, bundle.bundle_id);
+
+      const result = await reclaimBundleFromSsd({
+        objectStore,
+        archiveObjectStore,
+        planId: bundle.plan_id,
+        bundleId: bundle.bundle_id,
+        dataItemIds: items.map((item) => item.data_item_id),
+        logger,
+      });
+
+      if (result.payloadDeleted) payloadsDeleted++;
+      if (result.txDeleted) txDeleted++;
+      rawDeleted += result.rawDeleted;
+
+      if (result.deferred) {
+        // A HDD copy wasn't confirmed; don't advance the cursor past this bundle
+        // so it's retried next run (head-of-line wait for the archive copy).
+        deferredBundles++;
+        deferred = true;
+        break;
+      }
+
+      bundlesSwept++;
+      cursor = {
+        permanentDate: bundle.permanent_date,
+        bundleId: bundle.bundle_id,
+      };
+      advanced = true;
+    }
+
+    if (advanced) {
+      await setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(cursor));
+    }
+
+    // Stop on a deferral (head-of-line: wait for the HDD copy) or when the page
+    // wasn't full (nothing more to scan this run).
+    if (deferred || bundles.length < PERMANENT_BUNDLE_BATCH_SIZE) break;
+  }
+
+  logger.info("✅ Archive SSD cleanup complete", {
+    bundlesSwept,
+    payloadsDeleted,
+    txDeleted,
+    rawDeleted,
+    deferredBundles,
+    cursor,
+  });
+}
+
 export async function handler(eventPayload?: unknown) {
   const knexClient = knex(getReaderConfig());
   const teardownComplete = new Deferred<void>();
@@ -424,6 +717,8 @@ export async function handler(eventPayload?: unknown) {
   // Import architecture to get objectStore
   const { getS3ObjectStore } = await import("../utils/objectStoreUtils");
   const objectStore = getS3ObjectStore();
+  const archiveEnabled = isArchiveEnabled();
+  const archiveObjectStore = getArchiveS3ObjectStore();
 
   defaultLogger.info(`Cleanup job triggered with event payload:`, eventPayload);
 
@@ -433,8 +728,23 @@ export async function handler(eventPayload?: unknown) {
       knexClient,
       objectStore,
       teardownComplete,
+      // In archive mode the age-based pass handles only the filesystem tier; the
+      // SSD MinIO is reclaimed by the post-permanence sweep below.
+      skipMinioCleanup: archiveEnabled,
     });
     await teardownComplete.promise;
+
+    if (archiveEnabled && archiveObjectStore) {
+      await cleanupSsdAfterArchive({
+        logger: defaultLogger.child({
+          job: jobLabels.cleanupFs,
+          phase: "archive-ssd",
+        }),
+        knexClient,
+        objectStore,
+        archiveObjectStore,
+      });
+    }
   } finally {
     await knexClient.destroy();
   }

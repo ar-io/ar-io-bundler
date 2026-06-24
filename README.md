@@ -429,6 +429,14 @@ The bundler stores uploaded data items in MinIO (S3-compatible storage). To enab
 - ✅ **Reduced Latency**: Fast local/LAN access vs waiting for Arweave confirmation
 - ✅ **Better UX**: Users can access their uploads instantly
 
+> **Optional: dedicated HDD read tier (two-tier MinIO).** On an SSD+HDD box you can run a
+> second, HDD-backed MinIO that mirrors served content (raw data items + bundle payloads)
+> and takes **all** gateway reads, keeping the fast SSD MinIO reserved for the bundling
+> pipeline. Point the gateway's `AWS_ENDPOINT` at the HDD MinIO (port **9002**) instead of
+> the SSD MinIO. This is opt-in and gated on `ARCHIVE_*` env (default off = single-MinIO
+> behavior, unchanged). See `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md` and the
+> deployment runbook (§5/§13) for the rollout.
+
 #### Scenario 1: Gateway and Bundler on Same Server
 
 When the AR.IO Gateway runs on the same server as the bundler, Docker networking provides automatic DNS resolution.
@@ -651,7 +659,7 @@ Accepts data item uploads and manages asynchronous fulfillment of data delivery 
 
 **Features:**
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (14 queues)
+- Asynchronous job processing via BullMQ (15 queues)
 - ANS-104 bundle creation and posting
 - MinIO object storage integration
 - PostgreSQL offset storage for data retrieval

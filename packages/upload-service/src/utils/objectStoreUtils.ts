@@ -20,7 +20,7 @@ import MultiStream from "multistream";
 import { PassThrough, Readable, pipeline } from "stream";
 
 import { ObjectStore } from "../arch/objectStore";
-import { S3ObjectStore } from "../arch/s3ObjectStore";
+import { S3ObjectStore, archiveDataItemBucket } from "../arch/s3ObjectStore";
 import "../bundles/assembleBundleHeader";
 import {
   BundleHeaderInfo,
@@ -44,9 +44,9 @@ import { streamToBuffer } from "./streamToBuffer";
 export const dataItemPrefix =
   process.env.DATA_ITEM_S3_PREFIX ?? "raw-data-item";
 const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
-const bundlePayloadPrefix =
+export const bundlePayloadPrefix =
   process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
-const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+export const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
 // Per-chunk bytes staged here for the broadcast-chunks queue, keyed by
 // `{data_root}/{offset}` (the broadcast job carries only the ChunkHeader).
 const chunksPrefix = process.env.CHUNKS_S3_PREFIX ?? "chunks";
@@ -99,6 +99,57 @@ export function getS3ObjectStore(): ObjectStore {
     });
   }
   return s3ObjectStore;
+}
+
+/**
+ * True when the second (HDD-backed) archive MinIO is configured. Gates the
+ * archive-copy enqueue points and the post-permanence SSD cleanup branch so
+ * that, when unset, the pipeline behaves exactly as a single-MinIO deployment.
+ */
+export function isArchiveEnabled(): boolean {
+  return !!archiveDataItemBucket;
+}
+
+let archiveS3ObjectStore: S3ObjectStore | undefined;
+
+/**
+ * Singleton ObjectStore pointed at the archive (HDD) MinIO, or `undefined` when
+ * `ARCHIVE_DATA_ITEM_BUCKET` is unset. Routing to the archive endpoint is
+ * handled by the bucket→region→client registration in s3ObjectStore.ts, so this
+ * just needs the archive bucket name (no explicit s3Client arg).
+ */
+export function getArchiveS3ObjectStore(): ObjectStore | undefined {
+  if (!archiveDataItemBucket) return undefined;
+  if (!archiveS3ObjectStore) {
+    archiveS3ObjectStore = new S3ObjectStore({
+      bucketName: archiveDataItemBucket,
+    });
+  }
+  return archiveS3ObjectStore;
+}
+
+/**
+ * Stream a single object key from the primary (SSD) store to the archive (HDD)
+ * store. For `raw-data-item/{id}` keys the payload metadata (data-start offset +
+ * content type) is preserved so range/payload reads stay valid on the archive
+ * copy; everything else (`bundle-payload/{planId}`) copies as a plain octet
+ * stream. Overwrites are harmless, so the copy is idempotent.
+ */
+export async function copyKeyToArchive(
+  primary: ObjectStore,
+  archive: ObjectStore,
+  key: string
+): Promise<void> {
+  if (key.startsWith(`${dataItemPrefix}/`)) {
+    const payloadInfo = await primary.getObjectPayloadInfo(key);
+    const { readable } = await primary.getObject(key);
+    await archive.putObject(key, readable, { payloadInfo });
+  } else {
+    const { readable } = await primary.getObject(key);
+    await archive.putObject(key, readable, {
+      contentType: octetStreamContentType,
+    });
+  }
 }
 
 /** strip CR/LF and the rest of the C0 control block (plus DEL 0x7F) */

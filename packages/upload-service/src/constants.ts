@@ -445,6 +445,7 @@ export const jobLabels = {
   redrivePosted: "redrive-posted",
   refundBalance: "refund-balance",
   broadcastChunks: "broadcast-chunks",
+  archiveCopy: "archive-copy",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 
