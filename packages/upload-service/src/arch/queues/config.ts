@@ -35,6 +35,7 @@ export const QUEUE_NAMES = {
   [jobLabels.refundBalance]: "upload-refund-balance",
   [jobLabels.broadcastChunks]: "upload-broadcast-chunks",
   [jobLabels.archiveCopy]: "upload-archive-copy",
+  [jobLabels.ensurePartitions]: "upload-ensure-partitions",
 } as const;
 
 const defaultQueueOptions: QueueOptions = {
@@ -70,7 +71,7 @@ export function getQueue(jobLabel: keyof typeof QUEUE_NAMES): Queue {
 
 export async function closeAllQueues(): Promise<void> {
   await Promise.all(
-    Array.from(queueInstances.values()).map((queue) => queue.close())
+    Array.from(queueInstances.values()).map((queue) => queue.close()),
   );
   queueInstances.clear();
 }

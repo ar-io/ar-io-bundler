@@ -60,6 +60,7 @@ type QueueTypeToMessageType = {
   [jobLabels.refundBalance]: RefundBalanceMessage;
   [jobLabels.broadcastChunks]: ChunkHeader;
   [jobLabels.archiveCopy]: ArchiveCopyMessage;
+  [jobLabels.ensurePartitions]: Record<string, never>;
 };
 
 // Durable refund retry payload. winstonCredits is the Winston value serialized

@@ -31,6 +31,10 @@ import {
   postgresInsertFailedPrimaryKeyNotUniqueCode,
 } from "../../utils/errors";
 import { columnNames, tableNames } from "./dbConstants";
+import {
+  createPartitionsIfNotExist,
+  halfMonthPartitionSpecs,
+} from "./partitions";
 
 export abstract class Migrator {
   protected async operate({
@@ -1319,5 +1323,64 @@ export class PostedDateIndexAndOwnerDedupeMigrator extends Migrator {
         );
       },
     });
+  }
+}
+
+export class RecarvePermanentFutureMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  private readonly futurePartition = `${tableNames.permanentDataItems}_future`;
+
+  // Replace the open-ended `permanent_data_items_future` catch-all
+  // (2026-01-01 -> MAXVALUE) with explicit half-month partitions for 2026-2027,
+  // so that (a) every elapsed 2026 month gets its own partition instead of one
+  // ever-growing heap, and (b) future partitions can be pre-created ahead of time
+  // (an open-ended MAXVALUE partition would permanently overlap and block them).
+  // The DEFAULT partition is kept as the safety net; the in-process
+  // ensure-partitions scheduler keeps explicit partitions rolling ahead so
+  // DEFAULT stays empty. Runs in a transaction (knex default) so the row move is
+  // atomic — on prod the table is near-empty, so the lock window is negligible.
+  public migrate() {
+    return this.operate({
+      name: "re-carve permanent_data_items _future into explicit half-month partitions",
+      operation: async () => {
+        // 1. Detach the open-ended catch-all; it becomes a standalone table that
+        //    still holds all rows with uploaded_date >= 2026-01-01.
+        await this.knex.raw(`ALTER TABLE ?? DETACH PARTITION ??`, [
+          tableNames.permanentDataItems,
+          this.futurePartition,
+        ]);
+
+        // 2. Create explicit half-month partitions for 2026-01 .. 2027-12 (24
+        //    months -> 48 partitions). The detached range is now uncovered except
+        //    by the empty DEFAULT, so these attach without overlap.
+        await createPartitionsIfNotExist(
+          this.knex,
+          halfMonthPartitionSpecs(2026, 1, 24),
+        );
+
+        // 3. Re-insert the detached rows; they route into the new partitions (any
+        //    date outside 2026-2027 falls into the existing DEFAULT partition).
+        await this.knex.raw(`INSERT INTO ?? SELECT * FROM ??`, [
+          tableNames.permanentDataItems,
+          this.futurePartition,
+        ]);
+
+        // 4. Drop the now-empty detached table.
+        await this.knex.raw(`DROP TABLE ??`, [this.futurePartition]);
+      },
+    });
+  }
+
+  public rollback(): Promise<void> {
+    // This migration MOVES rows between partitions and drops the _future
+    // catch-all; it is not safely auto-reversible. Restore Postgres from the
+    // pre-migration snapshot instead (runbook §18). Throwing prevents a
+    // false-confidence "rolled back" that leaves the data re-carved.
+    throw new Error(
+      "RecarvePermanentFutureMigrator is not auto-reversible — restore Postgres from the pre-migration snapshot (see runbook §18).",
+    );
   }
 }

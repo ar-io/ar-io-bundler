@@ -47,7 +47,7 @@ export function getRawDataItemWalletAddress():
 
 // Function to set the raw data item wallet address and add to allowlist
 export function setRawDataItemWalletAddress(
-  address: PublicArweaveAddress
+  address: PublicArweaveAddress,
 ): void {
   rawDataItemWalletAddress = address;
   if (!allowListPublicAddresses.includes(address)) {
@@ -86,7 +86,7 @@ export const freeUploadLimitBytes = +(
 
 export const allowArFSData = process.env.ALLOW_ARFS_DATA === "true";
 export const gatewayUrl = new URL(
-  process.env.ARWEAVE_GATEWAY || "https://arweave.net:443"
+  process.env.ARWEAVE_GATEWAY || "https://arweave.net:443",
 );
 
 /**
@@ -133,17 +133,17 @@ export const arweaveGatewayUrls: URL[] = (() => {
  */
 export const permanenceConfirmationSources = Math.max(
   1,
-  +(process.env.PERMANENCE_CONFIRMATION_SOURCES || 1)
+  +(process.env.PERMANENCE_CONFIRMATION_SOURCES || 1),
 );
 
 export const publicAccessGatewayUrl = new URL(
-  process.env.PUBLIC_ACCESS_GATEWAY || "https://arweave.net:443"
+  process.env.PUBLIC_ACCESS_GATEWAY || "https://arweave.net:443",
 );
 
 // Separate upload node for TX headers and chunk uploads (defaults to arweave.net for reliability)
 // AR.IO Gateways are optimized for reads but don't support /chunk endpoint
 export const arweaveUploadNode = new URL(
-  process.env.ARWEAVE_UPLOAD_NODE || "https://arweave.net:443"
+  process.env.ARWEAVE_UPLOAD_NODE || "https://arweave.net:443",
 );
 
 /**
@@ -199,7 +199,7 @@ export const dataCaches = process.env.DATA_CACHES?.split(",") ?? [
   publicAccessGatewayUrl.host,
 ];
 export const fastFinalityIndexes = process.env.FAST_FINALITY_INDEXES?.split(
-  ","
+  ",",
 ) ?? [publicAccessGatewayUrl.host];
 
 /**
@@ -288,20 +288,20 @@ export const redstoneOracleAddresses =
   ];
 
 export const firstBatchAddresses = process.env.FIRST_BATCH_ADDRESSES?.split(
-  "," // cspell:disable
+  ",", // cspell:disable
 ) ?? ["8NyeR4GiwbneFMNfCNz2Q84Xbd2ks9QrlAD85QabQrw"]; // cspell:enable
 
 export const aoAddresses = process.env.AO_ADDRESSES?.split(
-  "," // cspell:disable
+  ",", // cspell:disable
 ) ?? ["fcoN_xJeisVsPXA-trzVAuIiqO3ydLQxM-L4XbrQKzY"]; // cspell:enable
 
 const kyveAddresses = process.env.KYVE_ADDRESSES?.split(",") ?? [];
 
 export const arioMainnetProcesses = process.env.ARIO_MAINNET_PROCESSES?.split(
-  ","
+  ",",
 ) ?? ["qNvAoz0TgcH7DMg8BCVn8jF32QH5L6T29VjHxhHqqGE"];
 export const arioTestnetProcesses = process.env.ARIO_TESTNET_PROCESSES?.split(
-  ","
+  ",",
 ) ?? [
   "agYcCFJtrMG6cqMuZfskIkFTGvUPddICmtQSBIoPdiA", // testnet
   "GaQrvEMKBpkjofgnBi_B3IgIDmY_XYelVLB6GcRGrHc", // devnet
@@ -446,6 +446,7 @@ export const jobLabels = {
   refundBalance: "refund-balance",
   broadcastChunks: "broadcast-chunks",
   archiveCopy: "archive-copy",
+  ensurePartitions: "ensure-partitions",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 
@@ -502,11 +503,14 @@ export const signatureTypeInfo: Record<number, SigInfo> = {
 };
 
 export const sigNameToSigInfo: Record<string, SigInfo> = Object.values(
-  signatureTypeInfo
-).reduce((acc, info) => {
-  acc[info.name] = info;
-  return acc;
-}, {} as Record<string, SigInfo>);
+  signatureTypeInfo,
+).reduce(
+  (acc, info) => {
+    acc[info.name] = info;
+    return acc;
+  },
+  {} as Record<string, SigInfo>,
+);
 
 export const DataItemOffsets = {
   signatureTypeStart: 0,
@@ -543,7 +547,7 @@ export const DataItemOffsets = {
   anchorStart: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
   ) =>
     haveAnchor
       ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -552,7 +556,7 @@ export const DataItemOffsets = {
   anchorEnd: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
   ) =>
     haveAnchor
       ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -561,23 +565,23 @@ export const DataItemOffsets = {
   numTagsStart: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   ) => DataItemOffsets.anchorEnd(signatureType, haveTarget, haveAnchor)! + 1,
   numTagsEnd: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
   ) => DataItemOffsets.numTagsStart(signatureType, haveTarget, haveAnchor) + 7, // 8 bytes for number of tags
   numTagsBytesStart: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
   ) => DataItemOffsets.numTagsEnd(signatureType, haveTarget, haveAnchor) + 1,
   numTagsBytesEnd: (
     signatureType: number,
     haveTarget: boolean,
-    haveAnchor: boolean
+    haveAnchor: boolean,
   ) =>
     DataItemOffsets.numTagsBytesStart(signatureType, haveTarget, haveAnchor) +
     7, // 8 bytes for number of tag bytes
@@ -585,7 +589,7 @@ export const DataItemOffsets = {
     signatureType: number,
     haveTarget: boolean,
     haveAnchor: boolean,
-    numTagsBytes: number
+    numTagsBytes: number,
   ) =>
     numTagsBytes > 0
       ? DataItemOffsets.numTagsBytesEnd(signatureType, haveTarget, haveAnchor) +
@@ -595,7 +599,7 @@ export const DataItemOffsets = {
     signatureType: number,
     haveTarget: boolean,
     haveAnchor: boolean,
-    numTagsBytes: number
+    numTagsBytes: number,
   ) =>
     numTagsBytes > 0
       ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -603,7 +607,7 @@ export const DataItemOffsets = {
           signatureType,
           haveTarget,
           haveAnchor,
-          numTagsBytes
+          numTagsBytes,
         )! + numTagsBytes
       : undefined,
   payloadStart: (
@@ -611,7 +615,7 @@ export const DataItemOffsets = {
     haveTarget: boolean,
     haveAnchor: boolean,
     numTagsBytes: number,
-    payloadSize: number
+    payloadSize: number,
   ) =>
     payloadSize > 0
       ? numTagsBytes > 0
@@ -620,12 +624,12 @@ export const DataItemOffsets = {
             signatureType,
             haveTarget,
             haveAnchor,
-            numTagsBytes
+            numTagsBytes,
           )! + 1
         : DataItemOffsets.numTagsBytesEnd(
             signatureType,
             haveTarget,
-            haveAnchor
+            haveAnchor,
           ) + 1
       : undefined,
   payloadEnd: (
@@ -633,7 +637,7 @@ export const DataItemOffsets = {
     haveTarget: boolean,
     haveAnchor: boolean,
     numTagsBytes: number,
-    payloadSize: number
+    payloadSize: number,
   ) =>
     payloadSize > 0
       ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -642,7 +646,7 @@ export const DataItemOffsets = {
           haveTarget,
           haveAnchor,
           numTagsBytes,
-          payloadSize
+          payloadSize,
         )! +
         payloadSize -
         1
