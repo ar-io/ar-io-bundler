@@ -25,16 +25,26 @@
  */
 
 const pm2 = require('pm2');
-const { promisify } = require('util');
+const fs = require('fs');
+
+// Job-scheduler IDs registered by the upload-workers process (allWorkers.ts).
+// If any of these is missing, that part of the pipeline silently stops.
+const EXPECTED_SCHEDULERS = {
+  'plan-bundle': 'plan-bundle-scheduler',
+  'cleanup-fs': 'cleanup-fs-scheduler',
+  'redrive-posted': 'redrive-posted-scheduler',
+};
 
 /**
  * Get comprehensive system health status
- * @param {object} uploadDb - Upload service database connection
- * @param {object} paymentDb - Payment service database connection
- * @param {object} redis - Redis connection (ElastiCache)
- * @param {object} queueRedis - Redis connection (BullMQ queues)
- * @param {object} minioClient - MinIO client (optional)
- * @param {array} queues - BullMQ queue adapters
+ * @param {object} args
+ * @param {object} args.uploadDb - Upload service database connection
+ * @param {object} args.paymentDb - Payment service database connection
+ * @param {object} args.redis - Redis connection (ElastiCache)
+ * @param {object} args.queueRedis - Redis connection (BullMQ queues)
+ * @param {string} args.minioEndpoint - MinIO/S3 endpoint URL (health check)
+ * @param {string} args.diskPath - Filesystem path to report disk usage for
+ * @param {array} args.queues - BullMQ queue adapters
  * @returns {Promise<object>} System health status
  */
 async function getSystemHealth({
@@ -42,25 +52,116 @@ async function getSystemHealth({
   paymentDb,
   redis,
   queueRedis,
-  minioClient,
+  minioEndpoint,
+  diskPath,
   queues
 }) {
   try {
-    const [services, infrastructure, queueHealth] = await Promise.all([
+    const [services, infrastructure, queueHealth, storage, schedulers] = await Promise.all([
       getServiceHealth(),
-      getInfrastructureHealth({ uploadDb, paymentDb, redis, queueRedis, minioClient }),
-      getQueueHealth(queues)
+      getInfrastructureHealth({ uploadDb, paymentDb, redis, queueRedis }),
+      getQueueHealth(queues),
+      getStorageHealth({ minioEndpoint, diskPath }),
+      getSchedulerHealth(queues),
     ]);
 
     return {
       services,
       infrastructure,
-      queues: queueHealth
+      queues: queueHealth,
+      storage,
+      schedulers,
     };
   } catch (error) {
     console.error('Failed to get system health:', error);
     throw error;
   }
+}
+
+/**
+ * Storage health: MinIO liveness (HTTP) + host disk usage for the data path.
+ */
+async function getStorageHealth({ minioEndpoint, diskPath }) {
+  const result = {};
+
+  // MinIO liveness via its built-in health endpoint.
+  if (minioEndpoint) {
+    const url = `${minioEndpoint.replace(/\/$/, '')}/minio/health/live`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      result.minio = res.ok
+        ? { status: 'healthy', endpoint: minioEndpoint }
+        : { status: 'unhealthy', endpoint: minioEndpoint, error: `HTTP ${res.status}` };
+    } catch (error) {
+      result.minio = { status: 'unhealthy', endpoint: minioEndpoint, error: error.message };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Host disk usage for the configured data path.
+  const path = diskPath || '/';
+  try {
+    const stat = fs.statfsSync(path);
+    const totalBytes = stat.blocks * stat.bsize;
+    const freeBytes = stat.bavail * stat.bsize;
+    const usedBytes = totalBytes - freeBytes;
+    const usedPct = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 1000) / 10 : 0;
+    result.disk = {
+      path,
+      status: usedPct >= 90 ? 'unhealthy' : 'healthy',
+      usedPct,
+      totalFormatted: formatBytes(totalBytes),
+      freeFormatted: formatBytes(freeBytes),
+    };
+  } catch (error) {
+    result.disk = { path, status: 'unknown', error: error.message };
+  }
+
+  return result;
+}
+
+/**
+ * Scheduler health: are the in-process BullMQ job schedulers registered?
+ * If plan-bundle-scheduler is missing, nothing ever bundles.
+ */
+async function getSchedulerHealth(queues) {
+  // BullMQ queue names are service-prefixed (e.g. "upload-plan-bundle"), so match
+  // the registered queues by suffix on the bare pipeline label.
+  const allQueues = (queues || [])
+    .map((adapter) => adapter.queue)
+    .filter((q) => q && q.name);
+
+  const findQueue = (label) =>
+    allQueues.find((q) => q.name === label || q.name.endsWith(`-${label}`));
+
+  const result = {};
+  for (const [queueName, schedulerId] of Object.entries(EXPECTED_SCHEDULERS)) {
+    const queue = findQueue(queueName);
+    if (!queue || typeof queue.getJobSchedulers !== 'function') {
+      result[queueName] = { registered: false, error: 'queue not available' };
+      continue;
+    }
+    try {
+      const schedulers = await queue.getJobSchedulers();
+      const found = schedulers.find(
+        (s) => s.key === schedulerId || s.id === schedulerId || s.name === schedulerId
+      );
+      result[queueName] = found
+        ? {
+            registered: true,
+            status: 'healthy',
+            pattern: found.pattern || found.every || null,
+            nextRun: found.next ? new Date(found.next).toISOString() : null,
+          }
+        : { registered: false, status: 'unhealthy', schedulerId };
+    } catch (error) {
+      result[queueName] = { registered: false, status: 'unknown', error: error.message };
+    }
+  }
+  return result;
 }
 
 /**
@@ -118,8 +219,7 @@ async function getInfrastructureHealth({
   uploadDb,
   paymentDb,
   redis,
-  queueRedis,
-  minioClient
+  queueRedis
 }) {
   const health = {};
 
@@ -197,21 +297,7 @@ async function getInfrastructureHealth({
     }
   }
 
-  // MinIO (optional)
-  if (minioClient) {
-    try {
-      await minioClient.listBuckets();
-      health.minio = {
-        status: 'healthy',
-        bucketsAccessible: true
-      };
-    } catch (error) {
-      health.minio = {
-        status: 'unhealthy',
-        error: error.message
-      };
-    }
-  }
+  // MinIO + disk are reported separately under `storage` (getStorageHealth).
 
   return health;
 }
@@ -316,5 +402,7 @@ module.exports = {
   getSystemHealth,
   getServiceHealth,
   getInfrastructureHealth,
-  getQueueHealth
+  getQueueHealth,
+  getStorageHealth,
+  getSchedulerHealth
 };

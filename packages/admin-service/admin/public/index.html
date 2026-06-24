@@ -18,6 +18,9 @@
       <a href="/admin/queues" class="nav-link">Queues</a>
     </div>
     <div class="nav-right">
+      <label class="autorefresh">
+        <input type="checkbox" id="autorefresh-toggle" onchange="toggleAutoRefresh()"> Auto
+      </label>
       <button id="refresh-btn" class="refresh-btn" onclick="fetchStats()">
         <span id="refresh-icon">🔄</span> Refresh
       </button>
@@ -45,12 +48,54 @@
     <!-- Dashboard Content -->
     <div id="dashboard" style="display: none;">
 
+      <!-- Aggregate Status Banner -->
+      <div id="status-banner" class="status-banner"></div>
+
+      <!-- Lookup -->
+      <section class="section lookup-section">
+        <div class="lookup-bar">
+          <input type="text" id="lookup-input" placeholder="Find a data item, bundle, or wallet by id…"
+                 onkeydown="if(event.key==='Enter')doLookup()">
+          <button class="btn" onclick="doLookup()">Search</button>
+        </div>
+        <div id="lookup-result" class="lookup-result"></div>
+      </section>
+
+      <!-- Pipeline (data flowing to permanence) -->
+      <section class="section">
+        <div class="section-head">
+          <h2>Bundle Pipeline</h2>
+          <div class="section-actions">
+            <button class="btn btn-sm" onclick="triggerAction('plan','Trigger a bundle-planning run now?')">Trigger plan</button>
+            <button class="btn btn-sm" onclick="triggerAction('redrive','Re-drive stuck posted bundles now?')">Re-drive posted</button>
+          </div>
+        </div>
+        <div id="pipeline-atrisk" class="atrisk-grid"></div>
+        <div id="pipeline-funnel" class="funnel"></div>
+      </section>
+
+      <!-- Operations: wallet + throughput -->
+      <div class="charts-row">
+        <section class="section">
+          <h2>Bundle Wallet</h2>
+          <div id="wallet-card"></div>
+        </section>
+        <section class="section">
+          <h2>Throughput &amp; Latency (24h)</h2>
+          <div id="throughput-grid" class="kv-grid"></div>
+        </section>
+      </div>
+
       <!-- System Health Section -->
       <section class="section">
         <h2>System Health</h2>
         <div id="health-grid" class="health-grid">
           <!-- Populated by JS -->
         </div>
+        <h3 class="subhead">Storage</h3>
+        <div id="storage-grid" class="health-grid"></div>
+        <h3 class="subhead">Schedulers</h3>
+        <div id="scheduler-grid" class="health-grid"></div>
       </section>
 
       <!-- Stats Overview Cards -->
@@ -199,6 +244,15 @@
         </div>
       </section>
 
+      <!-- Money Integrity -->
+      <section class="section">
+        <h2>Money Integrity</h2>
+        <div id="integrity-grid" class="atrisk-grid"></div>
+        <div class="table-container">
+          <table id="failed-payments-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
       <!-- Recent x402 Payments (payment service) -->
       <section class="section">
         <h2>Recent x402 Payments — Payment Service (USDC)</h2>
@@ -219,9 +273,25 @@
         </div>
       </section>
 
-      <!-- Recent Bundles -->
+      <!-- Failed Bundles (with reason) -->
       <section class="section">
-        <h2>Recent Bundles</h2>
+        <h2>Failed Bundles</h2>
+        <div class="table-container">
+          <table id="failed-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Posted Bundles (awaiting seed/verify) -->
+      <section class="section">
+        <h2>Posted Bundles (awaiting seed &amp; verify)</h2>
+        <div class="table-container">
+          <table id="posted-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Recent Permanent Bundles -->
+      <section class="section">
+        <h2>Recent Permanent Bundles</h2>
         <div class="table-container">
           <table id="recent-bundles-table">
             <!-- Populated by JS -->

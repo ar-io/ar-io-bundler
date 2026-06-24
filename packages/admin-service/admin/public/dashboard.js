@@ -54,16 +54,26 @@ async function fetchStats() {
     dashboard.style.display = 'block';
 
     // Update all dashboard sections
+    updateStatusBanner(stats.health);
+    updatePipeline(stats.pipeline);
+    updateWallet(stats.wallet);
+    updateThroughput(stats.throughput);
     updateSystemHealth(stats.system);
+    updateStorageHealth(stats.system?.storage);
+    updateSchedulerHealth(stats.system?.schedulers);
     updateOverviewCards(stats);
     updateCharts(stats);
     updateQueueStatus(stats.system.queues);
+    updateMoneyIntegrity(stats.payments?.integrity);
     updateTopupProviderTable(stats.payments?.topUps || {});
     updateTopUploaders(stats.uploads.topUploaders);
     updateRecentUploads(stats.uploads.recentUploads);
     updateRecentTopups(stats.payments?.recentTopUps || []);
     updateRecentTraditionalPayments(stats.payments?.recentPayments || []);
     updateRecentX402Payments(stats.x402Payments?.recentPayments || []);
+    updateFailedPayments(stats.payments?.integrity?.failedCrypto?.recent || []);
+    updateFailedBundles(stats.bundles?.recentFailed || []);
+    updatePostedBundles(stats.bundles?.recentPosted || []);
     updateRecentBundles(stats.bundles?.recentPermanent || []);
 
     // Update last refresh time
@@ -82,6 +92,250 @@ async function fetchStats() {
     refreshBtn.classList.remove('loading');
     refreshBtn.disabled = false;
   }
+}
+
+/* ---------- helpers ---------- */
+function fmtBytes(bytes) {
+  let n = Number(bytes) || 0;
+  if (n === 0) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(2)} ${u[i]}`;
+}
+function fmtAge(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
+function fmtDur(sec) {
+  if (sec == null) return '—';
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  return `${(sec / 3600).toFixed(1)}h`;
+}
+function metricCard(label, value, sub, severity) {
+  return `<div class="metric-card ${severity || ''}">
+    <div class="metric-value">${value}</div>
+    <div class="metric-label">${label}</div>
+    ${sub ? `<div class="metric-sub">${sub}</div>` : ''}
+  </div>`;
+}
+
+/**
+ * Aggregate status banner + nav status dot.
+ */
+function updateStatusBanner(health) {
+  const banner = document.getElementById('status-banner');
+  const dot = document.getElementById('status-dot');
+  if (!health) { banner.style.display = 'none'; return; }
+  banner.style.display = 'block';
+
+  const labels = { ok: 'All systems healthy', degraded: 'Degraded', critical: 'Critical' };
+  const icons = { ok: '✅', degraded: '⚠️', critical: '🚨' };
+  banner.className = `status-banner ${health.status}`;
+  if (dot) dot.className = `status-dot ${health.status}`;
+
+  const issues = health.issues || [];
+  const issueHtml = issues.length
+    ? `<ul class="status-issues">${issues.map(i =>
+        `<li class="sev-${i.severity}"><span class="sev-tag">${i.severity}</span>
+         <span class="sev-area">${escapeHtml(i.area)}</span> ${escapeHtml(i.message)}</li>`).join('')}</ul>`
+    : `<div class="status-clear">No issues detected.</div>`;
+
+  banner.innerHTML = `
+    <div class="status-head">
+      <span class="status-icon">${icons[health.status] || '•'}</span>
+      <span class="status-title">${labels[health.status] || health.status}</span>
+      ${health.counts ? `<span class="status-counts">${health.counts.critical} critical · ${health.counts.degraded} warnings</span>` : ''}
+    </div>
+    ${issueHtml}
+  `;
+}
+
+/**
+ * Bundle pipeline: at-risk headline + state funnel.
+ */
+function updatePipeline(pipeline) {
+  const atrisk = document.getElementById('pipeline-atrisk');
+  const funnel = document.getElementById('pipeline-funnel');
+  if (!pipeline) { atrisk.innerHTML = ''; funnel.innerHTML = ''; return; }
+
+  const r = pipeline.atRisk || {};
+  const backlogSev = r.backlogOldestAgeSec >= 7200 ? 'critical' : r.backlogOldestAgeSec >= 1800 ? 'warn' : (r.backlogItems > 0 ? 'info' : 'ok');
+  const stuckSev = r.stuckPostedBundles >= 10 ? 'critical' : r.stuckPostedBundles > 0 ? 'warn' : 'ok';
+  const failSev = r.failedBundles > 0 ? 'warn' : 'ok';
+  const failItemSev = r.failedDataItems > 0 ? 'warn' : 'ok';
+
+  atrisk.innerHTML =
+    metricCard('Backlog (unbundled)', (r.backlogItems || 0).toLocaleString(), `oldest ${fmtAge(r.backlogOldestAgeSec)}`, backlogSev) +
+    metricCard('In-flight bundles', (r.inFlightBundles || 0).toLocaleString(), 'plan → posted → seeded', 'info') +
+    metricCard('Stuck posted', (r.stuckPostedBundles || 0).toLocaleString(), `> ${fmtAge(r.stuckPostedThresholdSec)}`, stuckSev) +
+    metricCard('Failed bundles', (r.failedBundles || 0).toLocaleString(), 'need review', failSev) +
+    metricCard('Failed items', (r.failedDataItems || 0).toLocaleString(), 'dead-letter', failItemSev);
+
+  const di = pipeline.dataItems || {};
+  const bu = pipeline.bundles || {};
+  const stage = (label, obj, showAge) => `
+    <div class="funnel-stage">
+      <div class="funnel-count">${(obj?.count || 0).toLocaleString()}</div>
+      <div class="funnel-label">${label}</div>
+      ${showAge && obj?.oldestAgeSec != null ? `<div class="funnel-age">oldest ${fmtAge(obj.oldestAgeSec)}</div>` : ''}
+    </div>`;
+  const arrow = '<div class="funnel-arrow">→</div>';
+
+  funnel.innerHTML = `
+    <div class="funnel-row">
+      <div class="funnel-track-label">Data items</div>
+      ${stage('New', di.new, true)}${arrow}${stage('Planned', di.planned, true)}${arrow}${stage('Failed', di.failed, false)}
+    </div>
+    <div class="funnel-row">
+      <div class="funnel-track-label">Bundles</div>
+      ${stage('New', bu.newBundle, false)}${arrow}${stage('Plan', bu.planned, false)}${arrow}${stage('Posted', bu.posted, true)}${arrow}${stage('Seeded', bu.seeded, true)}${arrow}${stage('Failed', bu.failed, false)}
+    </div>`;
+}
+
+/**
+ * Bundle-signing wallet balance card.
+ */
+function updateWallet(wallet) {
+  const el = document.getElementById('wallet-card');
+  if (!wallet || !wallet.configured) {
+    el.innerHTML = `<div class="wallet-unknown">Wallet not configured${wallet?.error ? ': ' + escapeHtml(wallet.error) : ''}</div>`;
+    return;
+  }
+  const sevClass = wallet.status === 'critical' ? 'critical' : wallet.status === 'low' ? 'warn' : wallet.status === 'unknown' ? 'info' : 'ok';
+  const balance = wallet.balanceAr != null ? `${parseFloat(wallet.balanceAr).toLocaleString(undefined, { maximumFractionDigits: 6 })} AR` : '—';
+  el.innerHTML = `
+    <div class="wallet-card ${sevClass}">
+      <div class="wallet-balance">${balance}</div>
+      <div class="wallet-status">${wallet.status.toUpperCase()}${wallet.status !== 'healthy' ? ` (warn &lt; ${wallet.lowThresholdAr} AR)` : ''}</div>
+      <div class="wallet-meta">${makeCopyable(wallet.address, null, 'address')}</div>
+      ${wallet.error ? `<div class="wallet-err">${escapeHtml(wallet.error)}</div>` : ''}
+    </div>`;
+}
+
+/**
+ * Throughput & latency key-values.
+ */
+function updateThroughput(tp) {
+  const el = document.getElementById('throughput-grid');
+  if (!tp) { el.innerHTML = ''; return; }
+  const lat = tp.permanenceLatency || {};
+  const kv = (k, v) => `<div class="kv"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`;
+  el.innerHTML =
+    kv('Arrivals', `${tp.arrivals.lastHour}/h · ${tp.arrivals.last24h}/24h`) +
+    kv('Items permanent', `${tp.itemsPermanent.lastHour}/h · ${tp.itemsPermanent.last24h}/24h`) +
+    kv('Bundles permanent', `${tp.bundlesPermanent.lastHour}/h · ${tp.bundlesPermanent.last24h}/24h`) +
+    kv('Data permanent (24h)', fmtBytes(tp.bundlesPermanent.bytes24h)) +
+    kv('Post→permanent p50', fmtDur(lat.p50Sec)) +
+    kv('Post→permanent avg/max', `${fmtDur(lat.avgSec)} / ${fmtDur(lat.maxSec)}`);
+}
+
+/**
+ * Storage health (MinIO + disk).
+ */
+function updateStorageHealth(storage) {
+  const grid = document.getElementById('storage-grid');
+  if (!storage) { grid.innerHTML = ''; return; }
+  let html = '';
+  if (storage.minio) {
+    const ok = storage.minio.status === 'healthy';
+    html += `<div class="health-item ${storage.minio.status}">
+      <span class="health-icon">${ok ? '✅' : '❌'}</span>
+      <div><div class="health-name">MinIO Object Storage</div>
+      <div class="health-meta">${ok ? escapeHtml(storage.minio.endpoint || '') : escapeHtml(storage.minio.error || 'down')}</div></div></div>`;
+  }
+  if (storage.disk) {
+    const d = storage.disk;
+    const cls = d.status === 'healthy' ? 'healthy' : d.status === 'unknown' ? 'unknown' : 'unhealthy';
+    html += `<div class="health-item ${cls}">
+      <span class="health-icon">${cls === 'healthy' ? '✅' : cls === 'unknown' ? '❔' : '❌'}</span>
+      <div><div class="health-name">Disk (${escapeHtml(d.path || '/')})</div>
+      <div class="health-meta">${d.usedPct != null ? `${d.usedPct}% used · ${d.freeFormatted} free of ${d.totalFormatted}` : escapeHtml(d.error || '')}</div></div></div>`;
+  }
+  grid.innerHTML = html || '<div class="health-meta">No storage data</div>';
+}
+
+/**
+ * Scheduler health (plan/cleanup/redrive registered + next run).
+ */
+function updateSchedulerHealth(schedulers) {
+  const grid = document.getElementById('scheduler-grid');
+  if (!schedulers) { grid.innerHTML = ''; return; }
+  grid.innerHTML = Object.entries(schedulers).map(([name, s]) => {
+    const ok = s.registered;
+    const meta = ok
+      ? `${s.pattern || ''}${s.nextRun ? ` · next ${new Date(s.nextRun).toLocaleString()}` : ''}`
+      : (s.error || 'NOT REGISTERED');
+    return `<div class="health-item ${ok ? 'healthy' : 'unhealthy'}">
+      <span class="health-icon">${ok ? '✅' : '❌'}</span>
+      <div><div class="health-name">${escapeHtml(name)} scheduler</div>
+      <div class="health-meta">${escapeHtml(meta)}</div></div></div>`;
+  }).join('');
+}
+
+/**
+ * Money integrity metrics + failed-payment context.
+ */
+function updateMoneyIntegrity(integ) {
+  const grid = document.getElementById('integrity-grid');
+  if (!integ) { grid.innerHTML = ''; return; }
+  const pend = integ.pendingCrypto || {};
+  const pendSev = pend.count > 0 && pend.oldestAgeSec >= 7200 ? 'critical' : pend.count > 0 && pend.oldestAgeSec >= 1800 ? 'warn' : pend.count > 0 ? 'info' : 'ok';
+  grid.innerHTML =
+    metricCard('Uncredited crypto', (pend.count || 0).toLocaleString(), `${parseFloat(pend.ar || 0).toFixed(4)} AR · oldest ${fmtAge(pend.oldestAgeSec)}`, pendSev) +
+    metricCard('Failed crypto', (integ.failedCrypto?.count || 0).toLocaleString(), 'need review', (integ.failedCrypto?.count > 0 ? 'warn' : 'ok')) +
+    metricCard('Failed top-up quotes', (integ.failedTopUpQuotes?.count || 0).toLocaleString(), '', 'info') +
+    metricCard('Chargebacks', (integ.chargebacks?.count || 0).toLocaleString(), '', (integ.chargebacks?.count > 0 ? 'warn' : 'ok'));
+}
+
+function updateFailedPayments(rows) {
+  const table = document.getElementById('failed-payments-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="5" class="empty-cell">No failed crypto payments</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Tx</th><th>Token</th><th style="text-align:right;">Credits (AR)</th><th>Reason</th><th>Time</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td>${makeCopyable(r.transactionId, null, 'transaction')}</td>
+      <td>${escapeHtml(r.tokenType || '')}</td>
+      <td style="text-align:right;">${parseFloat(r.ar || 0).toFixed(6)}</td>
+      <td class="reason-cell">${escapeHtml(r.reason || '')}</td>
+      <td>${formatTime(r.timestamp)}</td></tr>`).join('')}</tbody>`;
+}
+
+function updateFailedBundles(rows) {
+  const table = document.getElementById('failed-bundles-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No failed bundles 🎉</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Bundle ID</th><th>Plan ID</th><th>Reason</th><th>Failed</th></tr></thead>
+    <tbody>${rows.map(b => `<tr>
+      <td>${makeCopyable(b.bundleId, null, 'bundle ID')}</td>
+      <td>${makeCopyable(b.planId, null, 'plan ID')}</td>
+      <td class="reason-cell">${escapeHtml(b.failedReason || '—')}</td>
+      <td>${formatTime(b.failedDate)}</td></tr>`).join('')}</tbody>`;
+}
+
+function updatePostedBundles(rows) {
+  const table = document.getElementById('posted-bundles-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No bundles awaiting seed/verify</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Bundle ID</th><th style="text-align:right;">Size</th><th>Reward</th><th>Posted</th></tr></thead>
+    <tbody>${rows.map(b => `<tr>
+      <td>${makeCopyable(b.bundleId, null, 'bundle ID')}</td>
+      <td style="text-align:right;">${b.payloadSizeFormatted}</td>
+      <td>${escapeHtml(String(b.reward || ''))}</td>
+      <td>${formatTime(b.postedDate)}</td></tr>`).join('')}</tbody>`;
 }
 
 /**
@@ -468,9 +722,13 @@ function updateQueueStatus(queues) {
 
   (queues.byQueue || []).forEach(q => {
     const el = document.createElement('div');
-    el.className = 'queue-card';
+    el.className = `queue-card ${q.failed > 0 ? 'has-failures' : ''}`;
+    const boardUrl = `/admin/queues/queue/${encodeURIComponent(q.name)}`;
     el.innerHTML = `
-      <div class="queue-name">${q.name}</div>
+      <div class="queue-head">
+        <a class="queue-name" href="${boardUrl}" title="Open in Bull Board">${q.name} ↗</a>
+        ${q.failed > 0 ? `<button class="btn btn-xs" onclick="retryQueue('${escapeHtml(q.name)}')">Retry ${q.failed}</button>` : ''}
+      </div>
       <div class="queue-stats">
         <span>
           <div class="value">${q.active}</div>
@@ -890,6 +1148,85 @@ function formatTime(timestamp) {
   if (hours > 0) return `${hours}h ago`;
   if (minutes > 0) return `${minutes}m ago`;
   return `${seconds}s ago`;
+}
+
+/* ---------- recovery actions + lookup + auto-refresh ---------- */
+
+let autoRefreshTimer = null;
+
+function toggleAutoRefresh() {
+  const on = document.getElementById('autorefresh-toggle').checked;
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (on) {
+    autoRefreshTimer = setInterval(fetchStats, 15000); // 15s (cache is 30s server-side)
+  }
+}
+
+/**
+ * Look up where a data item / bundle / wallet currently lives.
+ */
+async function doLookup() {
+  const q = document.getElementById('lookup-input').value.trim();
+  const out = document.getElementById('lookup-result');
+  if (!q) { out.innerHTML = ''; return; }
+  out.innerHTML = '<span class="muted">Searching…</span>';
+  try {
+    const res = await fetch(`/admin/lookup?q=${encodeURIComponent(q)}`, { headers: { 'Accept': 'application/json' } });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (!data.found || !data.results || data.results.length === 0) {
+      out.innerHTML = `<span class="muted">No match for <code>${escapeHtml(q)}</code></span>`;
+      return;
+    }
+    out.innerHTML = data.results.map(r => `
+      <div class="lookup-hit">
+        <span class="badge badge-info">${escapeHtml(r.kind)}</span>
+        <span class="lookup-state">${escapeHtml(r.state)}</span>
+        ${r.detail ? `<span class="muted">${escapeHtml(r.detail)}</span>` : ''}
+      </div>`).join('');
+  } catch (err) {
+    out.innerHTML = `<span class="sev-critical">Lookup failed: ${escapeHtml(err.message)}</span>`;
+  }
+}
+
+/**
+ * Fire a guarded recovery action (trigger plan/redrive/cleanup).
+ */
+async function triggerAction(action, confirmMsg) {
+  if (!confirm(confirmMsg)) return;
+  try {
+    const res = await fetch(`/admin/actions/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (res.ok) { alert(`✅ ${data.message || 'Triggered'}`); fetchStats(); }
+    else alert(`❌ ${data.error || 'Failed'}`);
+  } catch (err) {
+    alert(`❌ ${err.message}`);
+  }
+}
+
+/**
+ * Retry all failed jobs in a queue.
+ */
+async function retryQueue(queueName) {
+  if (!confirm(`Retry all failed jobs in "${queueName}"?`)) return;
+  try {
+    const res = await fetch(`/admin/actions/retry-failed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ queue: queueName }),
+    });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (res.ok) { alert(`✅ Retried ${data.retried} job(s) in ${queueName}`); fetchStats(); }
+    else alert(`❌ ${data.error || 'Failed'}`);
+  } catch (err) {
+    alert(`❌ ${err.message}`);
+  }
 }
 
 /**

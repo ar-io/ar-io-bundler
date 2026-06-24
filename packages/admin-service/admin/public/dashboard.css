@@ -556,3 +556,104 @@ code {
 table td .copyable-id {
   margin: -4px 0;
 }
+
+/* ============================================================
+   Operations panels (pipeline, wallet, status, integrity, etc.)
+   ============================================================ */
+
+/* Severity palette */
+:root {
+  --sev-ok: #16a34a;
+  --sev-info: #0070f3;
+  --sev-warn: #f5a623;
+  --sev-critical: #e74c3c;
+}
+
+/* Status banner */
+.status-banner { border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; border-left: 6px solid var(--sev-ok); background: var(--card-bg); box-shadow: var(--shadow); }
+.status-banner.ok { border-left-color: var(--sev-ok); }
+.status-banner.degraded { border-left-color: var(--sev-warn); background: #fffaf0; }
+.status-banner.critical { border-left-color: var(--sev-critical); background: #fef2f2; }
+.status-head { display: flex; align-items: center; gap: 12px; }
+.status-icon { font-size: 22px; }
+.status-title { font-size: 18px; font-weight: 700; }
+.status-counts { margin-left: auto; color: var(--text-secondary); font-size: 13px; }
+.status-issues { list-style: none; margin: 10px 0 0; padding: 0; }
+.status-issues li { padding: 4px 0; font-size: 14px; border-top: 1px solid var(--border-color); }
+.sev-tag { display: inline-block; min-width: 64px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; margin-right: 8px; color: #fff; }
+.sev-critical .sev-tag, li.sev-critical .sev-tag { background: var(--sev-critical); }
+.sev-degraded .sev-tag, li.sev-degraded .sev-tag { background: var(--sev-warn); }
+.sev-area { font-weight: 600; margin-right: 6px; text-transform: capitalize; }
+.status-clear { color: var(--sev-ok); font-weight: 600; margin-top: 8px; }
+
+/* Nav status dot + auto-refresh */
+.status-dot.ok { background: var(--sev-ok); }
+.status-dot.degraded { background: var(--sev-warn); }
+.status-dot.critical { background: var(--sev-critical); }
+.autorefresh { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* Section head with actions */
+.section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.section-head h2 { margin: 0; }
+.section-actions { display: flex; gap: 8px; }
+.subhead { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); margin: 18px 0 8px; }
+
+/* Buttons */
+.btn { background: var(--primary-color); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+.btn:hover { filter: brightness(1.05); }
+.btn-sm { padding: 6px 10px; font-size: 13px; }
+.btn-xs { padding: 3px 8px; font-size: 12px; background: var(--danger-color); }
+
+/* At-risk / metric cards */
+.atrisk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.metric-card { background: var(--card-bg); border: 1px solid var(--border-color); border-top: 3px solid var(--text-secondary); border-radius: 8px; padding: 14px; }
+.metric-card.ok { border-top-color: var(--sev-ok); }
+.metric-card.info { border-top-color: var(--sev-info); }
+.metric-card.warn { border-top-color: var(--sev-warn); background: #fffaf0; }
+.metric-card.critical { border-top-color: var(--sev-critical); background: #fef2f2; }
+.metric-value { font-size: 26px; font-weight: 700; }
+.metric-label { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+.metric-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+
+/* Pipeline funnel */
+.funnel { margin-top: 16px; }
+.funnel-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.funnel-track-label { width: 90px; font-size: 12px; text-transform: uppercase; color: var(--text-secondary); }
+.funnel-stage { background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 14px; text-align: center; min-width: 84px; }
+.funnel-count { font-size: 20px; font-weight: 700; }
+.funnel-label { font-size: 12px; color: var(--text-secondary); }
+.funnel-age { font-size: 11px; color: var(--sev-warn); }
+.funnel-arrow { color: var(--text-secondary); font-size: 18px; }
+
+/* Wallet card */
+.wallet-card { border: 1px solid var(--border-color); border-left: 5px solid var(--sev-ok); border-radius: 8px; padding: 16px; }
+.wallet-card.warn { border-left-color: var(--sev-warn); background: #fffaf0; }
+.wallet-card.critical { border-left-color: var(--sev-critical); background: #fef2f2; }
+.wallet-card.info { border-left-color: var(--sev-info); }
+.wallet-balance { font-size: 30px; font-weight: 700; }
+.wallet-status { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 2px 0 10px; }
+.wallet-err { color: var(--danger-color); font-size: 12px; margin-top: 6px; }
+.wallet-unknown { color: var(--text-secondary); }
+
+/* Key-value grid (throughput) */
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.kv { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-color); padding: 6px 0; }
+.kv-k { color: var(--text-secondary); font-size: 13px; }
+.kv-v { font-weight: 600; }
+
+/* Lookup */
+.lookup-bar { display: flex; gap: 8px; }
+.lookup-bar input { flex: 1; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; }
+.lookup-result { margin-top: 10px; }
+.lookup-hit { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.lookup-state { font-weight: 600; }
+.muted { color: var(--text-secondary); }
+
+/* Queue cards w/ failures */
+.queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.queue-card.has-failures { border-color: var(--danger-color); }
+.queue-name { text-decoration: none; color: var(--primary-color); font-weight: 600; }
+
+/* Tables shared */
+.empty-cell { text-align: center; padding: 32px; color: var(--text-secondary); }
+.reason-cell { max-width: 360px; color: var(--danger-color); font-size: 13px; word-break: break-word; }

@@ -48,10 +48,11 @@ const crypto = require("crypto");
 const uploadServicePath = require('path').join(__dirname, '../upload-service');
 const { jobLabels } = require(uploadServicePath + '/lib/constants');
 const { getQueue } = require(uploadServicePath + '/lib/arch/queues/config');
+const { enqueue } = require(uploadServicePath + '/lib/arch/queues');
 
 const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
-const { initializeStatsCollector, getStats, cleanup } = require("./admin/statsCollector");
+const { initializeStatsCollector, getStats, lookupEntity, cleanup } = require("./admin/statsCollector");
 
 const app = new Koa();
 const router = new Router();
@@ -102,7 +103,28 @@ const config = {
   paymentDbPort: process.env.DB_PORT || '5432',
   paymentDbName: 'payment_service',  // ALWAYS use payment_service for payment stats
   paymentDbUser: process.env.DB_USER || 'postgres',
-  paymentDbPassword: process.env.DB_PASSWORD
+  paymentDbPassword: process.env.DB_PASSWORD,
+
+  // Storage health
+  minioEndpoint: process.env.S3_ENDPOINT || 'http://localhost:9000',
+  diskPath: process.env.ADMIN_DISK_PATH || '/',
+
+  // Bundle-signing wallet balance (posting capability)
+  arweaveGateway: process.env.ARWEAVE_GATEWAY || 'https://arweave.net',
+  arweaveAddress: process.env.ARWEAVE_ADDRESS || undefined,
+  jwkFile: process.env.TURBO_JWK_FILE || undefined,
+  walletLowAr: process.env.ADMIN_WALLET_LOW_AR ? parseFloat(process.env.ADMIN_WALLET_LOW_AR) : 0.5,
+
+  // Pipeline "stuck posted" threshold (mirror POSTED_STALE_THRESHOLD_MS)
+  stuckPostedAgeSec: process.env.POSTED_STALE_THRESHOLD_MS
+    ? Math.round(parseInt(process.env.POSTED_STALE_THRESHOLD_MS) / 1000)
+    : 1800,
+
+  // Health-rollup threshold overrides (optional; defaults in healthRollup.js)
+  thresholds: {
+    diskWarnPct: process.env.ADMIN_DISK_WARN_PCT ? parseFloat(process.env.ADMIN_DISK_WARN_PCT) : undefined,
+    diskCritPct: process.env.ADMIN_DISK_CRIT_PCT ? parseFloat(process.env.ADMIN_DISK_CRIT_PCT) : undefined,
+  }
 };
 
 initializeStatsCollector(config);
@@ -250,6 +272,73 @@ router.get('/admin/stats', statsRateLimiter, async (ctx) => {
       error: 'Failed to fetch statistics',
       message: error.message
     };
+  }
+});
+
+// Lookup: where does a data item / bundle / wallet currently live?
+router.get('/admin/lookup', statsRateLimiter, async (ctx) => {
+  const q = (ctx.query.q || '').toString().trim();
+  if (!q) {
+    ctx.status = 400;
+    ctx.body = { error: 'missing q' };
+    return;
+  }
+  try {
+    ctx.body = await lookupEntity(q);
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'lookup failed', message: error.message };
+  }
+});
+
+// Recovery: trigger a scheduled job on demand (plan / redrive / cleanup).
+const TRIGGERABLE = {
+  plan: { label: jobLabels.planBundle, data: () => ({ planId: `admin-${Date.now()}` }), name: 'bundle-planning' },
+  redrive: { label: jobLabels.redrivePosted, data: () => ({}), name: 'posted-bundle redrive' },
+  cleanup: { label: jobLabels.cleanupFs, data: () => ({}), name: 'filesystem cleanup' },
+};
+router.post('/admin/actions/trigger', async (ctx) => {
+  const body = await readJsonBody(ctx);
+  const spec = TRIGGERABLE[body && body.action];
+  if (!spec) {
+    ctx.status = 400;
+    ctx.body = { error: 'unknown action', allowed: Object.keys(TRIGGERABLE) };
+    return;
+  }
+  try {
+    await enqueue(spec.label, spec.data());
+    console.log(`🔧 Admin ${ctx.state.adminUser || 'admin'} triggered ${spec.name} from ${ctx.ip}`);
+    ctx.body = { ok: true, message: `${spec.name} enqueued` };
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'trigger failed', message: error.message };
+  }
+});
+
+// Recovery: retry all failed jobs in a queue.
+const queueByName = {};
+queues.forEach((adapter) => {
+  if (adapter.queue && adapter.queue.name) queueByName[adapter.queue.name] = adapter.queue;
+});
+router.post('/admin/actions/retry-failed', async (ctx) => {
+  const body = await readJsonBody(ctx);
+  const queue = queueByName[body && body.queue];
+  if (!queue) {
+    ctx.status = 400;
+    ctx.body = { error: 'unknown queue', queue: body && body.queue };
+    return;
+  }
+  try {
+    const failed = await queue.getFailed(0, 999);
+    let retried = 0;
+    for (const job of failed) {
+      try { await job.retry(); retried += 1; } catch { /* skip individual */ }
+    }
+    console.log(`🔧 Admin ${ctx.state.adminUser || 'admin'} retried ${retried} failed jobs in ${queue.name} from ${ctx.ip}`);
+    ctx.body = { ok: true, retried, queue: queue.name };
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'retry failed', message: error.message };
   }
 });
 

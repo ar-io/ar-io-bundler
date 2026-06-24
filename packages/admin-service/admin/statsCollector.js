@@ -27,6 +27,10 @@ const { getPaymentStats } = require('../../payment-service/admin/queries/payment
 const { getX402Stats } = require('./queries/x402Stats');
 const { getBundleStats } = require('./queries/bundleStats');
 const { getSystemHealth } = require('./queries/systemHealth');
+const { getPipelineStats } = require('./queries/pipelineStats');
+const { getWalletStats } = require('./queries/walletStats');
+const { getThroughputStats } = require('./queries/throughputStats');
+const { computeHealthRollup } = require('./healthRollup');
 const Redis = require('ioredis');
 const Knex = require('knex');
 
@@ -37,11 +41,13 @@ let cacheRedis = null;
 let uploadDb = null;
 let paymentDb = null;
 let queueRedis = null;
+let runtimeConfig = {};
 
 /**
  * Initialize stats collector with database and Redis connections
  */
 function initializeStatsCollector(config) {
+  runtimeConfig = config || {};
   // Redis for caching (ElastiCache - port 6379)
   try {
     if (!cacheRedis) {
@@ -147,7 +153,7 @@ async function getStats(queues = []) {
   console.log('📊 Computing admin dashboard stats...');
 
   try {
-    const [uploadStats, paymentStats, x402Stats, bundleStats, systemHealth] = await Promise.all([
+    const [uploadStats, paymentStats, x402Stats, bundleStats, pipelineStats, throughputStats, walletStats, systemHealth] = await Promise.all([
       getUploadStats(uploadDb).catch(err => {
         console.error('Failed to get upload stats:', err);
         return getEmptyUploadStats();
@@ -164,12 +170,30 @@ async function getStats(queues = []) {
         console.error('Failed to get bundle stats:', err);
         return getEmptyBundleStats();
       }),
+      getPipelineStats(uploadDb, { stuckPostedAgeSec: runtimeConfig.stuckPostedAgeSec }).catch(err => {
+        console.error('Failed to get pipeline stats:', err);
+        return getEmptyPipelineStats();
+      }),
+      getThroughputStats(uploadDb).catch(err => {
+        console.error('Failed to get throughput stats:', err);
+        return getEmptyThroughputStats();
+      }),
+      getWalletStats({
+        gateway: runtimeConfig.arweaveGateway,
+        address: runtimeConfig.arweaveAddress,
+        jwkFile: runtimeConfig.jwkFile,
+        lowAr: runtimeConfig.walletLowAr
+      }).catch(err => {
+        console.error('Failed to get wallet stats:', err);
+        return { configured: false, status: 'unknown', error: err.message };
+      }),
       getSystemHealth({
         uploadDb,
         paymentDb,
         redis: cacheRedis,
         queueRedis,
-        minioClient: null, // MinIO health check can be added later
+        minioEndpoint: runtimeConfig.minioEndpoint,
+        diskPath: runtimeConfig.diskPath,
         queues
       }).catch(err => {
         console.error('Failed to get system health:', err);
@@ -185,8 +209,14 @@ async function getStats(queues = []) {
       payments: paymentStats,
       x402Payments: x402Stats,
       bundles: bundleStats,
+      pipeline: pipelineStats,
+      throughput: throughputStats,
+      wallet: walletStats,
       _cached: false
     };
+
+    // Server-side health rollup (status banner + thresholds in one place).
+    stats.health = computeHealthRollup(stats, runtimeConfig.thresholds || {});
 
     // Cache result
     if (cacheRedis) {
@@ -281,8 +311,41 @@ function getEmptyPaymentStats() {
       usersWithBalance: 0,
       totalUsers: 0
     },
+    integrity: {
+      pendingCrypto: { count: 0, winc: '0', ar: '0.000000', oldestAgeSec: null },
+      failedCrypto: { count: 0, recent: [] },
+      failedTopUpQuotes: { count: 0 },
+      chargebacks: { count: 0 }
+    },
     recentTopUps: [],
     recentPayments: []
+  };
+}
+
+/**
+ * Get empty pipeline stats (fallback for errors)
+ */
+function getEmptyPipelineStats() {
+  const empty = { count: 0, oldestAgeSec: null, oldestDate: null };
+  return {
+    dataItems: { new: empty, planned: empty, failed: empty },
+    bundles: { newBundle: empty, planned: empty, posted: empty, seeded: empty, failed: empty },
+    atRisk: {
+      backlogItems: 0, backlogOldestAgeSec: null, inFlightBundles: 0,
+      stuckPostedBundles: 0, stuckPostedThresholdSec: 1800, failedBundles: 0, failedDataItems: 0
+    }
+  };
+}
+
+/**
+ * Get empty throughput stats (fallback for errors)
+ */
+function getEmptyThroughputStats() {
+  return {
+    arrivals: { lastHour: 0, last24h: 0, bytes24h: '0' },
+    itemsPermanent: { lastHour: 0, last24h: 0 },
+    bundlesPermanent: { lastHour: 0, last24h: 0, bytes24h: '0' },
+    permanenceLatency: { avgSec: null, p50Sec: null, maxSec: null, sampleCount: 0 }
   };
 }
 
@@ -298,7 +361,9 @@ function getEmptySystemHealth() {
       totalWaiting: 0,
       totalFailed: 0,
       byQueue: []
-    }
+    },
+    storage: {},
+    schedulers: {}
   };
 }
 
@@ -366,9 +431,68 @@ async function cleanup() {
   console.log('✅ Stats collector cleanup complete');
 }
 
+/**
+ * Look up where an id currently lives (data item state, bundle state, or wallet).
+ * @param {string} q - data item id, bundle id, or wallet address
+ */
+async function lookupEntity(q) {
+  const results = [];
+  if (!q || !uploadDb) return { found: false, results };
+
+  const itemTables = [
+    ['new_data_item', 'new — awaiting bundling'],
+    ['planned_data_item', 'planned'],
+    ['permanent_data_items', 'permanent'],
+    ['failed_data_item', 'failed'],
+  ];
+  for (const [table, state] of itemTables) {
+    try {
+      if (!(await uploadDb.schema.hasTable(table))) continue;
+      const row = await uploadDb(table).where('data_item_id', q).first();
+      if (row) {
+        const detail = row.failed_reason || (row.bundle_id ? `bundle ${row.bundle_id}` : '');
+        results.push({ kind: 'data item', state, detail });
+      }
+    } catch (e) { /* ignore per-table errors */ }
+  }
+
+  const bundleTables = [
+    ['new_bundle', 'new'],
+    ['posted_bundle', 'posted — awaiting seed/verify'],
+    ['seeded_bundle', 'seeded — awaiting verify'],
+    ['permanent_bundle', 'permanent'],
+    ['failed_bundle', 'failed'],
+  ];
+  for (const [table, state] of bundleTables) {
+    try {
+      if (!(await uploadDb.schema.hasTable(table))) continue;
+      const row = await uploadDb(table).where('bundle_id', q).first();
+      if (row) {
+        const detail = row.failed_reason || (row.block_height ? `block ${row.block_height}` : '');
+        results.push({ kind: 'bundle', state, detail });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  if (paymentDb) {
+    try {
+      if (await paymentDb.schema.hasTable('user')) {
+        const u = await paymentDb('user').where('user_address', q).first();
+        if (u) {
+          const ar = (Number(u.winston_credit_balance) / 1e12).toFixed(6);
+          results.push({ kind: 'wallet', state: 'account', detail: `balance ${ar} AR` });
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  return { found: results.length > 0, results };
+}
+
 module.exports = {
   initializeStatsCollector,
   getStats,
   invalidateCache,
+  lookupEntity,
   cleanup
 };

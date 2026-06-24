@@ -47,12 +47,13 @@ function wincToAr(winc) {
  */
 async function getPaymentStats(db) {
   try {
-    const [x402Stats, topUps, cryptoTopUps, balances, recentTopUps, recentPayments] =
+    const [x402Stats, topUps, cryptoTopUps, balances, integrity, recentTopUps, recentPayments] =
       await Promise.all([
         getX402PaymentStats(db),
         getTopUpStats(db),
         getCryptoTopUpStats(db),
         getBalanceStats(db),
+        getPaymentIntegrity(db),
         getRecentTopUps(db),
         getRecentX402Payments(db),
       ]);
@@ -62,6 +63,7 @@ async function getPaymentStats(db) {
       topUps,
       cryptoTopUps,
       balances,
+      integrity,
       recentTopUps,
       // Recent x402 payments from the payment-service x402 table.
       recentPayments,
@@ -293,12 +295,82 @@ async function getRecentX402Payments(db, limit = 25) {
   }));
 }
 
+/**
+ * Money-integrity view: payments taken but not yet credited, and failures that
+ * need an operator. Upholds the "never take money without crediting" gate.
+ *  - pending crypto: on-chain tx seen, awaiting credit by payment-workers. A
+ *    growing/aging count means payment-workers may be down — money owed.
+ *  - failed crypto / failed top-up quotes / chargebacks: need attention.
+ */
+async function getPaymentIntegrity(db) {
+  const [hasPending, hasFailed, hasFailedQuote, hasChargeback] = await Promise.all([
+    db.schema.hasTable(tableNames.pendingPaymentTransaction),
+    db.schema.hasTable(tableNames.failedPaymentTransaction),
+    db.schema.hasTable(tableNames.failedTopUpQuote),
+    db.schema.hasTable(tableNames.chargebackReceipt),
+  ]);
+
+  let pendingCrypto = { count: 0, winc: '0', ar: '0.000000', oldestAgeSec: null };
+  if (hasPending) {
+    const row = await db(tableNames.pendingPaymentTransaction)
+      .select(
+        db.raw('COUNT(*) as count'),
+        sumExpr(db, 'winston_credit_amount'),
+        db.raw('MIN(created_date) as oldest')
+      )
+      .first();
+    const oldestAgeSec = row.oldest
+      ? Math.max(0, Math.round((Date.now() - new Date(row.oldest).getTime()) / 1000))
+      : null;
+    pendingCrypto = {
+      count: parseInt(row.count) || 0,
+      winc: String(row.sum),
+      ar: wincToAr(row.sum),
+      oldestAgeSec,
+    };
+  }
+
+  let failedCrypto = { count: 0, recent: [] };
+  if (hasFailed) {
+    const countRow = await db(tableNames.failedPaymentTransaction).count('* as count').first();
+    const recent = await db(tableNames.failedPaymentTransaction)
+      .select('transaction_id', 'token_type', 'winston_credit_amount', 'failed_reason', 'failed_date')
+      .orderBy('failed_date', 'desc')
+      .limit(15);
+    failedCrypto = {
+      count: parseInt(countRow.count) || 0,
+      recent: recent.map((r) => ({
+        transactionId: r.transaction_id,
+        tokenType: r.token_type,
+        ar: wincToAr(r.winston_credit_amount),
+        reason: r.failed_reason,
+        timestamp: r.failed_date,
+      })),
+    };
+  }
+
+  let failedTopUpQuotes = { count: 0 };
+  if (hasFailedQuote) {
+    const r = await db(tableNames.failedTopUpQuote).count('* as count').first();
+    failedTopUpQuotes = { count: parseInt(r.count) || 0 };
+  }
+
+  let chargebacks = { count: 0 };
+  if (hasChargeback) {
+    const r = await db(tableNames.chargebackReceipt).count('* as count').first();
+    chargebacks = { count: parseInt(r.count) || 0 };
+  }
+
+  return { pendingCrypto, failedCrypto, failedTopUpQuotes, chargebacks };
+}
+
 module.exports = {
   getPaymentStats,
   getX402PaymentStats,
   getTopUpStats,
   getCryptoTopUpStats,
   getBalanceStats,
+  getPaymentIntegrity,
   getRecentTopUps,
   getRecentX402Payments,
 };

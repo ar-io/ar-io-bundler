@@ -29,6 +29,22 @@
 const uploadServicePath = require('path').join(__dirname, '../../../upload-service');
 const { tableNames, columnNames } = require(uploadServicePath + '/lib/arch/db/dbConstants');
 
+// Canonical ANS-104 signature-type → name map (matches signatureTypeInfo in
+// upload-service/src/constants.ts). Used everywhere so labels never disagree.
+const SIGNATURE_TYPE_NAMES = {
+  1: 'Arweave',
+  2: 'ED25519',
+  3: 'Ethereum',
+  4: 'Solana',
+  5: 'InjectedAptos',
+  6: 'MultiAptos',
+  7: 'TypedEthereum',
+};
+
+function signatureTypeName(type) {
+  return SIGNATURE_TYPE_NAMES[type] || `Type ${type}`;
+}
+
 /**
  * Get comprehensive upload statistics
  * @param {object} db - Knex database connection (reader)
@@ -91,8 +107,16 @@ async function getAllTimeStats(db) {
   const totalBytes = BigInt(plannedResult.total_bytes) + BigInt(permanentResult.total_bytes);
   const averageSize = totalUploads > 0 ? Number(totalBytes) / totalUploads : 0;
 
-  // Count unique uploaders across both tables (approximation - may count same address twice)
-  const uniqueUploaders = parseInt(plannedResult.unique_uploaders) + parseInt(permanentResult.unique_uploaders);
+  // True distinct uploader count across both tables (an address in both
+  // planned_data_item and permanent_data_items is counted once, not twice).
+  const uniqueResult = await db.raw(`
+    SELECT COUNT(*) as count FROM (
+      SELECT owner_public_address FROM ${tableNames.plannedDataItem}
+      UNION
+      SELECT owner_public_address FROM permanent_data_items
+    ) distinct_owners
+  `);
+  const uniqueUploaders = parseInt(uniqueResult.rows[0].count) || 0;
 
   return {
     totalUploads,
@@ -230,20 +254,9 @@ async function getSignatureTypeStats(db) {
     ORDER BY count DESC
   `);
 
-  // Map signature type numbers to readable names
-  const signatureTypeNames = {
-    1: 'Arweave',
-    2: 'ED25519', // Solana
-    3: 'Ethereum',
-    4: 'Solana',
-    5: 'Injective',
-    6: 'Avalanche',
-    7: 'BIP-137' // Bitcoin
-  };
-
   const stats = {};
   results.rows.forEach(row => {
-    const typeName = signatureTypeNames[row.signature_type] || `Type ${row.signature_type}`;
+    const typeName = signatureTypeName(row.signature_type);
     stats[typeName] = {
       count: parseInt(row.count),
       percentage: parseFloat(row.percentage),
@@ -336,16 +349,7 @@ async function getRecentUploads(db, limit = 50) {
  * Helper: Get readable signature type name
  */
 function getSignatureTypeName(type) {
-  const names = {
-    1: 'Arweave',
-    2: 'Solana',
-    3: 'Ethereum',
-    4: 'Solana',
-    5: 'Injective',
-    6: 'Avalanche',
-    7: 'Bitcoin'
-  };
-  return names[type] || `Type ${type}`;
+  return signatureTypeName(type);
 }
 
 /**
