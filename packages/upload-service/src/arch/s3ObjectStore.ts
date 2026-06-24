@@ -161,6 +161,85 @@ if (process.env.BACKUP_DATA_ITEM_BUCKET) {
     process.env.BACKUP_BUCKET_REGION ?? s3Region;
 }
 
+// --- Second (archive) MinIO, opt-in via ARCHIVE_* env --------------------------
+// A separate HDD-backed MinIO that mirrors served content (raw data items +
+// bundle payloads) so gateway read traffic never competes with the
+// ingest→bundle→post→seed→verify pipeline on the fast SSD MinIO.
+//
+// We reach it by registering an archive bucket→region→client triple that
+// mirrors the SSD pattern above, but under a DISTINCT region label so the
+// archive client never clobbers the SSD client in `regionsToClients`
+// (`s3ClientForBucket()` resolves the archive bucket through the same maps).
+//
+// Leave ARCHIVE_DATA_ITEM_BUCKET unset → none of this runs and behavior is
+// byte-for-byte unchanged (single MinIO).
+// The archive bucket name, exported ONLY once routing is successfully wired
+// below. `undefined` when ARCHIVE_DATA_ITEM_BUCKET is unset OR when wiring is
+// refused (collision guards) — so the feature stays fully inert in those cases.
+export let archiveDataItemBucket: string | undefined;
+const envArchiveDataItemBucket = process.env.ARCHIVE_DATA_ITEM_BUCKET;
+const archiveEndpoint = process.env.ARCHIVE_S3_ENDPOINT;
+// Default to a distinct label so it can't collide with the SSD region (which
+// defaults to "us-east-1"); a collision would overwrite the SSD client.
+const archiveBucketRegion = process.env.ARCHIVE_BUCKET_REGION ?? "archive-hdd";
+const archiveForcePathStyle =
+  process.env.ARCHIVE_S3_FORCE_PATH_STYLE ?? forcePathStyle;
+const archiveAccessKeyId = process.env.ARCHIVE_S3_ACCESS_KEY_ID;
+const archiveSecretAccessKey = process.env.ARCHIVE_S3_SECRET_ACCESS_KEY;
+const archiveCredentials =
+  archiveAccessKeyId !== undefined && archiveSecretAccessKey !== undefined
+    ? { accessKeyId: archiveAccessKeyId, secretAccessKey: archiveSecretAccessKey }
+    : s3Credentials; // fall back to the primary creds if the archive shares them
+
+if (envArchiveDataItemBucket) {
+  // Two collisions would silently send SSD traffic to the HDD endpoint, so both
+  // are hard-guarded (wiring is refused, SSD routing left intact, feature stays
+  // inert):
+  //  1. Region label: `regionsToClients` is keyed by region — a shared label
+  //     overwrites the SSD client.
+  //  2. Bucket NAME: `bucketNameToRegionMap` is keyed by bucket name — if the
+  //     HDD bucket shares the SSD bucket's name, the SSD bucket would re-map to
+  //     the archive region/client. The archive bucket MUST be a distinct name
+  //     (e.g. "archive-data-items"), even though it lives on a separate endpoint.
+  const bucketNameCollision =
+    envArchiveDataItemBucket === process.env.DATA_ITEM_BUCKET ||
+    envArchiveDataItemBucket === process.env.BACKUP_DATA_ITEM_BUCKET;
+  if (regionsToClients[archiveBucketRegion]) {
+    globalLogger.error(
+      "ARCHIVE_BUCKET_REGION collides with a primary (SSD) bucket region; " +
+        "archive object store NOT wired (would clobber the SSD client). " +
+        "Set a distinct ARCHIVE_BUCKET_REGION.",
+      { archiveBucketRegion }
+    );
+  } else if (bucketNameCollision) {
+    globalLogger.error(
+      "ARCHIVE_DATA_ITEM_BUCKET must NOT equal DATA_ITEM_BUCKET / " +
+        "BACKUP_DATA_ITEM_BUCKET (bucket-name→client routing would clobber the " +
+        "SSD client and send SSD traffic to the HDD endpoint). Use a distinct " +
+        "archive bucket name, e.g. 'archive-data-items'. Archive NOT wired.",
+      { archiveDataItemBucket: envArchiveDataItemBucket }
+    );
+  } else {
+    regionsToClients[archiveBucketRegion] = new S3Client({
+      requestHandler: buildS3RequestHandler(),
+      region: archiveBucketRegion,
+      retryStrategy: defaultRetryStrategy,
+      ...(archiveEndpoint ? { endpoint: archiveEndpoint } : {}),
+      ...(archiveCredentials ? { credentials: archiveCredentials } : {}),
+      ...(archiveForcePathStyle !== undefined
+        ? { forcePathStyle: archiveForcePathStyle === "true" }
+        : {}),
+    });
+    bucketNameToRegionMap[envArchiveDataItemBucket] = archiveBucketRegion;
+    archiveDataItemBucket = envArchiveDataItemBucket; // mark archive as wired
+    globalLogger.info("Registered archive (HDD) object-store client", {
+      archiveDataItemBucket,
+      archiveBucketRegion,
+      archiveEndpoint,
+    });
+  }
+}
+
 const defaultS3Client = new S3Client({
   requestHandler: buildS3RequestHandler(),
   retryStrategy: defaultRetryStrategy,

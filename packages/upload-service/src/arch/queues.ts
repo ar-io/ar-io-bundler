@@ -38,6 +38,12 @@ export type EnqueueFinalizeUpload = {
 export type EnqueuedOffsetsBatch = {
   offsets: DataItemOffsetsInfo[];
 };
+// Copy one object-store key (raw-data-item/{id} or bundle-payload/{planId}) from
+// the primary (SSD) store to the archive (HDD) store. The handler no-ops when
+// the archive store is not configured.
+export type ArchiveCopyMessage = {
+  key: string;
+};
 type QueueTypeToMessageType = {
   [jobLabels.planBundle]: PlanMessage;
   [jobLabels.prepareBundle]: PlanMessage;
@@ -53,6 +59,7 @@ type QueueTypeToMessageType = {
   [jobLabels.redrivePosted]: Record<string, never>;
   [jobLabels.refundBalance]: RefundBalanceMessage;
   [jobLabels.broadcastChunks]: ChunkHeader;
+  [jobLabels.archiveCopy]: ArchiveCopyMessage;
 };
 
 // Durable refund retry payload. winstonCredits is the Winston value serialized

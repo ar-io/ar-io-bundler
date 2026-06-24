@@ -365,6 +365,18 @@ export class MetricRegistry {
     labelNames: ["endpoint", "result"],
   });
 
+  // Result of copying one object (raw-data-item or bundle-payload) from the
+  // primary (SSD) MinIO to the archive (HDD) MinIO, by kind and result.
+  public static archiveCopy = MetricRegistry.createCounter({
+    name: "archive_copy_total",
+    help: "Count of SSD→HDD archive object copies by kind and result",
+    labelNames: ["kind", "result"],
+    expectedLabelNames: {
+      kind: ["raw-data-item", "bundle-payload"],
+      result: ["success", "error", "skipped"],
+    },
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
   }

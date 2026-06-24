@@ -490,7 +490,7 @@ The bundler runs 5 PM2 processes across the services (canonical config:
 | `payment-service` | 2 | cluster | Payment API |
 | `payment-workers` | 1 | fork | Background jobs (pending tx, credits) |
 | `upload-api` | 2 | cluster | Upload API |
-| `upload-workers` | 1 | fork | Bundling pipeline (14 queues) |
+| `upload-workers` | 1 | fork | Bundling pipeline (15 queues) |
 | `admin-dashboard` | 1 | fork | Admin stats + embedded Bull Board (:3002) |
 
 ### Quick Commands
