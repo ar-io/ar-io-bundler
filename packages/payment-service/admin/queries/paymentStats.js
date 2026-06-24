@@ -316,11 +316,15 @@ async function getPaymentIntegrity(db) {
       .select(
         db.raw('COUNT(*) as count'),
         sumExpr(db, 'winston_credit_amount'),
-        db.raw('MIN(created_date) as oldest')
+        db.raw('MIN(created_date) as oldest'),
+        // Age in SQL (UTC-correct). created_date is `timestamp without time zone`
+        // (UTC); JS `new Date()` parses it in the box's local tz, over-reporting
+        // age by the local offset → false alerts on non-UTC boxes.
+        db.raw('EXTRACT(EPOCH FROM (now() - MIN(created_date)))::bigint as oldest_age_sec')
       )
       .first();
-    const oldestAgeSec = row.oldest
-      ? Math.max(0, Math.round((Date.now() - new Date(row.oldest).getTime()) / 1000))
+    const oldestAgeSec = row.oldest_age_sec != null
+      ? Math.max(0, Math.round(Number(row.oldest_age_sec)))
       : null;
     pendingCrypto = {
       count: parseInt(row.count) || 0,

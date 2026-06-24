@@ -41,14 +41,21 @@ async function countAndOldest(db, table, dateColumn) {
       db.raw('COUNT(*) as count'),
       dateColumn
         ? db.raw(`MIN(${dateColumn}) as oldest`)
-        : db.raw('NULL as oldest')
+        : db.raw('NULL as oldest'),
+      // Compute age in SQL (UTC-correct) — NOT in JS. The date columns are
+      // `timestamp without time zone` (UTC values); parsing them with JS
+      // `new Date()` interprets them in the box's local tz, over-reporting age
+      // by the local offset (e.g. +2h on a CEST box) → false "stalled" alerts.
+      dateColumn
+        ? db.raw(`EXTRACT(EPOCH FROM (now() - MIN(${dateColumn})))::bigint as oldest_age_sec`)
+        : db.raw('NULL as oldest_age_sec')
     )
     .first();
 
   const count = parseInt(row.count) || 0;
   let oldestAgeSec = null;
-  if (dateColumn && row.oldest) {
-    oldestAgeSec = Math.max(0, Math.round((Date.now() - new Date(row.oldest).getTime()) / 1000));
+  if (dateColumn && row.oldest_age_sec != null) {
+    oldestAgeSec = Math.max(0, Math.round(Number(row.oldest_age_sec)));
   }
   return { count, oldestAgeSec, oldestDate: row.oldest || null };
 }
