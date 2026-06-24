@@ -8,10 +8,178 @@
  * - Manual refresh (no auto-refresh per user request)
  */
 
+/* ---------- Lucide icons (inline SVG, colored via currentColor) ---------- */
+const LUCIDE = {
+  "circle-check": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m9 12 2 2 4-4\" />",
+  "triangle-alert": "<path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\" /> <path d=\"M12 9v4\" /> <path d=\"M12 17h.01\" />",
+  "octagon-alert": "<path d=\"M12 16h.01\" /> <path d=\"M12 8v4\" /> <path d=\"M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z\" />",
+  "moon": "<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\" />",
+  "circle-x": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m15 9-6 6\" /> <path d=\"m9 9 6 6\" />",
+  "circle-help": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3\" /> <path d=\"M12 17h.01\" />",
+  "refresh-cw": "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\" /> <path d=\"M21 3v5h-5\" /> <path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\" /> <path d=\"M8 16H3v5\" />",
+  "copy": "<rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\" ry=\"2\" /> <path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\" />",
+  "check": "<path d=\"M20 6 9 17l-5-5\" />",
+  "search": "<path d=\"m21 21-4.34-4.34\" /> <circle cx=\"11\" cy=\"11\" r=\"8\" />",
+  "upload": "<path d=\"M12 3v12\" /> <path d=\"m17 8-5-5-5 5\" /> <path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\" />",
+  "package": "<path d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\" /> <path d=\"M12 22V12\" /> <polyline points=\"3.29 7 12 12 20.71 7\" /> <path d=\"m7.5 4.27 9 5.15\" />",
+  "users": "<path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" /> <path d=\"M16 3.128a4 4 0 0 1 0 7.744\" /> <path d=\"M22 21v-2a4 4 0 0 0-3-3.87\" /> <circle cx=\"9\" cy=\"7\" r=\"4\" />",
+  "credit-card": "<rect width=\"20\" height=\"14\" x=\"2\" y=\"5\" rx=\"2\" /> <line x1=\"2\" x2=\"22\" y1=\"10\" y2=\"10\" />",
+  "coins": "<path d=\"M13.744 17.736a6 6 0 1 1-7.48-7.48\" /> <path d=\"M15 6h1v4\" /> <path d=\"m6.134 14.768.866-.5 2 3.464\" /> <circle cx=\"16\" cy=\"8\" r=\"6\" />",
+  "banknote": "<rect width=\"20\" height=\"12\" x=\"2\" y=\"6\" rx=\"2\" /> <circle cx=\"12\" cy=\"12\" r=\"2\" /> <path d=\"M6 12h.01M18 12h.01\" />",
+  "external-link": "<path d=\"M15 3h6v6\" /> <path d=\"M10 14 21 3\" /> <path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\" />",
+  "log-out": "<path d=\"m16 17 5-5-5-5\" /> <path d=\"M21 12H9\" /> <path d=\"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4\" />",
+  "activity": "<path d=\"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2\" />",
+};
+function icon(name, opts = {}) {
+  const inner = LUCIDE[name];
+  if (!inner) return '';
+  const size = opts.size || 16;
+  const cls = opts.cls ? ` class="${opts.cls}"` : '';
+  const style = opts.color ? ` style="color:${opts.color}"` : '';
+  return `<svg${cls}${style} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${inner}</svg>`;
+}
+
 // Chart instances (global to allow updates)
 let signatureChart = null;
 let paymentModeChart = null;
 let networkChart = null;
+let cryptoTokenChart = null;
+const sparkCharts = {};
+
+// Selected time window for the health panel + trends.
+let currentWindow = '24h';
+const WINDOW_HOURS = { '1h': 1, '24h': 24, '7d': 168 };
+const WINDOW_LABEL = { '1h': 'last hour', '24h': 'last 24h', '7d': 'last 7 days' };
+
+/**
+ * Switch the time window (1h/24h/7d) — drives the health panel and the trends.
+ */
+function selectWindow(w) {
+  if (!WINDOW_HOURS[w]) return;
+  currentWindow = w;
+  document.querySelectorAll('#window-selector button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.window === w);
+  });
+  refreshWindow();
+}
+
+/** Refresh both the windowed-health panel and the trend sparklines. */
+function refreshWindow() {
+  fetchWindowHealth();
+  fetchHistory();
+}
+
+/**
+ * Fetch + render the windowed pipeline-health panel.
+ */
+async function fetchWindowHealth() {
+  const el = document.getElementById('window-health');
+  if (!el) return;
+  try {
+    const res = await fetch(`/admin/health-window?window=${currentWindow}`, { headers: { 'Accept': 'application/json' } });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    if (!res.ok) return;
+    renderWindowHealth(await res.json());
+  } catch (err) {
+    el.innerHTML = '<span class="muted">Health unavailable</span>';
+  }
+}
+
+function renderWindowHealth(d) {
+  const el = document.getElementById('window-health');
+  const verdict = d.verdict || 'idle';
+  const map = {
+    healthy: { cls: 'ok', icon: 'circle-check', text: 'Healthy' },
+    degraded: { cls: 'warn', icon: 'triangle-alert', text: 'Degraded' },
+    critical: { cls: 'critical', icon: 'octagon-alert', text: 'Problems' },
+    idle: { cls: 'info', icon: 'moon', text: 'Idle (no activity)' },
+  };
+  const v = map[verdict] || map.idle;
+  const failed = (d.itemsFailed || 0) + (d.bundlesFailed || 0);
+  const rate = d.successRate == null ? '—' : `${d.successRate}%`;
+  const lat = d.latencyP50Sec != null ? ` · median ${fmtDur(d.latencyP50Sec)} to permanent` : '';
+
+  el.innerHTML = `
+    <div class="window-verdict ${v.cls}">
+      <span class="window-verdict-icon">${icon(v.icon, { size: 26 })}</span>
+      <div>
+        <div class="window-verdict-text">${v.text}</div>
+        <div class="window-verdict-sub">pipeline over the ${WINDOW_LABEL[d.window] || d.window}${lat}</div>
+      </div>
+      <div class="window-rate">${rate}<span>success</span></div>
+    </div>
+    <div class="atrisk-grid" style="margin-top:14px;">
+      ${metricCard('Uploads accepted', (d.arrivals || 0).toLocaleString(), 'arrived in window', 'info')}
+      ${metricCard('Items → permanent', (d.itemsPermanent || 0).toLocaleString(), fmtBytes(d.bytesPermanent), 'ok')}
+      ${metricCard('Bundles → permanent', (d.bundlesPermanent || 0).toLocaleString(), 'confirmed on Arweave', 'ok')}
+      ${metricCard('Failed', failed.toLocaleString(), `${(d.itemsFailed||0).toLocaleString()} items · ${(d.bundlesFailed||0).toLocaleString()} bundles`, failed > 0 ? 'warn' : 'ok')}
+    </div>`;
+}
+
+/**
+ * Fetch trend history (scaled to the selected window) and render sparklines.
+ */
+async function fetchHistory() {
+  const hours = WINDOW_HOURS[currentWindow] || 24;
+  const title = document.getElementById('trends-title');
+  if (title) title.textContent = `Trends (${currentWindow})`;
+  try {
+    const res = await fetch(`/admin/history?hours=${hours}`, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSparklines(data.points || []);
+  } catch (err) {
+    /* trends are best-effort */
+  }
+}
+
+function renderSparkline(canvasId, points, accessor, color) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const vals = points.map(accessor);
+  const cfg = {
+    type: 'line',
+    data: {
+      labels: points.map(p => p.t),
+      datasets: [{
+        data: vals,
+        borderColor: color,
+        backgroundColor: color + '22',
+        borderWidth: 2,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          title: (items) => new Date(items[0].label).toLocaleTimeString(),
+          label: (item) => `${item.formattedValue}`,
+        },
+      } },
+      scales: {
+        x: { display: false },
+        y: { display: true, beginAtZero: true, ticks: { maxTicksLimit: 3, font: { size: 10 } }, grid: { display: false } },
+      },
+    },
+  };
+  if (sparkCharts[canvasId]) sparkCharts[canvasId].destroy();
+  sparkCharts[canvasId] = new Chart(canvas.getContext('2d'), cfg);
+}
+
+function renderSparklines(points) {
+  const empty = document.getElementById('trends-empty');
+  if (points.length < 2) { if (empty) empty.style.display = 'block'; return; }
+  if (empty) empty.style.display = 'none';
+  renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
+  renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
+  renderSparkline('spark-bundles', points, p => p.bp, '#16a34a');
+  renderSparkline('spark-wallet', points, p => p.w, '#5427C8');
+}
 
 /**
  * Fetch stats from API and update dashboard
@@ -32,7 +200,15 @@ async function fetchStats() {
   error.style.display = 'none';
 
   try {
-    const response = await fetch('/admin/stats');
+    const response = await fetch('/admin/stats', {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.status === 401) {
+      // Session expired or missing — send the user to the login page.
+      window.location.href = '/admin/login';
+      return;
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -45,18 +221,33 @@ async function fetchStats() {
     dashboard.style.display = 'block';
 
     // Update all dashboard sections
+    updateStatusBanner(stats.health);
+    updatePipeline(stats.pipeline);
+    updateWallet(stats.wallet);
+    updateThroughput(stats.throughput);
     updateSystemHealth(stats.system);
+    updateStorageHealth(stats.system?.storage);
+    updateSchedulerHealth(stats.system?.schedulers);
     updateOverviewCards(stats);
     updateCharts(stats);
     updateQueueStatus(stats.system.queues);
+    updateMoneyIntegrity(stats.payments?.integrity);
+    updateTopupProviderTable(stats.payments?.topUps || {});
     updateTopUploaders(stats.uploads.topUploaders);
     updateRecentUploads(stats.uploads.recentUploads);
+    updateRecentTopups(stats.payments?.recentTopUps || []);
     updateRecentTraditionalPayments(stats.payments?.recentPayments || []);
     updateRecentX402Payments(stats.x402Payments?.recentPayments || []);
+    updateFailedPayments(stats.payments?.integrity?.failedCrypto?.recent || []);
+    updateFailedBundles(stats.bundles?.recentFailed || []);
+    updatePostedBundles(stats.bundles?.recentPosted || []);
     updateRecentBundles(stats.bundles?.recentPermanent || []);
 
     // Update last refresh time
     updateLastRefresh(stats.timestamp, stats._cached, stats._cacheAge);
+
+    // Windowed health + trends (separate, non-blocking)
+    refreshWindow();
 
   } catch (err) {
     console.error('Failed to fetch stats:', err);
@@ -73,6 +264,250 @@ async function fetchStats() {
   }
 }
 
+/* ---------- helpers ---------- */
+function fmtBytes(bytes) {
+  let n = Number(bytes) || 0;
+  if (n === 0) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(2)} ${u[i]}`;
+}
+function fmtAge(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
+function fmtDur(sec) {
+  if (sec == null) return '—';
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  return `${(sec / 3600).toFixed(1)}h`;
+}
+function metricCard(label, value, sub, severity) {
+  return `<div class="metric-card ${severity || ''}">
+    <div class="metric-value">${value}</div>
+    <div class="metric-label">${label}</div>
+    ${sub ? `<div class="metric-sub">${sub}</div>` : ''}
+  </div>`;
+}
+
+/**
+ * Aggregate status banner + nav status dot.
+ */
+function updateStatusBanner(health) {
+  const banner = document.getElementById('status-banner');
+  const dot = document.getElementById('status-dot');
+  if (!health) { banner.style.display = 'none'; return; }
+  banner.style.display = 'block';
+
+  const labels = { ok: 'All systems healthy', degraded: 'Degraded', critical: 'Critical' };
+  const icons = { ok: 'circle-check', degraded: 'triangle-alert', critical: 'octagon-alert' };
+  banner.className = `status-banner ${health.status}`;
+  if (dot) dot.className = `status-dot ${health.status}`;
+
+  const issues = health.issues || [];
+  const issueHtml = issues.length
+    ? `<ul class="status-issues">${issues.map(i =>
+        `<li class="sev-${i.severity}"><span class="sev-tag">${i.severity}</span>
+         <span class="sev-area">${escapeHtml(i.area)}</span> ${escapeHtml(i.message)}</li>`).join('')}</ul>`
+    : `<div class="status-clear">No issues detected.</div>`;
+
+  banner.innerHTML = `
+    <div class="status-head">
+      <span class="status-icon">${icon(icons[health.status] || 'circle-help', { size: 22 })}</span>
+      <span class="status-title">${labels[health.status] || health.status}</span>
+      ${health.counts ? `<span class="status-counts">${health.counts.critical} critical · ${health.counts.degraded} warnings</span>` : ''}
+    </div>
+    ${issueHtml}
+  `;
+}
+
+/**
+ * Bundle pipeline: at-risk headline + state funnel.
+ */
+function updatePipeline(pipeline) {
+  const atrisk = document.getElementById('pipeline-atrisk');
+  const funnel = document.getElementById('pipeline-funnel');
+  if (!pipeline) { atrisk.innerHTML = ''; funnel.innerHTML = ''; return; }
+
+  const r = pipeline.atRisk || {};
+  const backlogSev = r.backlogOldestAgeSec >= 7200 ? 'critical' : r.backlogOldestAgeSec >= 1800 ? 'warn' : (r.backlogItems > 0 ? 'info' : 'ok');
+  const stuckSev = r.stuckPostedBundles >= 10 ? 'critical' : r.stuckPostedBundles > 0 ? 'warn' : 'ok';
+  const failSev = r.failedBundles > 0 ? 'warn' : 'ok';
+  const failItemSev = r.failedDataItems > 0 ? 'warn' : 'ok';
+
+  atrisk.innerHTML =
+    metricCard('Backlog (unbundled)', (r.backlogItems || 0).toLocaleString(), `oldest ${fmtAge(r.backlogOldestAgeSec)}`, backlogSev) +
+    metricCard('In-flight bundles', (r.inFlightBundles || 0).toLocaleString(), 'plan → posted → seeded', 'info') +
+    metricCard('Stuck posted', (r.stuckPostedBundles || 0).toLocaleString(), `> ${fmtAge(r.stuckPostedThresholdSec)}`, stuckSev) +
+    metricCard('Failed bundles', (r.failedBundles || 0).toLocaleString(), 'need review', failSev) +
+    metricCard('Failed items', (r.failedDataItems || 0).toLocaleString(), 'dead-letter', failItemSev);
+
+  const di = pipeline.dataItems || {};
+  const bu = pipeline.bundles || {};
+  const stage = (label, obj, showAge) => `
+    <div class="funnel-stage">
+      <div class="funnel-count">${(obj?.count || 0).toLocaleString()}</div>
+      <div class="funnel-label">${label}</div>
+      ${showAge && obj?.oldestAgeSec != null ? `<div class="funnel-age">oldest ${fmtAge(obj.oldestAgeSec)}</div>` : ''}
+    </div>`;
+  const arrow = '<div class="funnel-arrow">→</div>';
+
+  funnel.innerHTML = `
+    <div class="funnel-row">
+      <div class="funnel-track-label">Data items</div>
+      ${stage('New', di.new, true)}${arrow}${stage('Planned', di.planned, true)}${arrow}${stage('Failed', di.failed, false)}
+    </div>
+    <div class="funnel-row">
+      <div class="funnel-track-label">Bundles</div>
+      ${stage('New', bu.newBundle, false)}${arrow}${stage('Plan', bu.planned, false)}${arrow}${stage('Posted', bu.posted, true)}${arrow}${stage('Seeded', bu.seeded, true)}${arrow}${stage('Failed', bu.failed, false)}
+    </div>`;
+}
+
+/**
+ * Bundle-signing wallet balance card.
+ */
+function updateWallet(wallet) {
+  const el = document.getElementById('wallet-card');
+  if (!wallet || !wallet.configured) {
+    el.innerHTML = `<div class="wallet-unknown">Wallet not configured${wallet?.error ? ': ' + escapeHtml(wallet.error) : ''}</div>`;
+    return;
+  }
+  const sevClass = wallet.status === 'critical' ? 'critical' : wallet.status === 'low' ? 'warn' : wallet.status === 'unknown' ? 'info' : 'ok';
+  const balance = wallet.balanceAr != null ? `${parseFloat(wallet.balanceAr).toLocaleString(undefined, { maximumFractionDigits: 6 })} AR` : '—';
+  el.innerHTML = `
+    <div class="wallet-card ${sevClass}">
+      <div class="wallet-balance">${balance}</div>
+      <div class="wallet-status">${wallet.status.toUpperCase()}${wallet.status !== 'healthy' ? ` (warn &lt; ${wallet.lowThresholdAr} AR)` : ''}</div>
+      <div class="wallet-meta">${makeCopyable(wallet.address, null, 'address')}</div>
+      ${wallet.error ? `<div class="wallet-err">${escapeHtml(wallet.error)}</div>` : ''}
+    </div>`;
+}
+
+/**
+ * Throughput & latency key-values.
+ */
+function updateThroughput(tp) {
+  const el = document.getElementById('throughput-grid');
+  if (!tp) { el.innerHTML = ''; return; }
+  const lat = tp.permanenceLatency || {};
+  const kv = (k, v) => `<div class="kv"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`;
+  el.innerHTML =
+    kv('Arrivals', `${tp.arrivals.lastHour}/h · ${tp.arrivals.last24h}/24h`) +
+    kv('Items permanent', `${tp.itemsPermanent.lastHour}/h · ${tp.itemsPermanent.last24h}/24h`) +
+    kv('Bundles permanent', `${tp.bundlesPermanent.lastHour}/h · ${tp.bundlesPermanent.last24h}/24h`) +
+    kv('Data permanent (24h)', fmtBytes(tp.bundlesPermanent.bytes24h)) +
+    kv('Upload→permanent p50', fmtDur(lat.p50Sec)) +
+    kv('Upload→permanent avg/max', `${fmtDur(lat.avgSec)} / ${fmtDur(lat.maxSec)}`);
+}
+
+/**
+ * Storage health (MinIO + disk).
+ */
+function updateStorageHealth(storage) {
+  const grid = document.getElementById('storage-grid');
+  if (!storage) { grid.innerHTML = ''; return; }
+  let html = '';
+  if (storage.minio) {
+    const ok = storage.minio.status === 'healthy';
+    html += `<div class="health-item ${storage.minio.status}">
+      <span class="health-icon">${ok ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
+      <div><div class="health-name">MinIO Object Storage</div>
+      <div class="health-meta">${ok ? escapeHtml(storage.minio.endpoint || '') : escapeHtml(storage.minio.error || 'down')}</div></div></div>`;
+  }
+  if (storage.disk) {
+    const d = storage.disk;
+    const cls = d.status === 'healthy' ? 'healthy' : d.status === 'unknown' ? 'unknown' : 'unhealthy';
+    html += `<div class="health-item ${cls}">
+      <span class="health-icon">${cls === 'healthy' ? icon('circle-check', { size: 18 }) : cls === 'unknown' ? icon('circle-help', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
+      <div><div class="health-name">Disk (${escapeHtml(d.path || '/')})</div>
+      <div class="health-meta">${d.usedPct != null ? `${d.usedPct}% used · ${d.freeFormatted} free of ${d.totalFormatted}` : escapeHtml(d.error || '')}</div></div></div>`;
+  }
+  grid.innerHTML = html || '<div class="health-meta">No storage data</div>';
+}
+
+/**
+ * Scheduler health (plan/cleanup/redrive registered + next run).
+ */
+function updateSchedulerHealth(schedulers) {
+  const grid = document.getElementById('scheduler-grid');
+  if (!schedulers) { grid.innerHTML = ''; return; }
+  grid.innerHTML = Object.entries(schedulers).map(([name, s]) => {
+    const ok = s.registered;
+    const meta = ok
+      ? `${s.pattern || ''}${s.nextRun ? ` · next ${new Date(s.nextRun).toLocaleString()}` : ''}`
+      : (s.error || 'NOT REGISTERED');
+    return `<div class="health-item ${ok ? 'healthy' : 'unhealthy'}">
+      <span class="health-icon">${ok ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
+      <div><div class="health-name">${escapeHtml(name)} scheduler</div>
+      <div class="health-meta">${escapeHtml(meta)}</div></div></div>`;
+  }).join('');
+}
+
+/**
+ * Money integrity metrics + failed-payment context.
+ */
+function updateMoneyIntegrity(integ) {
+  const grid = document.getElementById('integrity-grid');
+  if (!integ) { grid.innerHTML = ''; return; }
+  const pend = integ.pendingCrypto || {};
+  const pendSev = pend.count > 0 && pend.oldestAgeSec >= 7200 ? 'critical' : pend.count > 0 && pend.oldestAgeSec >= 1800 ? 'warn' : pend.count > 0 ? 'info' : 'ok';
+  grid.innerHTML =
+    metricCard('Uncredited crypto', (pend.count || 0).toLocaleString(), `${parseFloat(pend.ar || 0).toFixed(4)} AR · oldest ${fmtAge(pend.oldestAgeSec)}`, pendSev) +
+    metricCard('Failed crypto', (integ.failedCrypto?.count || 0).toLocaleString(), 'need review', (integ.failedCrypto?.count > 0 ? 'warn' : 'ok')) +
+    metricCard('Failed top-up quotes', (integ.failedTopUpQuotes?.count || 0).toLocaleString(), '', 'info') +
+    metricCard('Chargebacks', (integ.chargebacks?.count || 0).toLocaleString(), '', (integ.chargebacks?.count > 0 ? 'warn' : 'ok'));
+}
+
+function updateFailedPayments(rows) {
+  const table = document.getElementById('failed-payments-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="5" class="empty-cell">No failed crypto payments</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Tx</th><th>Token</th><th style="text-align:right;">Credits (AR)</th><th>Reason</th><th>Time</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td>${makeCopyable(r.transactionId, null, 'transaction')}</td>
+      <td>${escapeHtml(r.tokenType || '')}</td>
+      <td style="text-align:right;">${parseFloat(r.ar || 0).toFixed(6)}</td>
+      <td class="reason-cell">${escapeHtml(r.reason || '')}</td>
+      <td>${formatTime(r.timestamp)}</td></tr>`).join('')}</tbody>`;
+}
+
+function updateFailedBundles(rows) {
+  const table = document.getElementById('failed-bundles-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No failed bundles</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Bundle ID</th><th>Plan ID</th><th>Reason</th><th>Failed</th></tr></thead>
+    <tbody>${rows.map(b => `<tr>
+      <td>${makeCopyable(b.bundleId, null, 'bundle ID')}</td>
+      <td>${makeCopyable(b.planId, null, 'plan ID')}</td>
+      <td class="reason-cell">${escapeHtml(b.failedReason || '—')}</td>
+      <td>${formatTime(b.failedDate)}</td></tr>`).join('')}</tbody>`;
+}
+
+function updatePostedBundles(rows) {
+  const table = document.getElementById('posted-bundles-table');
+  if (!rows || rows.length === 0) {
+    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No bundles awaiting seed/verify</td></tr>';
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr><th>Bundle ID</th><th style="text-align:right;">Size</th><th>Reward</th><th>Posted</th></tr></thead>
+    <tbody>${rows.map(b => `<tr>
+      <td>${makeCopyable(b.bundleId, null, 'bundle ID')}</td>
+      <td style="text-align:right;">${b.payloadSizeFormatted}</td>
+      <td>${escapeHtml(String(b.reward || ''))}</td>
+      <td>${formatTime(b.postedDate)}</td></tr>`).join('')}</tbody>`;
+}
+
 /**
  * Update system health indicators
  */
@@ -85,7 +520,7 @@ function updateSystemHealth(health) {
     const el = document.createElement('div');
     el.className = `health-item ${data.status}`;
     el.innerHTML = `
-      <span class="health-icon">${data.status === 'healthy' ? '✅' : '❌'}</span>
+      <span class="health-icon">${data.status === 'healthy' ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div>
         <div class="health-name">${formatServiceName(name)}</div>
         <div class="health-meta">${data.uptime || 'Unknown'} | ${data.memory || '--'}</div>
@@ -99,7 +534,7 @@ function updateSystemHealth(health) {
     const el = document.createElement('div');
     el.className = `health-item ${data.status}`;
     el.innerHTML = `
-      <span class="health-icon">${data.status === 'healthy' ? '✅' : '❌'}</span>
+      <span class="health-icon">${data.status === 'healthy' ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div>
         <div class="health-name">${formatServiceName(name)}</div>
         <div class="health-meta">${data.memoryUsed || data.connections ? `${data.connections || ''} ${data.memoryUsed || ''}`.trim() : 'Active'}</div>
@@ -131,13 +566,19 @@ function updateOverviewCards(stats) {
   document.getElementById('users-today').textContent =
     `${stats.uploads.today.uniqueUploaders} today`;
 
-  // Traditional payments (from payment_service - x402_payment_transaction table)
-  const traditionalTotal = stats.payments?.x402Payments?.totalUSDC || '0.000000';
-  const traditionalCount = stats.payments?.x402Payments?.totalCount || 0;
-  document.getElementById('traditional-total').textContent =
-    `$${parseFloat(traditionalTotal).toLocaleString()}`;
-  document.getElementById('traditional-count').textContent =
-    `${traditionalCount.toLocaleString()} payments`;
+  // Credit top-ups (Stripe + crypto, from payment_service.payment_receipt)
+  const topUp = stats.payments?.topUps?.total || { count: 0, ar: '0.000000' };
+  document.getElementById('topup-total').textContent =
+    `${parseFloat(topUp.ar).toLocaleString(undefined, { maximumFractionDigits: 4 })} AR`;
+  document.getElementById('topup-count').textContent =
+    `${(topUp.count || 0).toLocaleString()} top-ups credited`;
+
+  // Outstanding credit balances (from payment_service.user)
+  const balances = stats.payments?.balances || { totalAr: '0.000000', usersWithBalance: 0 };
+  document.getElementById('balance-total').textContent =
+    `${parseFloat(balances.totalAr).toLocaleString(undefined, { maximumFractionDigits: 4 })} AR`;
+  document.getElementById('balance-users').textContent =
+    `${(balances.usersWithBalance || 0).toLocaleString()} wallets with credit`;
 
   // x402 payments (from upload_service - x402_payments table)
   const x402Total = stats.x402Payments?.total?.totalUSDC || '0.000000';
@@ -153,8 +594,61 @@ function updateOverviewCards(stats) {
  */
 function updateCharts(stats) {
   updateSignatureChart(stats.uploads.bySignatureType);
+  updateCryptoTokenChart(stats.payments?.cryptoTopUps?.byToken || {});
   updatePaymentTypeChart(stats.payments?.x402Payments?.byMode || {});
   updateNetworkChart(stats.x402Payments?.byNetwork || {});
+}
+
+/**
+ * Update crypto top-ups by token chart (Doughnut)
+ */
+function updateCryptoTokenChart(byToken) {
+  const ctx = document.getElementById('crypto-token-chart').getContext('2d');
+
+  const data = Object.entries(byToken).map(([token, d]) => ({
+    label: token,
+    value: d.count
+  }));
+
+  if (data.length === 0) {
+    data.push({ label: 'No Data', value: 1 });
+  }
+
+  const chartData = {
+    labels: data.map(d => d.label),
+    datasets: [{
+      data: data.map(d => d.value),
+      backgroundColor: ['#5427C8', '#8B5CF6', '#D4C6FF', '#16a34a', '#f5a623', '#06b6d4'],
+      borderWidth: 2,
+      borderColor: '#ffffff'
+    }]
+  };
+
+  const config = {
+    type: 'doughnut',
+    data: chartData,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 16, font: { size: 13 } } },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const label = context.label || '';
+              const value = context.parsed || 0;
+              return `${label}: ${value.toLocaleString()} top-ups`;
+            }
+          }
+        }
+      }
+    }
+  };
+
+  if (cryptoTokenChart) {
+    cryptoTokenChart.destroy();
+  }
+  cryptoTokenChart = new Chart(ctx, config);
 }
 
 /**
@@ -173,11 +667,12 @@ function updateSignatureChart(byType) {
     datasets: [{
       data: data.map(d => d.value),
       backgroundColor: [
-        '#3b82f6', // Blue (Ethereum)
-        '#10b981', // Green (Arweave)
-        '#f59e0b', // Amber (Solana)
-        '#8b5cf6', // Purple
-        '#ec4899', // Pink
+        '#5427C8', // ar.io purple
+        '#8B5CF6', // violet
+        '#D4C6FF', // accent lavender
+        '#16a34a', // green
+        '#f5a623', // amber
+        '#ec4899', // pink
       ],
       borderWidth: 2,
       borderColor: '#ffffff'
@@ -239,9 +734,9 @@ function updatePaymentTypeChart(byMode) {
     datasets: [{
       data: data.map(d => d.value),
       backgroundColor: [
-        '#06b6d4', // Cyan (PAYG)
-        '#8b5cf6', // Purple (TopUp)
-        '#10b981', // Green (Hybrid)
+        '#5427C8', // ar.io purple (PAYG)
+        '#8B5CF6', // violet (TopUp)
+        '#D4C6FF', // accent lavender (Hybrid)
       ],
       borderWidth: 2,
       borderColor: '#ffffff'
@@ -302,14 +797,14 @@ function updateNetworkChart(byNetwork) {
       {
         label: 'Payment Count',
         data: data.map(d => d.count),
-        backgroundColor: '#3b82f6',
+        backgroundColor: '#5427C8',
         borderRadius: 6,
         yAxisID: 'y'
       },
       {
         label: 'Total USDC',
         data: data.map(d => d.amount),
-        backgroundColor: '#10b981',
+        backgroundColor: '#D4C6FF',
         borderRadius: 6,
         yAxisID: 'y1'
       }
@@ -371,8 +866,10 @@ function updateNetworkChart(byNetwork) {
  * Update queue status summary and grid
  */
 function updateQueueStatus(queues) {
-  // Summary
+  // Summary — "Failed (1h)" is the alerting signal; "Failed (total)" is mostly
+  // stale cruft BullMQ keeps until cleaned.
   const summary = document.getElementById('queue-summary');
+  const recent = queues.totalRecentFailed || 0;
   summary.innerHTML = `
     <div class="queue-stat">
       <div class="queue-stat-value">${queues.totalActive || 0}</div>
@@ -383,8 +880,12 @@ function updateQueueStatus(queues) {
       <div class="queue-stat-label">Waiting</div>
     </div>
     <div class="queue-stat">
-      <div class="queue-stat-value">${queues.totalFailed || 0}</div>
-      <div class="queue-stat-label">Failed</div>
+      <div class="queue-stat-value ${recent > 0 ? 'text-danger' : ''}">${recent}${recent >= 50 ? '+' : ''}</div>
+      <div class="queue-stat-label">Failed (1h)</div>
+    </div>
+    <div class="queue-stat">
+      <div class="queue-stat-value muted">${(queues.totalFailed || 0).toLocaleString()}</div>
+      <div class="queue-stat-label">Failed (total)</div>
     </div>
     <div class="queue-stat">
       <div class="queue-stat-value">${queues.totalDelayed || 0}</div>
@@ -398,9 +899,20 @@ function updateQueueStatus(queues) {
 
   (queues.byQueue || []).forEach(q => {
     const el = document.createElement('div');
-    el.className = 'queue-card';
+    // Highlight only queues failing RECENTLY (active incident); a big stale
+    // `failed` total with 0 recent is not alarming.
+    const activeIncident = (q.recentFailed || 0) > 0;
+    el.className = `queue-card ${activeIncident ? 'has-failures' : ''}`;
+    const boardUrl = `/admin/queues/queue/${encodeURIComponent(q.name)}`;
+    const failedLabel = activeIncident
+      ? `${q.recentFailed}${q.recentFailedCapped ? '+' : ''} in 1h`
+      : (q.failed > 0 ? `${q.failed.toLocaleString()} (stale)` : '0');
+    const failedClass = activeIncident ? 'text-danger' : (q.failed > 0 ? 'muted' : '');
     el.innerHTML = `
-      <div class="queue-name">${q.name}</div>
+      <div class="queue-head">
+        <a class="queue-name" href="${boardUrl}" title="Open in Bull Board">${q.name} ${icon('external-link', { size: 13 })}</a>
+        ${q.failed > 0 ? `<button class="btn btn-xs" onclick="retryQueue('${escapeHtml(q.name)}')">Retry ${q.failed.toLocaleString()}</button>` : ''}
+      </div>
       <div class="queue-stats">
         <span>
           <div class="value">${q.active}</div>
@@ -411,7 +923,7 @@ function updateQueueStatus(queues) {
           <div class="label">Waiting</div>
         </span>
         <span>
-          <div class="value ${q.failed > 0 ? 'text-danger' : ''}">${q.failed}</div>
+          <div class="value ${failedClass}" style="font-size:15px;">${failedLabel}</div>
           <div class="label">Failed</div>
         </span>
       </div>
@@ -487,13 +999,88 @@ function updateRecentUploads(uploads) {
 }
 
 /**
+ * Update credit top-ups by provider table (from payment_service.payment_receipt)
+ */
+function updateTopupProviderTable(topUps) {
+  const table = document.getElementById('topup-provider-table');
+  const byProvider = topUps.byProvider || {};
+  const fiatByCurrency = topUps.fiatByCurrency || {};
+  const providers = Object.entries(byProvider);
+
+  if (providers.length === 0) {
+    table.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 40px; color: var(--text-secondary);">No top-ups yet</td></tr>';
+    return;
+  }
+
+  // Show fiat totals (e.g. USD) as a hint next to the credits.
+  const fiatSummary = Object.entries(fiatByCurrency)
+    .map(([cur, d]) => `${parseFloat(d.amount).toLocaleString()} ${cur.toUpperCase()}`)
+    .join(', ');
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th style="text-align: right;">Top-ups</th>
+        <th style="text-align: right;">Credits (AR)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${providers.map(([provider, d]) => `
+        <tr>
+          <td><span class="badge">${escapeHtml(provider)}</span></td>
+          <td style="text-align: right;">${(d.count || 0).toLocaleString()}</td>
+          <td style="text-align: right;">${parseFloat(d.ar).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+        </tr>
+      `).join('')}
+      ${fiatSummary ? `<tr><td colspan="3" style="color: var(--text-secondary); font-size: 13px;">Fiat received: ${escapeHtml(fiatSummary)}</td></tr>` : ''}
+    </tbody>
+  `;
+}
+
+/**
+ * Update recent credit top-ups table (Stripe + crypto, from payment_service)
+ */
+function updateRecentTopups(topUps) {
+  const table = document.getElementById('recent-topups-table');
+
+  if (!topUps || topUps.length === 0) {
+    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent top-ups</td></tr>';
+    return;
+  }
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th>Address</th>
+        <th style="text-align: right;">Amount</th>
+        <th style="text-align: right;">Credits (AR)</th>
+        <th>Time</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${topUps.map(t => `
+        <tr>
+          <td><span class="badge">${escapeHtml(t.provider || 'N/A')}</span></td>
+          <td>${makeCopyable(t.address, null, 'address')}</td>
+          <td style="text-align: right;">${escapeHtml(String(t.amount))}</td>
+          <td style="text-align: right;">${parseFloat(t.credits).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+          <td>${formatTime(t.timestamp)}</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+}
+
+/**
  * Update recent traditional payments table (from payment_service)
  */
 function updateRecentTraditionalPayments(payments) {
   const table = document.getElementById('recent-traditional-payments-table');
 
   if (!payments || payments.length === 0) {
-    table.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent traditional payments</td></tr>';
+    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent payments</td></tr>';
     return;
   }
 
@@ -528,7 +1115,7 @@ function updateRecentX402Payments(payments) {
   const table = document.getElementById('recent-x402-payments-table');
 
   if (!payments || payments.length === 0) {
-    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent x402 payments</td></tr>';
+    table.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent x402 payments</td></tr>';
     return;
   }
 
@@ -565,7 +1152,7 @@ function updateRecentBundles(bundles) {
   const table = document.getElementById('recent-bundles-table');
 
   if (!bundles || bundles.length === 0) {
-    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent bundles</td></tr>';
+    table.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent bundles</td></tr>';
     return;
   }
 
@@ -619,7 +1206,7 @@ function formatServiceName(name) {
     'upload-api': 'Upload API',
     'upload-workers': 'Upload Workers',
     'payment-workers': 'Payment Workers',
-    'bull-board': 'Admin Dashboard',
+    'admin-dashboard': 'Admin Dashboard',
     'postgresUpload': 'PostgreSQL (Upload)',
     'postgresPayment': 'PostgreSQL (Payment)',
     'redisCache': 'Redis Cache',
@@ -678,8 +1265,8 @@ function makeCopyable(fullId, displayText = null, type = 'id') {
                title="Click to copy full ${type}: ${escapeHtml(fullId)}"
                id="${uniqueId}">
             <code>${display}</code>
-            <span class="copy-icon">📋</span>
-            <span class="copy-feedback">✓ Copied!</span>
+            <span class="copy-icon">${icon('copy', { size: 13 })}</span>
+            <span class="copy-feedback">${icon('check', { size: 13 })} Copied!</span>
           </span>`;
 }
 
@@ -747,5 +1334,123 @@ function formatTime(timestamp) {
   return `${seconds}s ago`;
 }
 
+/* ---------- recovery actions + lookup + auto-refresh ---------- */
+
+let autoRefreshTimer = null;
+
+function toggleAutoRefresh() {
+  const on = document.getElementById('autorefresh-toggle').checked;
+  try { localStorage.setItem('adminAutoRefresh', on ? '1' : '0'); } catch (e) {}
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (on) {
+    autoRefreshTimer = setInterval(fetchStats, 15000); // 15s (cache is 30s server-side)
+  }
+}
+
+function restoreAutoRefresh() {
+  let on = false;
+  try { on = localStorage.getItem('adminAutoRefresh') === '1'; } catch (e) {}
+  const cb = document.getElementById('autorefresh-toggle');
+  if (cb && on) { cb.checked = true; toggleAutoRefresh(); }
+}
+
+/**
+ * Look up where a data item / bundle / wallet currently lives.
+ */
+async function doLookup() {
+  const q = document.getElementById('lookup-input').value.trim();
+  const out = document.getElementById('lookup-result');
+  if (!q) { out.innerHTML = ''; return; }
+  out.innerHTML = '<span class="muted">Searching…</span>';
+  try {
+    const res = await fetch(`/admin/lookup?q=${encodeURIComponent(q)}`, { headers: { 'Accept': 'application/json' } });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (!data.found || !data.results || data.results.length === 0) {
+      out.innerHTML = `<span class="muted">No match for <code>${escapeHtml(q)}</code></span>`;
+      return;
+    }
+    out.innerHTML = data.results.map(r => `
+      <div class="lookup-hit">
+        <span class="badge badge-info">${escapeHtml(r.kind)}</span>
+        <span class="lookup-state">${escapeHtml(r.state)}</span>
+        ${r.detail ? `<span class="muted">${escapeHtml(r.detail)}</span>` : ''}
+      </div>`).join('');
+  } catch (err) {
+    out.innerHTML = `<span class="sev-critical">Lookup failed: ${escapeHtml(err.message)}</span>`;
+  }
+}
+
+/**
+ * Fire a guarded recovery action (trigger plan/redrive/cleanup).
+ */
+async function triggerAction(action, confirmMsg) {
+  if (!confirm(confirmMsg)) return;
+  try {
+    const res = await fetch(`/admin/actions/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (res.ok) { alert(`${data.message || 'Triggered'}`); fetchStats(); }
+    else alert(`Error: ${data.error || 'Failed'}`);
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+/**
+ * Retry all failed jobs in a queue.
+ */
+async function retryQueue(queueName) {
+  if (!confirm(`Retry all failed jobs in "${queueName}"?`)) return;
+  try {
+    const res = await fetch(`/admin/actions/retry-failed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ queue: queueName }),
+    });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    const data = await res.json();
+    if (res.ok) {
+      const more = data.remaining > 0 ? ` — ${data.remaining} still failed (click Retry again to continue)` : '';
+      alert(`Retried ${data.retried} job(s) in ${queueName}${more}`);
+      fetchStats();
+    } else alert(`Error: ${data.error || 'Failed'}`);
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+/**
+ * End the admin session and return to the login page.
+ */
+async function logout() {
+  try {
+    await fetch('/admin/logout', { method: 'POST' });
+  } catch (err) {
+    // Even if the request fails, send the user to the login page.
+    console.error('Logout request failed:', err);
+  }
+  window.location.href = '/admin/login';
+}
+
+/**
+ * Toggle the Recent x402 Activity table between payment-service and upload-service.
+ */
+function showX402(which) {
+  const payEl = document.getElementById('x402-tab-payment');
+  const upEl = document.getElementById('x402-tab-upload');
+  if (payEl) payEl.style.display = which === 'payment' ? '' : 'none';
+  if (upEl) upEl.style.display = which === 'upload' ? '' : 'none';
+  document.querySelectorAll('#x402-tabs button').forEach((b) => {
+    const isPay = b.textContent.indexOf('Payment') !== -1;
+    b.classList.toggle('active', which === 'payment' ? isPay : !isPay);
+  });
+}
+
 // Initial load
+restoreAutoRefresh();
 fetchStats();

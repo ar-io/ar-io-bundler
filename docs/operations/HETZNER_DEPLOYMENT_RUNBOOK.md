@@ -537,10 +537,51 @@ per-path routing test.) The three prod hostnames (mirrors the proven perma.onlin
 - **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
   and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST
   body parsing — learned the hard way).
-- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block**.
+- Admin portal + Bull Board (`:3002`) get an **IP-restricted** TLS block (§14a) — the only admin surface
+  exposed over HTTPS. MinIO console (`:9001`) and Prometheus (`:9090`) stay tunnel-only (no server block).
 
 TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-Forwarded-Proto`, so
 **`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL** (x402 depends on it).
+
+### 14a. Admin portal + Bull Board over HTTPS (IP-restricted)
+
+The `admin-dashboard` process is both the portal **and** Bull Board (dashboard `/admin/dashboard`, queues
+`/admin/queues`) on one port (`:3002`) behind one login, so one TLS vhost covers both. It can trigger
+refunds and recovery actions, so it gets HTTPS **and** an IP allowlist — never the open-internet treatment
+upload/payment get.
+
+Config: the `admin.services.perma.online` server block in `infrastructure/nginx/ar-io-bundler.conf`
+(`upstream bundler_admin → 127.0.0.1:3002`) + `snippets/bundler-loc-admin.conf`. The snippet sets strict
+headers and, by design, omits `bundler-headers` so `Access-Control-Allow-Origin *` is never on the admin
+surface.
+
+Steps:
+1. **DNS:** `admin.services.perma.online` A/AAAA → the bundler box.
+2. **Allowlist:** set the `allow … ; deny all;` lines in the admin `:443` block to your operator/VPN IPs.
+3. **`.env` on the box** — behind a proxy only ONE admin var is required:
+   ```bash
+   ADMIN_TRUST_PROXY=true   # REQUIRED behind nginx: read the real client IP from X-Forwarded-For
+                            # (lockout/audit). Off by default so a directly-reachable instance
+                            # can't be IP-spoofed to bypass the brute-force lockout.
+   ```
+   The rest are already correct by default — do NOT set unless overriding: `ADMIN_COOKIE_SECURE`
+   defaults to Secure (HTTPS-only); `ADMIN_SESSION_SECRET` auto-derives from `PRIVATE_ROUTE_SECRET`.
+   `BIND_ADDRESS` is the **shared** bind you already set for upload/payment — admin binds the same
+   interface. Then restart `admin-dashboard` and firewall `:3002` (allow the router/localhost only).
+4. **Install config:** `cp infrastructure/nginx/snippets/* /etc/nginx/snippets/`; conf → `sites-available`
+   → `sites-enabled`. Comment the admin `:443` block for now (its cert does not exist yet); leave the
+   admin `:80` block active. `nginx -t && systemctl reload nginx`.
+5. **Per-host cert** (the `:80` block serves the challenge):
+   ```bash
+   certbot certonly --webroot -w /var/www/certbot -d admin.services.perma.online \
+     --deploy-hook "systemctl reload nginx"
+   ```
+6. **Enable TLS:** uncomment the admin `:443` block, `nginx -t && systemctl reload nginx`.
+7. **First run:** open `https://admin.services.perma.online/admin/setup` and set the admin password (hashed
+   server-side, stored as a hash only). Setup then closes.
+
+Notes: the session cookie is **host-only** (no `Domain`), so it never reaches sibling
+`*.services.perma.online` hosts. Renewal reuses the `:80` ACME block — keep port 80 reachable.
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 

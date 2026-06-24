@@ -201,10 +201,10 @@ __metadata:
     "@koa/router": ^14.0.0
     bullmq: ^5.61.0
     dotenv: ^16.3.1
+    hash-wasm: ^4.12.0
     ioredis: ^5.8.2
     knex: ^2.5.1
     koa: 3.0.0-alpha.3
-    koa-basic-auth: ^4.0.0
     koa-mount: ^4.0.0
     koa-ratelimit: ^6.0.0
     koa-static: ^5.0.0
@@ -15269,6 +15269,13 @@ __metadata:
     safe-buffer: ^5.2.1
     to-buffer: ^1.2.1
   checksum: ca7c548098ca2aa3616f8ddb0406c9cadd0fbc35868d885200692b13a3b6d5b30e2b55ab808ff6000c69f11b3c26fd98e5955b1484d79a59fbd07d1d6b65ca4b
+  languageName: node
+  linkType: hard
+
+"hash-wasm@npm:^4.12.0":
+  version: 4.12.0
+  resolution: "hash-wasm@npm:4.12.0"
+  checksum: f292c94a19a3d7c075e1e7de2764ba8a006ae5a9551b1a35c61f693035df7977e6cb41f3fc036deb4a724e1949711b7cba06f7ad174f5aeb295edb64649b4a32
   languageName: node
   linkType: hard
 
