@@ -30,7 +30,7 @@ echo ""
 
 # Stop PM2 services
 echo "🛑 Stopping PM2 services..."
-if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|bull-board"; then
+if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|admin-dashboard"; then
   pm2 stop all 2>/dev/null || true
   pm2 delete all 2>/dev/null || true
   echo -e "${GREEN}✓${NC} PM2 services stopped and removed"
@@ -57,7 +57,7 @@ if [ "$STOP_DOCKER" = true ]; then
   fi
 else
   echo ""
-  echo -e "${YELLOW}ℹ️${NC}  Docker infrastructure left running (use --services-only flag removed to stop it)"
+  echo -e "${YELLOW}ℹ️${NC}  Docker infrastructure left running (run ./scripts/stop.sh without --services-only to stop it too)"
 fi
 
 echo ""

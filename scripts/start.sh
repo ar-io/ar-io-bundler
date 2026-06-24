@@ -108,9 +108,9 @@ echo -e "${GREEN}✓${NC} Root .env file found"
 # Stop existing services if running
 echo ""
 echo "🔄 Checking for existing PM2 processes..."
-if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|bull-board\|admin-dashboard"; then
+if pm2 list | grep -q "payment-service\|payment-workers\|upload-api\|upload-workers\|admin-dashboard"; then
   echo "   Stopping existing processes..."
-  pm2 delete payment-service payment-workers upload-api upload-workers bull-board admin-dashboard 2>/dev/null || true
+  pm2 delete payment-service payment-workers upload-api upload-workers admin-dashboard 2>/dev/null || true
   echo -e "${GREEN}✓${NC} Existing processes stopped"
 else
   echo -e "${GREEN}✓${NC} No existing processes"

@@ -1,13 +1,13 @@
 ---
 name: ar-io-bundler-operator
-description: Operate the AR.IO Bundler — a forked ArDrive-Turbo ANS-104 bundling platform (payment + upload + admin services on PM2, Postgres/Redis/MinIO/BullMQ infra) wired to a co-located AR.IO gateway. Use whenever the user asks about bundler health, whether uploads are bundling/posting/seeding, the BullMQ bundle pipeline, optical bridging to the gateway, the cron triggers, PM2 service management, restarts/rebuilds, payment/crypto-credit finalization, x402 uploads, MinIO/object storage, the two Postgres DBs, or anything operationally generic to running the bundler ("is it healthy?", "are bundles posting?", "why didn't my upload show up on the gateway?", "did the restart pick up my build?"). Run scripts/health-check first. Pairs with the ar-io-gateway-operator skill (in the ar-io-node repo) for the gateway side of the wiring.
+description: Operate the AR.IO Bundler — a forked ArDrive-Turbo ANS-104 bundling platform (payment + upload + admin services on PM2, Postgres/Redis/MinIO/BullMQ infra) wired to a co-located AR.IO gateway. Use whenever the user asks about bundler health, whether uploads are bundling/posting/seeding, the BullMQ bundle pipeline (incl. the optional two-tier MinIO HDD archive), optical bridging to the gateway, the in-process job schedulers (bundle planning/cleanup/redrive), PM2 service management, restarts/rebuilds, payment/crypto-credit finalization, x402 uploads, MinIO/object storage, the two Postgres DBs, or anything operationally generic to running the bundler ("is it healthy?", "are bundles posting?", "why didn't my upload show up on the gateway?", "did the restart pick up my build?"). Run scripts/health-check first. Pairs with the ar-io-gateway-operator skill (in the ar-io-node repo) for the gateway side of the wiring.
 ---
 
 # AR.IO Bundler Operator
 
 You are operating the **AR.IO Bundler**: a de-AWS fork of ArDrive's Turbo that accepts data uploads, bundles them per ANS-104, posts bundles to Arweave, and optical-bridges data items to a co-located AR.IO gateway for optimistic indexing/serving. It is a **single-node PM2 + Docker-infra hybrid**, not a container-orchestrated app.
 
-**Run `scripts/health-check` first every session** — it prints a one-screen snapshot (PM2, infra, APIs, pipeline counts, queue depth, crons, gateway wiring, recent worker errors) you can diff against last time before touching anything.
+**Run `scripts/health-check` first every session** — it prints a one-screen snapshot (PM2, infra, APIs, pipeline counts, queue depth, in-process schedulers, gateway wiring, recent worker errors) you can diff against last time before touching anything.
 
 ```bash
 .claude/skills/ar-io-bundler-operator/scripts/health-check
@@ -24,7 +24,7 @@ Always use the wrapper scripts. They reload `.env`, verify infra is up, check bu
 ./scripts/stop.sh --services-only   # stop PM2 only, leave Docker infra up   ← normal "stop"
 ./scripts/stop.sh                   # stop PM2 AND docker compose down
 ./scripts/restart.sh                # pm2 restart all (falls back to start.sh if nothing running)
-./scripts/restart.sh --with-docker  # also restart infra + re-run minio-init
+./scripts/restart.sh --with-docker  # also restart infra + re-run minio-init (and minio-hdd when archive on)
 ./scripts/verify.sh                 # read-only health check (exit 0/1)
 ```
 
@@ -44,7 +44,7 @@ cd ../.. && ./scripts/stop.sh --services-only && ./scripts/start.sh
 | `upload-api` | cluster | `API_INSTANCES` (2) | `packages/upload-service/lib/index.js` | Upload intake, multipart, x402 — API **:3001** |
 | `upload-workers` | **fork** | `WORKER_INSTANCES` (1) | `packages/upload-service/lib/workers/allWorkers.js` | The BullMQ bundle pipeline. **Must stay fork/1** — clustering = duplicate job processing |
 | `payment-workers` | **fork** | **1 (hardcoded)** | `packages/payment-service/lib/workers/index.js` | Finalizes pending crypto-payment credits (`creditPendingTx` + `adminCreditTool`). **Must exist or crypto top-ups never credit.** Never scale — duplicate financial processing |
-| `admin-dashboard` | fork | 1 | `packages/admin-service/server.js` | Bull Board + admin stats — **:3002**, `max_memory_restart: 500M` |
+| `admin-dashboard` | fork | 1 | `packages/admin-service/server.js` | Bull Board + admin dashboard/stats (session login) + opt-in **Slack health alerter** (`ALERTS_ENABLED`, mirrors the dashboard health rollup) — **:3002**, `max_memory_restart: 500M` |
 
 The repo-root `ecosystem.config.js` is a deprecated shim that re-exports the canonical one; `pm2 start ecosystem.config.js` from root launches the same 5. `infrastructure/pm2/verify-ecosystem.js` structurally validates the config (process set, exec modes, `payment-workers===1`, no leaked home paths / LAN IPs / inline wallet addresses).
 
@@ -135,8 +135,7 @@ A second, HDD-backed MinIO (`minio-hdd`, `:9002`, `docker-compose.hdd.yml`) that
 5. **Dual Redis naming** — cache is `REDIS_CACHE_*` / `ELASTICACHE_*` (6379); queues are `REDIS_QUEUE_*` / `REDIS_HOST`+`REDIS_PORT_QUEUES` (6381). Set both aliases or one half of the app can't find Redis.
 6. **`PAYMENT_SERVICE_BASE_URL` takes NO protocol prefix** (`localhost:4001`, not `http://...`); `PRIVATE_ROUTE_SECRET` must match across services (they share one root `.env`, so inherently consistent here).
 7. **Two Arweave wallets** — `TURBO_JWK_FILE` (`wallet.json`, signs bundles = the bundler's posting identity) and `RAW_DATA_ITEM_JWK_FILE` (`rawWallet.json`, signs unsigned x402 raw uploads). Absolute paths, mode 600. Losing `wallet.json` loses the posting identity — back it up out-of-band.
-8. **Doc drift** — the ADMIN_GUIDE / `docs/operations/README.md` are partly stale (service-prefixed env names, AWS S3 examples, `bull-board` naming, `FEE_MULTIPLIER`, an outdated queue list). Trust, in order: `HETZNER_DEPLOYMENT_RUNBOOK.md` → root `README.md` → `CLAUDE.md`/`allWorkers.ts` → ADMIN_GUIDE. AWS/SQS/Lambda/DynamoDB phrasing anywhere is legacy.
-9. **`verify.sh`'s error-grep branch is effectively a no-op** (`grep -q … | head -1`) — it tends to report "no critical errors" regardless. Don't rely on it to catch log errors; use `pm2 logs <name> --err` or this skill's health-check.
+8. **Doc drift** — when docs disagree with the code, trust in order: `HETZNER_DEPLOYMENT_RUNBOOK.md` → root `README.md` → `CLAUDE.md`/`allWorkers.ts` (the queue source of truth) → ADMIN_GUIDE (the most likely to lag). Any AWS/SQS/Lambda/DynamoDB/Secrets-Manager phrasing is legacy framing, not current behavior.
 
 ## When something breaks: where to look
 
@@ -150,7 +149,7 @@ A second, HDD-backed MinIO (`minio-hdd`, `:9002`, `docker-compose.hdd.yml`) that
 | Crypto top-up never credits | `payment-workers` process missing/stopped (pitfall: it must exist); `payment-pending-tx` queue + `pm2 logs payment-workers` |
 | Pricing fails ("Oracle Unavailable") | `PRICE_ORACLE_GATEWAY_URL` pointing at arweave.net instead of the gateway |
 | `pm2 list` empty though services run | wrong-node pm2 (pitfall 1) |
-| Admin dashboard 401 | expected — it's auth-protected; that means it's up |
+| Admin dashboard `302` (→ `/admin/login`) | expected — session-auth-protected since the dashboard overhaul (#86); an unauthenticated request **redirects (302)**, it does NOT return 401. A redirect means it's up; a `200` on `/admin/dashboard` would mean it's wide open. |
 | Service won't boot, `ERR_REQUIRE_ESM` | Node < 22 (pitfall 1) |
 
 ## Deployment (Hetzner)
