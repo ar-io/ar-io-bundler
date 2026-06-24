@@ -734,6 +734,42 @@ fi
 
 print_success "Storage configured: ${CONFIG[S3_ENDPOINT]}"
 
+# --- Optional: Two-tier MinIO (SSD hot + HDD archive) --------------------------
+echo ""
+print_section "Two-tier MinIO — HDD archive tier (optional, advanced)"
+echo "Mirrors served objects (raw data items + bundle payloads) to a second"
+echo "HDD-backed MinIO so AR.IO gateway reads don't compete with the bundling"
+echo "pipeline on the fast SSD. Leave disabled for a single-MinIO deployment"
+echo "(default). Design + ops: docs/architecture/TWO_TIER_MINIO_SSD_HDD.md."
+echo ""
+if confirm "Enable the two-tier MinIO HDD archive tier?" "n"; then
+    # Bucket AND region label MUST be distinct from the SSD store — object-store
+    # routing is keyed by both, and a collision makes the bundler refuse to wire
+    # the archive (it logs an error and stays inert).
+    prompt "ARCHIVE_DATA_ITEM_BUCKET" "Archive bucket name (MUST differ from DATA_ITEM_BUCKET)" "${ARCHIVE_DATA_ITEM_BUCKET:-archive-data-items}"
+    prompt "ARCHIVE_BUCKET_REGION" "Archive region label (MUST differ from S3_REGION)" "${ARCHIVE_BUCKET_REGION:-archive-hdd}"
+    prompt "ARCHIVE_S3_ENDPOINT" "Archive (HDD) MinIO endpoint" "${ARCHIVE_S3_ENDPOINT:-http://localhost:9002}"
+    prompt "ARCHIVE_S3_ACCESS_KEY_ID" "Archive MinIO root access key" "${ARCHIVE_S3_ACCESS_KEY_ID:-minioadmin}"
+    prompt "ARCHIVE_S3_SECRET_ACCESS_KEY" "Archive MinIO root secret key" "${ARCHIVE_S3_SECRET_ACCESS_KEY:-minioadmin123}" true
+    CONFIG["ARCHIVE_S3_FORCE_PATH_STYLE"]="true"
+    prompt "ARCHIVE_MINIO_DATA_PATH" "Host path for the HDD MinIO volume (the large disk)" "${ARCHIVE_MINIO_DATA_PATH:-/mnt/hdd/minio}"
+    prompt "MINIO_S3_BIND_IP" "Private IP the HDD MinIO S3 port binds to (gateway reach; NEVER public)" "${MINIO_S3_BIND_IP:-127.0.0.1}"
+    prompt "GATEWAY_S3_ACCESS_KEY_ID" "Read-only gateway user for HDD reads" "${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly}"
+    prompt "GATEWAY_S3_SECRET_ACCESS_KEY" "Read-only gateway user secret" "${GATEWAY_S3_SECRET_ACCESS_KEY:-$(generate_secret)}" true
+    if [ "$ADVANCED_MODE" = true ]; then
+        prompt "ARCHIVE_RETENTION_DAYS" "HDD retention in days (native MinIO ILM expiry)" "${ARCHIVE_RETENTION_DAYS:-90}"
+        prompt "ARCHIVE_COPY_WORKER_CONCURRENCY" "archive-copy worker concurrency" "${ARCHIVE_COPY_WORKER_CONCURRENCY:-3}"
+        prompt "SSD_CLEANUP_GRACE_DAYS" "Grace days to hold SSD copies after permanence" "${SSD_CLEANUP_GRACE_DAYS:-0}"
+    fi
+    print_success "Two-tier MinIO archive enabled (${CONFIG[ARCHIVE_DATA_ITEM_BUCKET]} @ ${CONFIG[ARCHIVE_S3_ENDPOINT]})"
+    print_warning "Bring up the HDD MinIO:  docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d"
+    print_warning "Repoint the gateway's AWS_ENDPOINT to the HDD MinIO BEFORE SSD reclaim runs (runbook §13)."
+    print_warning "Enabling on a DB that ALREADY has permanent bundles? Seed the 'archive-ssd-cleanup-cursor'"
+    print_warning "config row to max(permanent_date) first, or the sweep wedges backfilling history (runbook §13)."
+else
+    print_info "Two-tier MinIO archive disabled — single-MinIO behavior (unchanged)."
+fi
+
 #############################################################################################
 # 11. Redis Configuration
 #############################################################################################
@@ -1460,6 +1496,30 @@ EOF
 [ -n "${CONFIG[BASE_ETH_ADDRESS]}" ] && echo "BASE_ETH_ADDRESS=${CONFIG[BASE_ETH_ADDRESS]}" >> "$ENV_FILE"
 [ -n "${CONFIG[KYVE_ADDRESS]}" ] && echo "KYVE_ADDRESS=${CONFIG[KYVE_ADDRESS]}" >> "$ENV_FILE"
 
+# Two-tier MinIO (SSD hot + HDD archive) — only written when enabled above.
+# Unset ARCHIVE_DATA_ITEM_BUCKET keeps the single-MinIO path (feature stays inert).
+if [ -n "${CONFIG[ARCHIVE_DATA_ITEM_BUCKET]}" ]; then
+    {
+        echo ""
+        echo "# ================================"
+        echo "# TWO-TIER MINIO (SSD hot + HDD archive)"
+        echo "# ================================"
+        echo "ARCHIVE_DATA_ITEM_BUCKET=${CONFIG[ARCHIVE_DATA_ITEM_BUCKET]}"
+        echo "ARCHIVE_BUCKET_REGION=${CONFIG[ARCHIVE_BUCKET_REGION]:-archive-hdd}"
+        echo "ARCHIVE_S3_ENDPOINT=${CONFIG[ARCHIVE_S3_ENDPOINT]}"
+        echo "ARCHIVE_S3_ACCESS_KEY_ID=${CONFIG[ARCHIVE_S3_ACCESS_KEY_ID]}"
+        echo "ARCHIVE_S3_SECRET_ACCESS_KEY=${CONFIG[ARCHIVE_S3_SECRET_ACCESS_KEY]}"
+        echo "ARCHIVE_S3_FORCE_PATH_STYLE=${CONFIG[ARCHIVE_S3_FORCE_PATH_STYLE]:-true}"
+        echo "ARCHIVE_MINIO_DATA_PATH=${CONFIG[ARCHIVE_MINIO_DATA_PATH]}"
+        echo "MINIO_S3_BIND_IP=${CONFIG[MINIO_S3_BIND_IP]:-127.0.0.1}"
+        echo "GATEWAY_S3_ACCESS_KEY_ID=${CONFIG[GATEWAY_S3_ACCESS_KEY_ID]:-gateway-readonly}"
+        echo "GATEWAY_S3_SECRET_ACCESS_KEY=${CONFIG[GATEWAY_S3_SECRET_ACCESS_KEY]}"
+        echo "ARCHIVE_RETENTION_DAYS=${CONFIG[ARCHIVE_RETENTION_DAYS]:-90}"
+        echo "ARCHIVE_COPY_WORKER_CONCURRENCY=${CONFIG[ARCHIVE_COPY_WORKER_CONCURRENCY]:-3}"
+        echo "SSD_CLEANUP_GRACE_DAYS=${CONFIG[SSD_CLEANUP_GRACE_DAYS]:-0}"
+    } >> "$ENV_FILE"
+fi
+
 # x402 configuration
 cat >> "$ENV_FILE" << EOF
 
@@ -1931,35 +1991,23 @@ else
 fi
 
 #############################################################################################
-# 28. Configure Bundle Planning Cron Job
+# 28. Bundle Planning Schedule (in-process — NO cron job needed)
 #############################################################################################
 
-print_header "Step 28: Bundle Planning Cron Job"
+print_header "Step 28: Bundle Planning Schedule"
 
-CRON_SCRIPT="$PROJECT_ROOT/packages/upload-service/cron-trigger-plan.sh"
-
-if crontab -l 2>/dev/null | grep -q "$CRON_SCRIPT"; then
-    print_success "Cron job already configured"
-else
-    echo "The bundler requires a cron job to trigger bundle planning."
-    echo "This groups uploaded data items into bundles every 5 minutes."
-    echo ""
-
-    if [ "$QUICK_MODE" = false ]; then
-        if ! confirm "Configure cron job now?" "y"; then
-            print_warning "Skipping cron job setup"
-            echo "Configure manually:"
-            echo "  crontab -e"
-            echo "  Add: */5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1"
-        else
-            (crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-            print_success "Cron job configured (every 5 minutes)"
-        fi
-    else
-        (crontab -l 2>/dev/null | grep -v "trigger-plan" ; echo "*/5 * * * * $CRON_SCRIPT >> /tmp/bundle-plan-cron.log 2>&1") | crontab -
-        print_success "Cron job configured"
-    fi
+# Bundle planning, tiered cleanup, and posted-bundle redrive are registered as
+# in-process BullMQ repeatable schedulers by the upload-workers process at startup
+# (tuned via PLAN_SCHEDULE_CRON / CLEANUP_SCHEDULE_CRON / POSTED_REDRIVE_SCHEDULE_CRON
+# in .env). There is NO crontab to install — and a leftover `cron-trigger-plan`
+# crontab entry would DOUBLE-FIRE alongside the in-process scheduler.
+echo "Bundle planning runs in-process (BullMQ schedulers in upload-workers) — no cron job needed."
+if crontab -l 2>/dev/null | grep -q "trigger-plan"; then
+    print_warning "Removing a stale cron-trigger-plan crontab entry (planning is in-process now)"
+    crontab -l 2>/dev/null | grep -v "trigger-plan" | crontab -
 fi
+print_success "Scheduling is in-process. Verify after services start:"
+echo "  pm2 logs upload-workers --nostream | grep 'Registered BullMQ job schedulers'"
 
 #############################################################################################
 # 29. Start Services

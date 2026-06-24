@@ -21,8 +21,8 @@ import winston from "winston";
 import { ObjectStore } from "../arch/objectStore";
 import {
   ReclaimBundleResult,
-  reclaimBundleFromSsd,
-  runSsdReclaimSweep,
+  reclaimBundleFromBundler,
+  runBundlerReclaimSweep,
 } from "./cleanup-fs";
 
 const silentLogger = winston.createLogger({
@@ -31,9 +31,9 @@ const silentLogger = winston.createLogger({
 });
 
 /**
- * In-memory fake of the bits of ObjectStore the SSD reclamation touches:
- * headObject (the archive HEAD gate) and deleteObject (the SSD delete). Records
- * deletes so we can assert exactly which SSD copies were (not) removed.
+ * In-memory fake of the bits of ObjectStore the bundler reclamation touches:
+ * headObject (the archive HEAD gate) and deleteObject (the bundler delete). Records
+ * deletes so we can assert exactly which bundler copies were (not) removed.
  */
 class FakeStore {
   public keys: Set<string>;
@@ -64,9 +64,9 @@ class FakeStore {
 
 const asStore = (s: FakeStore) => s as unknown as ObjectStore;
 
-describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
-  it("deletes raw-data-item + bundle-payload + bundle tx from the SSD when all HDD copies are confirmed", async () => {
-    const ssd = new FakeStore([
+describe("reclaimBundleFromBundler (two-tier MinIO post-permanence sweep)", () => {
+  it("deletes raw-data-item + bundle-payload + bundle tx from the bundler when all archive copies are confirmed", async () => {
+    const bundler = new FakeStore([
       "raw-data-item/item-1",
       "raw-data-item/item-2",
       "bundle-payload/plan-1",
@@ -78,8 +78,8 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
       "bundle-payload/plan-1",
     ]);
 
-    const result = await reclaimBundleFromSsd({
-      objectStore: asStore(ssd),
+    const result = await reclaimBundleFromBundler({
+      objectStore: asStore(bundler),
       archiveObjectStore: asStore(archive),
       planId: "plan-1",
       bundleId: "tx-1",
@@ -92,7 +92,7 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
     expect(result.payloadDeleted).to.equal(true);
     expect(result.txDeleted).to.equal(true);
     expect(result.missingArchiveKeys).to.deep.equal([]);
-    expect(ssd.deleted).to.have.members([
+    expect(bundler.deleted).to.have.members([
       "raw-data-item/item-1",
       "raw-data-item/item-2",
       "bundle-payload/plan-1",
@@ -100,16 +100,16 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
     ]);
   });
 
-  it("NEVER deletes any SSD copy and defers when the HDD bundle-payload is missing (the critical guard)", async () => {
-    const ssd = new FakeStore([
+  it("NEVER deletes any bundler copy and defers when the archive bundle-payload is missing (the critical guard)", async () => {
+    const bundler = new FakeStore([
       "raw-data-item/item-1",
       "bundle-payload/plan-1",
       "bundle/tx-1",
     ]);
     const archive = new FakeStore([]); // archive copy hasn't landed yet
 
-    const result = await reclaimBundleFromSsd({
-      objectStore: asStore(ssd),
+    const result = await reclaimBundleFromBundler({
+      objectStore: asStore(bundler),
       archiveObjectStore: asStore(archive),
       planId: "plan-1",
       bundleId: "tx-1",
@@ -118,26 +118,26 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
     });
 
     expect(result.deferred).to.equal(true);
-    expect(ssd.deleted).to.deep.equal([]); // nothing removed from the SSD
-    // The missing HDD bundle-payload is reported so the sweep can re-enqueue it.
+    expect(bundler.deleted).to.deep.equal([]); // nothing removed from the bundler
+    // The missing archive bundle-payload is reported so the sweep can re-enqueue it.
     expect(result.missingArchiveKeys).to.deep.equal(["bundle-payload/plan-1"]);
   });
 
-  it("skips the SSD raw-item delete (and defers) when that item's HDD copy is missing, but still drops the confirmed payload + tx", async () => {
-    const ssd = new FakeStore([
+  it("skips the bundler raw-item delete (and defers) when that item's archive copy is missing, but still drops the confirmed payload + tx", async () => {
+    const bundler = new FakeStore([
       "raw-data-item/item-1",
       "raw-data-item/item-2",
       "bundle-payload/plan-1",
       "bundle/tx-1",
     ]);
-    // payload is archived and item-1, but item-2's HDD copy hasn't landed.
+    // payload is archived and item-1, but item-2's archive copy hasn't landed.
     const archive = new FakeStore([
       "raw-data-item/item-1",
       "bundle-payload/plan-1",
     ]);
 
-    const result = await reclaimBundleFromSsd({
-      objectStore: asStore(ssd),
+    const result = await reclaimBundleFromBundler({
+      objectStore: asStore(bundler),
       archiveObjectStore: asStore(archive),
       planId: "plan-1",
       bundleId: "tx-1",
@@ -147,26 +147,26 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
 
     expect(result.deferred).to.equal(true); // revisit for item-2
     expect(result.rawDeleted).to.equal(1);
-    // Only item-2's HDD copy is missing, so that's the one key to re-enqueue.
+    // Only item-2's archive copy is missing, so that's the one key to re-enqueue.
     expect(result.missingArchiveKeys).to.deep.equal(["raw-data-item/item-2"]);
-    expect(ssd.deleted).to.have.members([
+    expect(bundler.deleted).to.have.members([
       "raw-data-item/item-1",
       "bundle-payload/plan-1",
       "bundle/tx-1",
     ]);
-    // item-2 stays on the SSD because its HDD copy isn't confirmed.
-    expect(ssd.keys.has("raw-data-item/item-2")).to.equal(true);
+    // item-2 stays on the bundler because its archive copy isn't confirmed.
+    expect(bundler.keys.has("raw-data-item/item-2")).to.equal(true);
   });
 
   it("is idempotent: a re-run after a successful sweep deletes nothing more", async () => {
-    const ssd = new FakeStore([]); // already reclaimed
+    const bundler = new FakeStore([]); // already reclaimed
     const archive = new FakeStore([
       "raw-data-item/item-1",
       "bundle-payload/plan-1",
     ]);
 
-    const result = await reclaimBundleFromSsd({
-      objectStore: asStore(ssd),
+    const result = await reclaimBundleFromBundler({
+      objectStore: asStore(bundler),
       archiveObjectStore: asStore(archive),
       planId: "plan-1",
       bundleId: "tx-1",
@@ -179,7 +179,7 @@ describe("reclaimBundleFromSsd (two-tier MinIO post-permanence sweep)", () => {
     expect(result.payloadDeleted).to.equal(false);
     expect(result.txDeleted).to.equal(false);
     expect(result.missingArchiveKeys).to.deep.equal([]);
-    expect(ssd.deleted).to.deep.equal([]);
+    expect(bundler.deleted).to.deep.equal([]);
   });
 });
 
@@ -190,7 +190,7 @@ interface FakeBundle {
 }
 
 /**
- * Drive `runSsdReclaimSweep` over an in-memory set of permanent bundles with
+ * Drive `runBundlerReclaimSweep` over an in-memory set of permanent bundles with
  * fully-injected deps (no DB, no object store), so the cursor / deferral /
  * reconciliation control flow can be asserted directly. `reclaimByBundle` maps a
  * bundle_id to the `ReclaimBundleResult` the (faked) reclaim returns for it.
@@ -288,7 +288,7 @@ const b = (date: string, id: string): FakeBundle => ({
   permanent_date: date,
 });
 
-describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
+describe("runBundlerReclaimSweep (cursor / deferral / reconciliation)", () => {
   it("reclaims every bundle and persists the cursor at the tail when there are no holes", async () => {
     const bundles = [b("2026-01-01", "b1"), b("2026-01-02", "b2"), b("2026-01-03", "b3")];
     const h = makeSweepHarness({
@@ -297,7 +297,7 @@ describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
       pageSize: 2,
     });
 
-    const stats = await runSsdReclaimSweep(h.deps);
+    const stats = await runBundlerReclaimSweep(h.deps);
 
     expect(stats.bundlesSwept).to.equal(3);
     expect(stats.deferredBundles).to.equal(0);
@@ -326,13 +326,13 @@ describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
       pageSize: 2,
     });
 
-    const stats = await runSsdReclaimSweep(h.deps);
+    const stats = await runBundlerReclaimSweep(h.deps);
 
     // b1 and b3 are reclaimed even though b2 is a hole (no head-of-line stall).
     expect(h.reclaimedBundleIds).to.deep.equal(["b1", "b2", "b3"]);
     expect(stats.bundlesSwept).to.equal(2); // b1 + b3
     expect(stats.deferredBundles).to.equal(1);
-    // The missing HDD copy is re-requested (reconciliation backstop).
+    // The missing archive copy is re-requested (reconciliation backstop).
     expect(stats.reEnqueuedKeys).to.equal(1);
     expect(h.enqueued).to.deep.equal(["bundle-payload/plan-b2"]);
     // Persist cursor parks at b1 (the last contiguous reclaim before the hole),
@@ -364,7 +364,7 @@ describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
       pageSize: 2,
     });
 
-    const stats = await runSsdReclaimSweep(h.deps);
+    const stats = await runBundlerReclaimSweep(h.deps);
 
     expect(stats.deferredBundles).to.equal(1);
     expect(stats.bundlesSwept).to.equal(2); // b2 + b3 still reclaimed
@@ -385,7 +385,7 @@ describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
       startCursor: { permanentDate: "2026-01-01", bundleId: "b1" },
     });
 
-    const stats = await runSsdReclaimSweep(h.deps);
+    const stats = await runBundlerReclaimSweep(h.deps);
 
     // b1 is before the resume cursor and is never re-examined.
     expect(h.reclaimedBundleIds).to.deep.equal(["b2", "b3"]);

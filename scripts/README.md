@@ -17,14 +17,16 @@ This directory contains utility scripts for managing and monitoring the AR.IO Bu
 
 ## Initial Setup
 
-### `setup.sh`
+### `setup-bundler.sh`
 **Interactive setup wizard** that guides you through complete initial configuration.
 
 **Features:**
 - Collects all required configuration values with validation
 - Generates secure random secrets (JWT_SECRET, PRIVATE_ROUTE_SECRET)
-- Creates complete `.env` files for both services
+- Creates the complete root `.env`
+- Optionally configures the two-tier MinIO HDD archive tier (`ARCHIVE_*`, default off)
 - Validates wallet files and network connectivity
+- Confirms in-process bundle-planning schedulers (no cron job needed)
 - Optionally runs migrations and starts services
 
 **Usage:**
@@ -45,7 +47,7 @@ This directory contains utility scripts for managing and monitoring the AR.IO Bu
 - Configures environment files from samples
 - Initializes infrastructure
 - Runs database migrations
-- Configures bundle planning cron job
+- Confirms in-process bundle-planning schedulers (no cron job needed)
 - Starts all services
 
 **Usage:**
@@ -87,15 +89,18 @@ sudo ./scripts/setup-pm2-startup.sh
 **Starts all bundler services** (Docker infrastructure + PM2 processes).
 
 **What it does:**
-1. ✓ Checks and starts Docker containers (PostgreSQL, Redis, MinIO)
-2. ✓ Initializes MinIO buckets (if first run)
+1. ✓ Checks and starts Docker containers (PostgreSQL, Redis ×2, MinIO). When the
+   two-tier HDD archive is enabled (`ARCHIVE_DATA_ITEM_BUCKET` set in `.env`), it
+   also includes the `docker-compose.hdd.yml` override and starts `minio-hdd`.
+2. ✓ Initializes MinIO buckets (if first run; also the HDD archive bucket when enabled)
 3. ✓ Runs database migrations (if needed)
 4. ✓ Validates build status and builds if necessary
 5. ✓ Checks for wallet.json and .env files
 6. ✓ Starts PM2 services:
    - `payment-service` (2 instances, cluster mode)
+   - `payment-workers` (1 instance, fork mode — crypto-credit finalizer)
    - `upload-api` (2 instances, cluster mode)
-   - `upload-workers` (1 instance, fork mode)
+   - `upload-workers` (1 instance, fork mode — the 15-queue bundle pipeline)
    - `admin-dashboard` (1 instance, fork mode)
 7. ✓ Saves PM2 state
 8. ✓ Displays service URLs and status
@@ -118,7 +123,9 @@ sudo ./scripts/setup-pm2-startup.sh
 **Stops all services** (PM2 + optionally Docker infrastructure).
 
 **Options:**
-- Default: Stops PM2 services AND Docker infrastructure
+- Default: Stops PM2 services AND Docker infrastructure (including the archive
+  `minio-hdd` via the `docker-compose.hdd.yml` override when `ARCHIVE_*` is set,
+  so it isn't left as an orphan)
 - `--services-only`: Stops only PM2 services, leaves Docker running
 
 **Usage:**
@@ -148,8 +155,9 @@ sudo ./scripts/setup-pm2-startup.sh
 ```
 
 **What it does:**
-- Restarts PM2 processes with zero-downtime reload
-- Optionally restarts PostgreSQL, Redis, MinIO
+- Restarts PM2 processes (`pm2 restart all`; falls back to `start.sh` if nothing is running)
+- With `--with-docker`: restarts PostgreSQL, Redis ×2, MinIO — plus `minio-hdd` and
+  re-runs `minio-init-hdd` when the two-tier archive is enabled (`ARCHIVE_*` in `.env`)
 - Ensures MinIO buckets are initialized
 - Displays updated service status
 
@@ -159,18 +167,16 @@ sudo ./scripts/setup-pm2-startup.sh
 **Comprehensive system health check** - validates all services and infrastructure.
 
 **Checks performed:**
-- ✓ Docker containers (PostgreSQL, Redis Cache, Redis Queues, MinIO)
-- ✓ Container health status (all must be healthy)
-- ✓ PM2 processes (payment-service, upload-api, upload-workers, admin-dashboard)
-- ✓ Process status (all must be online)
-- ✓ HTTP endpoints (health checks, API endpoints)
+- ✓ Docker containers + health (PostgreSQL, Redis Cache, Redis Queues, MinIO; plus
+  the archive `minio-hdd` when `ARCHIVE_*` is enabled)
+- ✓ PM2 processes online (payment-service, **payment-workers**, upload-api,
+  upload-workers, admin-dashboard)
+- ✓ HTTP endpoints (`/health`, pricing) and that the admin dashboard is auth-gated
 - ✓ Port availability (3001, 3002, 4001)
-- ✓ Database connectivity
-- ✓ Redis connectivity (cache + queues)
-- ✓ MinIO connectivity and buckets
-- ✓ Configuration files (.env, wallet.json)
-- ✓ Disk space
-- ✓ Service logs for recent errors
+- ✓ Service connectivity (upload→Redis, upload→payment)
+- ✓ Bundle-planning **scheduler** registered in BullMQ (repeat key in queues Redis —
+  NOT a crontab entry; planning is in-process)
+- ✓ Recent critical errors in service logs (non-fatal warning)
 
 **Usage:**
 ```bash
@@ -496,7 +502,7 @@ The bundle lifecycle and verification flow:
 5. **Seed** → Chunks uploaded to Arweave, moved to `seeded_bundle` table, verify job queued with 5min delay
 6. **Verify** → Check confirmations (≥18), move to `permanent_bundle` and `permanent_data_items` tables
 
-**Automatic verification:** Happens 5 minutes after seeding (via cron job every 5 minutes)
+**Automatic verification:** the `seed-bundle` job enqueues a `verify-bundle` job with a 5-minute delay (in-process BullMQ — no cron). If it doesn't reach permanence on that pass (e.g. <18 confirmations yet), a later verify tick retries.
 **Manual verification:** Run `./scripts/trigger-verify.sh` anytime
 **Confirmation threshold:** 18 blocks on Arweave (~18 minutes at 1 min/block)
 
@@ -543,7 +549,7 @@ Fork mode ensures only one instance processes jobs, preventing duplicate process
 
 | Script | Purpose | Common Use Case |
 |--------|---------|----------------|
-| `setup.sh` | Interactive initial setup | First-time installation |
+| `setup-bundler.sh` | Interactive initial setup | First-time installation |
 | `setup-basic.sh` | Automated setup | CI/CD deployments |
 | `setup-pm2-startup.sh` | Configure auto-start | Production servers |
 | `start.sh` | Start all services | Daily operations |

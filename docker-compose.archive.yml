@@ -1,0 +1,76 @@
+# Two-Tier MinIO — archive override.
+#
+# Brings up a SECOND, archive MinIO ("minio-archive") that mirrors served content
+# (raw data items + bundle payloads) and takes all AR.IO gateway reads, while the
+# primary bundler MinIO in docker-compose.yml stays reserved for the
+# ingest→bundle→post→seed→verify pipeline.
+#
+# This file is an OVERRIDE, not started by default — the single-MinIO dev box never
+# runs it. Bring it up alongside the base compose only on the prod bare-metal box:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d
+#
+# It is inert unless the upload service also has ARCHIVE_* env set (see
+# .env.sample). With ARCHIVE_* unset the bundler ignores this MinIO entirely.
+services:
+  # Archive MinIO — gateway-facing. Distinct ports (9002/9003) and a distinct
+  # volume from the bundler MinIO.
+  minio-archive:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: ar-io-bundler-minio-archive
+    restart: unless-stopped
+    ports:
+      # S3 API for the AR.IO gateway. Set MINIO_S3_BIND_IP to the PRIVATE
+      # interface IP so remote gateways can pull over the vSwitch (never public).
+      - "${MINIO_S3_BIND_IP:-127.0.0.1}:9002:9000"
+      # Console UI: admin-only, never public.
+      - "${INFRA_BIND_IP:-127.0.0.1}:9003:9001"
+    environment:
+      MINIO_ROOT_USER: ${ARCHIVE_S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${ARCHIVE_S3_SECRET_ACCESS_KEY:-minioadmin123}
+      MINIO_DOMAIN: ar-io-bundler-minio-archive
+    command: server /data --console-address ":9001"
+    volumes:
+      # MUST bind-mount the large archive disk (e.g. ARCHIVE_MINIO_DATA_PATH=/mnt/archive/minio).
+      # The named-volume fallback lands on the OS disk — fine for a smoke test,
+      # wrong for the 16 TiB archive in prod.
+      - ${ARCHIVE_MINIO_DATA_PATH:-minio-archive-data}:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+      ar-io-network:
+        aliases:
+          - ar-io-bundler-minio-archive
+          - raw-data-items.ar-io-bundler-minio-archive
+
+  # Archive MinIO init — create the bucket, expose anonymous download, create the
+  # read-only gateway user, and install the age-based ILM expiry rule (native,
+  # DB-independent) for archive retention.
+  minio-init-archive:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    container_name: ar-io-bundler-minio-init-archive
+    depends_on:
+      minio-archive:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set archive http://minio-archive:9000 ${ARCHIVE_S3_ACCESS_KEY_ID:-minioadmin} ${ARCHIVE_S3_SECRET_ACCESS_KEY:-minioadmin123};
+      mc mb --ignore-existing archive/${ARCHIVE_DATA_ITEM_BUCKET:-archive-data-items};
+      mc anonymous set download archive/${ARCHIVE_DATA_ITEM_BUCKET:-archive-data-items};
+      mc admin user add archive ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} ${GATEWAY_S3_SECRET_ACCESS_KEY:-readonly-change-me} || true;
+      mc admin policy attach archive readonly --user ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} || true;
+      mc ilm rule add archive/${ARCHIVE_DATA_ITEM_BUCKET:-archive-data-items} --expire-days ${ARCHIVE_RETENTION_DAYS:-90} || true;
+      echo 'Archive MinIO bucket + read-only gateway user + ILM expiry rule created successfully';
+      "
+
+volumes:
+  minio-archive-data: # used only when ARCHIVE_MINIO_DATA_PATH is unset (smoke test)
+
+networks:
+  ar-io-network:
+    external: true
+    name: ar-io-network

@@ -49,12 +49,25 @@ const DEFAULT_START_DATE = "2025-03-17T00:00:00";
 const FILESYSTEM_CLEANUP_DAYS = +(process.env.FILESYSTEM_CLEANUP_DAYS || 7);
 const MINIO_CLEANUP_DAYS = +(process.env.MINIO_CLEANUP_DAYS || 90);
 
-// Two-tier MinIO: when the archive (HDD) store is configured, the SSD MinIO is
-// reclaimed POST-PERMANENCE (as soon as a bundle is permanent and its HDD copy
+// Two-tier MinIO: when the archive store is configured, the bundler MinIO is
+// reclaimed POST-PERMANENCE (as soon as a bundle is permanent and its archive copy
 // is confirmed) rather than on the 90-day MINIO_CLEANUP_DAYS rule. An optional
-// grace margin holds SSD copies for a few extra days after permanence.
-const SSD_CLEANUP_GRACE_DAYS = +(process.env.SSD_CLEANUP_GRACE_DAYS || 0);
-const ARCHIVE_SSD_CURSOR_KEY = "archive-ssd-cleanup-cursor";
+// grace margin holds bundler copies for a few extra days after permanence.
+// Guard a malformed env value: a bare `+("abc")` would be NaN, and the date math
+// at the sweep's start (`Date.now() - NaN * ...`) then throws in toISOString().
+const parsedBundlerCleanupGraceDays = Number(
+  process.env.BUNDLER_CLEANUP_GRACE_DAYS ?? 0
+);
+const BUNDLER_CLEANUP_GRACE_DAYS =
+  Number.isFinite(parsedBundlerCleanupGraceDays) &&
+  parsedBundlerCleanupGraceDays >= 0
+    ? parsedBundlerCleanupGraceDays
+    : 0;
+// The persisted config-row key keeps its legacy "archive-ssd-cleanup-cursor"
+// VALUE on purpose (the const NAME was renamed ssd→bundler, the value was not):
+// renaming the value would orphan the saved cursor on existing deployments and
+// re-scan permanent_bundle from the beginning.
+const ARCHIVE_BUNDLER_CURSOR_KEY = "archive-ssd-cleanup-cursor";
 const PERMANENT_BUNDLE_BATCH_SIZE = 200;
 
 // Multi-source permanence gating for cleanup: only delete a data item's off-chain
@@ -141,8 +154,8 @@ async function cleanupFsHandler({
   knexClient,
   objectStore,
   teardownComplete,
-  // In archive (two-tier) mode the SSD MinIO is reclaimed by the separate
-  // post-permanence sweep (cleanupSsdAfterArchive), so this age-based pass only
+  // In archive (two-tier) mode the bundler MinIO is reclaimed by the separate
+  // post-permanence sweep (cleanupBundlerAfterArchive), so this age-based pass only
   // does the filesystem tier. Default false → unchanged single-MinIO behavior.
   skipMinioCleanup = false,
 }: {
@@ -356,8 +369,8 @@ async function cleanupFsHandler({
             ));
           }
 
-          // MinIO cleanup (90 days default). Skipped in archive mode — the SSD
-          // MinIO is reclaimed post-permanence by cleanupSsdAfterArchive.
+          // MinIO cleanup (90 days default). Skipped in archive mode — the bundler
+          // MinIO is reclaimed post-permanence by cleanupBundlerAfterArchive.
           if (shouldCleanMinio && !skipMinioCleanup) {
             tasks.push(
               fileLimit(async () => {
@@ -439,7 +452,7 @@ async function cleanupFsHandler({
 }
 
 // Generic PostgreSQL `config` table get/set (mirrors getLastCursor/saveCursor,
-// reused for the archive SSD-cleanup cursor).
+// reused for the archive bundler-cleanup cursor).
 async function getConfigValue(key: string): Promise<string | undefined> {
   const knexWriter = knex(getWriterConfig());
   try {
@@ -490,7 +503,7 @@ async function deleteIfPresent(
       // Already gone — idempotent re-run.
       return false;
     }
-    logger.error("Failed to delete SSD object during archive cleanup", {
+    logger.error("Failed to delete bundler object during archive cleanup", {
       key,
       error: error instanceof Error ? error.message : error,
     });
@@ -499,33 +512,33 @@ async function deleteIfPresent(
 }
 
 export interface ReclaimBundleResult {
-  /** True if this bundle should be revisited (a HDD copy wasn't confirmed yet). */
+  /** True if this bundle should be revisited (a archive copy wasn't confirmed yet). */
   deferred: boolean;
   payloadDeleted: boolean;
   txDeleted: boolean;
   rawDeleted: number;
   /**
-   * Archive (HDD) keys that were expected but not yet confirmed present. The
+   * Archive (archive) keys that were expected but not yet confirmed present. The
    * sweep re-enqueues an `archive-copy` for these so a permanently-dropped
    * best-effort enqueue (e.g. a Redis blip at ingest, or process death between
-   * the DB insert and the enqueue) self-heals instead of stranding the SSD copy
+   * the DB insert and the enqueue) self-heals instead of stranding the bundler copy
    * — and the persist cursor — forever.
    */
   missingArchiveKeys: string[];
 }
 
 /**
- * Reclaim one permanent bundle's copies from the primary (SSD) store, gated on
- * the archive (HDD) copies being confirmed present. Pure of the DB — the caller
+ * Reclaim one permanent bundle's copies from the primary (bundler) store, gated on
+ * the archive copies being confirmed present. Pure of the DB — the caller
  * supplies the bundle's permanent data-item ids.
  *
- * Safety guard: the SSD copy is NEVER deleted until the corresponding HDD copy
- * is confirmed via `headObject`. If the bundle-payload isn't on the HDD yet,
+ * Safety guard: the bundler copy is NEVER deleted until the corresponding archive copy
+ * is confirmed via `headObject`. If the bundle-payload isn't on the archive yet,
  * nothing is deleted and the bundle is deferred. If some raw items lag, the
  * (confirmed) bundle-payload + on-chain bundle tx are still dropped, but the
  * bundle is deferred so the remaining raw items are retried.
  */
-export async function reclaimBundleFromSsd({
+export async function reclaimBundleFromBundler({
   objectStore,
   archiveObjectStore,
   planId,
@@ -542,10 +555,10 @@ export async function reclaimBundleFromSsd({
 }): Promise<ReclaimBundleResult> {
   const payloadKey = `${bundlePayloadPrefix}/${planId}`;
 
-  // Gate the whole bundle on its HDD bundle-payload copy.
+  // Gate the whole bundle on its archive bundle-payload copy.
   if (!(await headExists(archiveObjectStore, payloadKey))) {
     logger.info(
-      "Bundle payload not yet on archive; deferring SSD cleanup for this bundle",
+      "Bundle payload not yet on archive; deferring bundler cleanup for this bundle",
       { planId, bundleId }
     );
     return {
@@ -557,7 +570,7 @@ export async function reclaimBundleFromSsd({
     };
   }
 
-  // Reclaim each permanent data item's raw object, gated on its HDD copy.
+  // Reclaim each permanent data item's raw object, gated on its archive copy.
   let rawDeleted = 0;
   const missingArchiveKeys: string[] = [];
   for (const dataItemId of dataItemIds) {
@@ -565,14 +578,14 @@ export async function reclaimBundleFromSsd({
     if (await headExists(archiveObjectStore, rawKey)) {
       if (await deleteIfPresent(objectStore, rawKey, logger)) rawDeleted++;
     } else {
-      // This item's HDD copy isn't ready; leave its SSD copy and revisit. Record
+      // This item's archive copy isn't ready; leave its bundler copy and revisit. Record
       // the key so the sweep can re-request the (possibly dropped) copy.
       missingArchiveKeys.push(rawKey);
     }
   }
 
-  // bundle-payload is confirmed on the HDD → safe to drop the SSD copy.
-  // bundle/{txid} is permanent on-chain (not mirrored to the HDD), so it is
+  // bundle-payload is confirmed on the archive → safe to drop the bundler copy.
+  // bundle/{txid} is permanent on-chain (not mirrored to the archive), so it is
   // safe to drop alongside the payload.
   const payloadDeleted = await deleteIfPresent(objectStore, payloadKey, logger);
   const txDeleted = await deleteIfPresent(
@@ -596,7 +609,7 @@ interface PermanentBundleRow {
   permanent_date: string;
 }
 
-export interface SsdReclaimSweepStats {
+export interface BundlerReclaimSweepStats {
   bundlesSwept: number;
   payloadsDeleted: number;
   txDeleted: number;
@@ -608,18 +621,18 @@ export interface SsdReclaimSweepStats {
 }
 
 /**
- * Injectable dependencies for the SSD-reclaim sweep. All I/O (DB pagination,
+ * Injectable dependencies for the bundler-reclaim sweep. All I/O (DB pagination,
  * object-store reclaim, cursor persistence, re-enqueue) is passed in so the
  * cursor/deferral/reconciliation control flow can be unit-tested without a DB or
- * object store. `cleanupSsdAfterArchive` binds these to the real knex + stores.
+ * object store. `cleanupBundlerAfterArchive` binds these to the real knex + stores.
  */
-export interface SsdReclaimSweepDeps {
+export interface BundlerReclaimSweepDeps {
   /** Next page of permanent bundles strictly after `scanCursor` (ordered by
    * permanent_date, bundle_id), already filtered by the grace cutoff. */
   fetchPage: (scanCursor: ArchiveCleanupCursor) => Promise<PermanentBundleRow[]>;
   /** Permanent data-item ids for a bundle. */
   fetchItemIds: (bundleId: string) => Promise<string[]>;
-  /** Reclaim one bundle's SSD copies, gated on archive presence. */
+  /** Reclaim one bundle's bundler copies, gated on archive presence. */
   reclaim: (args: {
     planId: string;
     bundleId: string;
@@ -629,22 +642,22 @@ export interface SsdReclaimSweepDeps {
   getCursor: () => Promise<ArchiveCleanupCursor | undefined>;
   /** Persist the resume cursor. */
   setCursor: (cursor: ArchiveCleanupCursor) => Promise<void>;
-  /** Re-request archive copies for keys whose HDD copy wasn't confirmed. */
+  /** Re-request archive copies for keys whose archive copy wasn't confirmed. */
   enqueueArchiveCopy: (keys: string[]) => Promise<void>;
   pageSize: number;
   logger: winston.Logger;
 }
 
 /**
- * Two-tier MinIO post-permanence SSD reclamation — the pure control flow.
+ * Two-tier MinIO post-permanence bundler reclamation — the pure control flow.
  *
  * For each bundle in `permanent_bundle` (forward cursor on permanent_date), once
- * its HDD copies are CONFIRMED present, its SSD copies are deleted to free the
+ * its archive copies are CONFIRMED present, its bundler copies are deleted to free the
  * small fast disk quickly. The archive HEAD gate (inside `reclaim`) is the
- * critical safety guard: an SSD copy is NEVER deleted until the HDD copy is
- * confirmed (the gateway reads only the HDD).
+ * critical safety guard: an bundler copy is NEVER deleted until the archive copy is
+ * confirmed (the gateway reads only the archive).
  *
- * Deferral + reconciliation: if a copy for a bundle isn't on the HDD yet, that
+ * Deferral + reconciliation: if a copy for a bundle isn't on the archive yet, that
  * bundle is deferred. Two cursors keep a single deferred bundle from starving the
  * tail:
  *  - `scanCursor` advances over EVERY bundle examined (drives pagination), so we
@@ -655,14 +668,14 @@ export interface SsdReclaimSweepDeps {
  *
  * Crucially, every deferral also RE-ENQUEUES the missing archive-copy keys. The
  * archive-copy enqueues at ingest are best-effort, so one can be permanently
- * dropped (Redis blip / process death); without this re-enqueue the HDD copy
+ * dropped (Redis blip / process death); without this re-enqueue the archive copy
  * would never arrive, the hole would never resolve, and the persist cursor would
  * wedge forever (re-scanning the whole tail every run). The sweep is the only
  * place that re-detects the gap, so it closes the loop here.
  */
-export async function runSsdReclaimSweep(
-  deps: SsdReclaimSweepDeps
-): Promise<SsdReclaimSweepStats> {
+export async function runBundlerReclaimSweep(
+  deps: BundlerReclaimSweepDeps
+): Promise<BundlerReclaimSweepStats> {
   const {
     fetchPage,
     fetchItemIds,
@@ -768,7 +781,7 @@ export async function runSsdReclaimSweep(
     if (bundles.length < pageSize) break;
   }
 
-  const stats: SsdReclaimSweepStats = {
+  const stats: BundlerReclaimSweepStats = {
     bundlesSwept,
     payloadsDeleted,
     txDeleted,
@@ -779,9 +792,9 @@ export async function runSsdReclaimSweep(
     scannedThrough: scanCursor,
   };
 
-  logger.info("✅ Archive SSD cleanup complete", {
+  logger.info("✅ Archive bundler cleanup complete", {
     ...stats,
-    // deferredBundles > 0 means some bundles' HDD copies weren't confirmed yet;
+    // deferredBundles > 0 means some bundles' archive copies weren't confirmed yet;
     // their copies were re-enqueued (reEnqueuedKeys), the persisted cursor parks
     // at the first such hole and is retried next run (newer bundles were still
     // reclaimed this run — no head-of-line stall).
@@ -791,12 +804,12 @@ export async function runSsdReclaimSweep(
 }
 
 /**
- * Two-tier MinIO post-permanence SSD reclamation — DB/object-store binding.
+ * Two-tier MinIO post-permanence bundler reclamation — DB/object-store binding.
  *
  * Builds the real (knex + object-store + queue) dependencies and delegates the
- * cursor/deferral/reconciliation control flow to `runSsdReclaimSweep`.
+ * cursor/deferral/reconciliation control flow to `runBundlerReclaimSweep`.
  */
-async function cleanupSsdAfterArchive({
+async function cleanupBundlerAfterArchive({
   logger,
   knexClient,
   objectStore,
@@ -808,23 +821,23 @@ async function cleanupSsdAfterArchive({
   archiveObjectStore: ObjectStore;
 }): Promise<void> {
   const graceCutoff = new Date(
-    Date.now() - SSD_CLEANUP_GRACE_DAYS * 24 * 60 * 60 * 1000
+    Date.now() - BUNDLER_CLEANUP_GRACE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  logger.info("Archive SSD cleanup started", {
+  logger.info("Archive bundler cleanup started", {
     graceCutoff,
-    grace_days: SSD_CLEANUP_GRACE_DAYS,
+    grace_days: BUNDLER_CLEANUP_GRACE_DAYS,
   });
 
-  await runSsdReclaimSweep({
+  await runBundlerReclaimSweep({
     pageSize: PERMANENT_BUNDLE_BATCH_SIZE,
     logger,
     getCursor: async () => {
-      const stored = await getConfigValue(ARCHIVE_SSD_CURSOR_KEY);
+      const stored = await getConfigValue(ARCHIVE_BUNDLER_CURSOR_KEY);
       return stored ? (JSON.parse(stored) as ArchiveCleanupCursor) : undefined;
     },
     setCursor: (cursor) =>
-      setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(cursor)),
+      setConfigValue(ARCHIVE_BUNDLER_CURSOR_KEY, JSON.stringify(cursor)),
     fetchPage: async (scanCursor) =>
       knexClient(tableNames.permanentBundle)
         .select(
@@ -858,7 +871,7 @@ async function cleanupSsdAfterArchive({
       return items.map((item) => item.data_item_id);
     },
     reclaim: ({ planId, bundleId, dataItemIds }) =>
-      reclaimBundleFromSsd({
+      reclaimBundleFromBundler({
         objectStore,
         archiveObjectStore,
         planId,
@@ -893,16 +906,16 @@ export async function handler(eventPayload?: unknown) {
       objectStore,
       teardownComplete,
       // In archive mode the age-based pass handles only the filesystem tier; the
-      // SSD MinIO is reclaimed by the post-permanence sweep below.
+      // bundler MinIO is reclaimed by the post-permanence sweep below.
       skipMinioCleanup: archiveEnabled,
     });
     await teardownComplete.promise;
 
     if (archiveEnabled && archiveObjectStore) {
-      await cleanupSsdAfterArchive({
+      await cleanupBundlerAfterArchive({
         logger: defaultLogger.child({
           job: jobLabels.cleanupFs,
-          phase: "archive-ssd",
+          phase: "archive-bundler",
         }),
         knexClient,
         objectStore,

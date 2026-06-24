@@ -39,7 +39,7 @@ export type EnqueuedOffsetsBatch = {
   offsets: DataItemOffsetsInfo[];
 };
 // Copy one object-store key (raw-data-item/{id} or bundle-payload/{planId}) from
-// the primary (SSD) store to the archive (HDD) store. The handler no-ops when
+// the primary (bundler) store to the archive store. The handler no-ops when
 // the archive store is not configured.
 export type ArchiveCopyMessage = {
   key: string;
