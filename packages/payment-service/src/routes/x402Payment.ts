@@ -29,6 +29,7 @@ import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
+import { sendX402TopUpSlackMessage } from "../utils/slack";
 
 /**
  * Process an x402 payment
@@ -306,6 +307,17 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
         wincCredited,
         paymentId: payment.id,
       });
+
+      // Best-effort Slack notification (never delay/break the payment response).
+      void sendX402TopUpSlackMessage({
+        address,
+        payerAddress: authorization.from,
+        usdcAmount: authorization.value,
+        winstonCreditAmount: wincCredited,
+        network,
+        txHash: settlement.transactionHash!,
+        mode: "topup",
+      });
     } else {
       // Hybrid: Reserve for data item, credit excess
       wincReserved = winstonCost;
@@ -334,6 +346,17 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
           address,
           wincCredited,
           paymentId: payment.id,
+        });
+
+        // Best-effort Slack notification for the credited excess.
+        void sendX402TopUpSlackMessage({
+          address,
+          payerAddress: authorization.from,
+          usdcAmount: authorization.value,
+          winstonCreditAmount: wincCredited,
+          network,
+          txHash: settlement.transactionHash!,
+          mode: "hybrid",
         });
       }
     }
