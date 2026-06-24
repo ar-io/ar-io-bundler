@@ -20,34 +20,29 @@
 // dotenv the same way; PM2's env_file injection is not reliable enough, so the
 // worker process must self-load its env first — otherwise the DB connection
 // falls back to user "postgres" (auth failure) and TURBO_JWK_FILE is missing.
-import { config as loadEnvFile } from "dotenv";
-import * as path from "path";
-loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
-
 import { Job } from "bullmq";
+import { config as loadEnvFile } from "dotenv";
+import { knex as knexFactory } from "knex";
+import * as path from "path";
 
 import { defaultArchitecture } from "../arch/architecture";
-import { PostgresDatabase } from "../arch/db/postgres";
-import { knex as knexFactory } from "knex";
-
 import { getWriterConfig } from "../arch/db/knexConfig";
+import { PostgresDatabase } from "../arch/db/postgres";
 import { TurboPaymentService } from "../arch/payment";
 import {
   ArchiveCopyMessage,
+  EnqueueFinalizeUpload,
   EnqueuedNewDataItem,
   EnqueuedOffsetsBatch,
-  EnqueueFinalizeUpload,
   RefundBalanceMessage,
   upsertRepeatable,
 } from "../arch/queues";
 import { jobLabels } from "../constants";
-import { ChunkHeader } from "../types/types";
-import { W } from "../types/winston";
 import { archiveCopyHandler } from "../jobs/archive-copy";
 import { broadcastChunkHandler } from "../jobs/broadcast-chunks";
 import { handler as cleanupFsHandler } from "../jobs/cleanup-fs";
-import { finalizeMultipartUpload } from "../routes/multiPartUploads";
-import { UnbundleBDIMessageBody, unbundleBDIBatchHandler } from "../jobs/unbundle-bdi";
+import { ensurePartitionsHandler } from "../jobs/ensurePartitions";
+import { newDataItemBatchInsertHandler } from "../jobs/newDataItemBatchInsert";
 import { opticalPostHandler } from "../jobs/optical-post";
 import { planBundleHandler } from "../jobs/plan";
 import { postBundleHandler } from "../jobs/post";
@@ -55,11 +50,19 @@ import { prepareBundleHandler } from "../jobs/prepare";
 import { putOffsetsHandler } from "../jobs/putOffsets";
 import { redrivePostedHandler } from "../jobs/redrive-posted";
 import { seedBundleHandler } from "../jobs/seed";
+import {
+  UnbundleBDIMessageBody,
+  unbundleBDIBatchHandler,
+} from "../jobs/unbundle-bdi";
 import { verifyBundleHandler } from "../jobs/verify";
-import { newDataItemBatchInsertHandler } from "../jobs/newDataItemBatchInsert";
 import logger from "../logger";
-import { createWorker, setupGracefulShutdown } from "./workerUtils";
+import { finalizeMultipartUpload } from "../routes/multiPartUploads";
+import { ChunkHeader } from "../types/types";
+import { W } from "../types/winston";
 import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
+import { createWorker, setupGracefulShutdown } from "./workerUtils";
+
+loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
 
 const knex = knexFactory(getWriterConfig());
 const database = new PostgresDatabase();
@@ -82,7 +85,7 @@ const planWorker = createWorker(
   async () => {
     await planBundleHandler(database);
   },
-  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "1", 10) }
+  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "1", 10) },
 );
 
 // Prepare Bundle Worker - Prepares bundles for posting
@@ -95,7 +98,7 @@ const prepareWorker = createWorker<{ planId: string }>(
       cacheService: defaultArchitecture.cacheService,
     });
   },
-  { concurrency: parseInt(process.env.PREPARE_WORKER_CONCURRENCY || "3", 10) }
+  { concurrency: parseInt(process.env.PREPARE_WORKER_CONCURRENCY || "3", 10) },
 );
 
 // Post Bundle Worker - Posts bundles to Arweave
@@ -108,7 +111,7 @@ const postWorker = createWorker<{ planId: string }>(
       arweaveGateway: defaultArchitecture.arweaveGateway,
     });
   },
-  { concurrency: parseInt(process.env.POST_WORKER_CONCURRENCY || "2", 10) }
+  { concurrency: parseInt(process.env.POST_WORKER_CONCURRENCY || "2", 10) },
 );
 
 // Seed Bundle Worker - Seeds bundles to additional gateways
@@ -120,7 +123,7 @@ const seedWorker = createWorker<{ planId: string }>(
       objectStore: defaultArchitecture.objectStore,
     });
   },
-  { concurrency: 2 }
+  { concurrency: 2 },
 );
 
 // Verify Bundle Worker - Verifies bundle posting
@@ -133,7 +136,7 @@ const verifyWorker = createWorker<{ planId: string }>(
       arweaveGateway: defaultArchitecture.arweaveGateway,
     });
   },
-  { concurrency: parseInt(process.env.VERIFY_WORKER_CONCURRENCY || "3", 10) }
+  { concurrency: parseInt(process.env.VERIFY_WORKER_CONCURRENCY || "3", 10) },
 );
 
 // Put Offsets Worker - Writes offsets to PostgreSQL
@@ -142,7 +145,7 @@ const putOffsetsWorker = createWorker<EnqueuedOffsetsBatch>(
   async (job: Job<EnqueuedOffsetsBatch>) => {
     await putOffsetsHandler(job.data.offsets, knex, logger);
   },
-  { concurrency: 5 }
+  { concurrency: 5 },
 );
 
 // New Data Item Worker - Batch inserts new data items
@@ -155,7 +158,7 @@ const newDataItemWorker = createWorker<EnqueuedNewDataItem>(
       uploadDatabase: database,
     });
   },
-  { concurrency: 5 }
+  { concurrency: 5 },
 );
 
 // Optical Post Worker - Posts to optical bridge
@@ -168,7 +171,7 @@ const opticalWorker = createWorker<DatedSignedDataItemHeader>(
       logger,
     });
   },
-  { concurrency: 5 }
+  { concurrency: 5 },
 );
 
 // Unbundle BDI Worker - Unbundles nested bundle data items
@@ -178,10 +181,10 @@ const unbundleWorker = createWorker<UnbundleBDIMessageBody>(
     await unbundleBDIBatchHandler(
       [{ Body: JSON.stringify(job.data) } as any],
       logger,
-      defaultArchitecture.cacheService
+      defaultArchitecture.cacheService,
     );
   },
-  { concurrency: 2 }
+  { concurrency: 2 },
 );
 
 // Finalize Upload Worker - Finalizes multipart uploads
@@ -201,7 +204,7 @@ const finalizeWorker = createWorker<EnqueueFinalizeUpload>(
       paidBy: job.data.paidBy,
     });
   },
-  { concurrency: 3 }
+  { concurrency: 3 },
 );
 
 // Cleanup FS Worker - Cleans up temporary filesystem artifacts
@@ -210,7 +213,7 @@ const cleanupWorker = createWorker(
   async () => {
     await cleanupFsHandler();
   },
-  { concurrency: 1 }
+  { concurrency: 1 },
 );
 
 // Redrive Posted Worker - Re-drives bundles stranded in posted_bundle (seed
@@ -222,7 +225,7 @@ const redrivePostedWorker = createWorker(
   async () => {
     await redrivePostedHandler({ database });
   },
-  { concurrency: 1 }
+  { concurrency: 1 },
 );
 
 // Refund Balance Worker - durable retry for balance refunds. When a refund
@@ -242,10 +245,10 @@ const refundBalanceWorker = createWorker<RefundBalanceMessage>(
         dataItemId,
         signatureType,
       },
-      { throwOnFailure: true }
+      { throwOnFailure: true },
     );
   },
-  { concurrency: 3 }
+  { concurrency: 3 },
 );
 
 // Broadcast Chunks Worker — posts one staged chunk to an AR.IO distributor node
@@ -261,9 +264,9 @@ const broadcastChunksWorker = createWorker<ChunkHeader>(
   {
     concurrency: parseInt(
       process.env.BROADCAST_CHUNKS_WORKER_CONCURRENCY || "10",
-      10
+      10,
     ),
-  }
+  },
 );
 
 // Archive Copy Worker — mirrors one served object (raw-data-item or
@@ -284,7 +287,18 @@ const archiveCopyWorker = createWorker<ArchiveCopyMessage>(
     concurrency:
       Number.parseInt(process.env.ARCHIVE_COPY_WORKER_CONCURRENCY ?? "", 10) ||
       3,
-  }
+  },
+);
+
+// Ensure Partitions Worker — pre-creates upcoming permanent_data_items
+// half-month partitions so live rows never fall into the DEFAULT partition.
+// Idempotent DDL; concurrency 1 (overlap guard, mirrors the other schedulers).
+const ensurePartitionsWorker = createWorker(
+  jobLabels.ensurePartitions,
+  async () => {
+    await ensurePartitionsHandler({ knex });
+  },
+  { concurrency: 1 },
 );
 
 const allWorkers = [
@@ -303,6 +317,7 @@ const allWorkers = [
   refundBalanceWorker,
   broadcastChunksWorker,
   archiveCopyWorker,
+  ensurePartitionsWorker,
 ];
 
 setupGracefulShutdown(allWorkers, logger);
@@ -329,6 +344,10 @@ const PLAN_SCHEDULE_CRON = process.env.PLAN_SCHEDULE_CRON ?? "*/5 * * * *";
 const CLEANUP_SCHEDULE_CRON = process.env.CLEANUP_SCHEDULE_CRON ?? "0 2 * * *";
 const POSTED_REDRIVE_SCHEDULE_CRON =
   process.env.POSTED_REDRIVE_SCHEDULE_CRON ?? "*/10 * * * *";
+// Pre-create upcoming permanent_data_items partitions. Daily is plenty (it keeps
+// a 12-month lead by default); set "" to disable.
+const ENSURE_PARTITIONS_SCHEDULE_CRON =
+  process.env.ENSURE_PARTITIONS_SCHEDULE_CRON ?? "0 3 * * *";
 
 async function registerJobSchedulers() {
   // planId is cosmetic — planBundleHandler ignores job data and scans the DB.
@@ -336,13 +355,13 @@ async function registerJobSchedulers() {
     jobLabels.planBundle,
     "plan-bundle-scheduler",
     PLAN_SCHEDULE_CRON,
-    { planId: "scheduler" }
+    { planId: "scheduler" },
   );
   await upsertRepeatable(
     jobLabels.cleanupFs,
     "cleanup-fs-scheduler",
     CLEANUP_SCHEDULE_CRON,
-    {}
+    {},
   );
   // Re-driver for bundles stranded in posted_bundle (seed exhausted attempts).
   // redrivePostedHandler ignores job data and scans the DB itself.
@@ -350,12 +369,20 @@ async function registerJobSchedulers() {
     jobLabels.redrivePosted,
     "redrive-posted-scheduler",
     POSTED_REDRIVE_SCHEDULE_CRON,
-    {}
+    {},
+  );
+  // ensurePartitionsHandler ignores job data; it derives the window from now().
+  await upsertRepeatable(
+    jobLabels.ensurePartitions,
+    "ensure-partitions-scheduler",
+    ENSURE_PARTITIONS_SCHEDULE_CRON,
+    {},
   );
   logger.info("Registered BullMQ job schedulers", {
     planBundle: PLAN_SCHEDULE_CRON || "(disabled)",
     cleanupFs: CLEANUP_SCHEDULE_CRON || "(disabled)",
     redrivePosted: POSTED_REDRIVE_SCHEDULE_CRON || "(disabled)",
+    ensurePartitions: ENSURE_PARTITIONS_SCHEDULE_CRON || "(disabled)",
   });
 }
 
@@ -387,7 +414,7 @@ async function registerJobSchedulersWithRetry(attempt = 0): Promise<void> {
       logger.error(
         "Giving up registering BullMQ job schedulers after max retries; " +
           "restart upload-workers to re-attempt (plan/cleanup will not run until then)",
-        { maxRetries: SCHEDULER_REGISTRATION_MAX_RETRIES }
+        { maxRetries: SCHEDULER_REGISTRATION_MAX_RETRIES },
       );
     }
   }
