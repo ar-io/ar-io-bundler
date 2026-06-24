@@ -287,6 +287,86 @@ inert) rather than half-wiring it.
 
    To return to single-MinIO behavior, unset the `ARCHIVE_*` vars and restart.
 
+## Observability: scraping MinIO metrics
+
+Both MinIO tiers expose MinIO's **native Prometheus endpoint** (no sidecar
+exporter). The most useful metrics for the two-tier setup:
+
+- **Disk fill** (the alert that matters for the HDD): `minio_cluster_capacity_usable_free_bytes`
+  / `minio_cluster_capacity_usable_total_bytes`, `minio_cluster_usage_total_bytes`.
+- **90-day ILM actually running**: `minio_node_ilm_expiry_pending_tasks`,
+  `minio_node_ilm_expiry_missed_tasks`, `minio_node_ilm_versions_scanned` — confirms
+  the native expiry rule (§4) is doing its job on the HDD bucket.
+- **Object-store health for the pipeline / gateway reads**: `minio_s3_requests_total`,
+  `minio_s3_requests_4xx_errors_total`, `minio_s3_requests_errors_total`,
+  `minio_s3_requests_inflight_total`, `minio_s3_traffic_{received,sent}_bytes`.
+- **Availability**: `minio_cluster_health_status`, `minio_cluster_drive_online_total` /
+  `_offline_total`.
+
+### Auth
+
+The endpoint is **auth-gated by default** (`MINIO_PROMETHEUS_AUTH_TYPE=jwt`) — an
+anonymous scrape returns **403**. Mint a long-lived bearer token (the scraper sends
+it as `Authorization: Bearer <token>`):
+
+```bash
+docker exec ar-io-bundler-minio sh -c \
+  'mc alias set m http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null \
+   && mc admin prometheus generate m cluster'
+# prints a ready scrape_config incl. bearer_token + metrics_path
+```
+
+**One token authenticates both tiers** — the SSD and HDD MinIOs share the same root
+secret key, which is what signs the JWT. (Alternatively, set
+`MINIO_PROMETHEUS_AUTH_TYPE=public` on both containers to drop auth entirely and rely
+on the network allowlist below.)
+
+### Exposure (nginx, allowlisted)
+
+MinIO binds its API+metrics to the **private network** (`MINIO_S3_BIND_IP`, not a
+public interface), so the metrics are surfaced through the co-located nginx on `:443`,
+restricted to scraper/admin source IPs. Two snippets implement this:
+
+- `infrastructure/nginx/snippets/metrics-allowlist.conf` — the source-IP allowlist
+  (kept in sync with the ufw CIDR policy; includes the Tailscale `100.64.0.0/10` range
+  for admin scraping from a tailnet machine, plus loopback).
+- `infrastructure/nginx/snippets/bundler-metrics.conf` — two `location` blocks proxying
+  to the SSD (`:9000`) and HDD (`:9002`) MinIO metrics paths; included in the unified
+  server block. The bearer token is forwarded to MinIO unchanged, so requests are gated
+  by **both** the CIDR allowlist (nginx 403) and the token (MinIO 403).
+
+Resulting scrape paths (scheme `https`): `/minio-metrics/ssd/cluster` and
+`/minio-metrics/hdd/cluster` (also `/node`, `/bucket`, `/resource`).
+
+> **Per-deployment value:** `bundler-metrics.conf` hard-codes the MinIO private-net
+> upstream IPs/ports (`10.83.0.4:9000` SSD, `:9002` HDD). Adjust per box.
+
+### Collector job (OTel / Prometheus)
+
+```yaml
+- job_name: bundler_minio_ssd
+  scheme: https
+  metrics_path: /minio-metrics/ssd/cluster
+  bearer_token: <token from mc admin prometheus generate>
+  static_configs: [{ targets: ['turbo.services.ar-io.dev'], labels: { tier: ssd } }]
+- job_name: bundler_minio_hdd
+  scheme: https
+  metrics_path: /minio-metrics/hdd/cluster
+  bearer_token: <same token>
+  static_configs: [{ targets: ['turbo.services.ar-io.dev'], labels: { tier: hdd } }]
+```
+
+### Scraping from a local tailnet machine
+
+Pin the hostname to the box's **Tailscale IP** so your source is in the allowlisted
+`100.64.0.0/10` range while still presenting valid SNI for the TLS cert:
+
+```bash
+curl --resolve turbo.services.ar-io.dev:443:<box-tailscale-ip> \
+  -H "Authorization: Bearer <token>" \
+  https://turbo.services.ar-io.dev/minio-metrics/ssd/cluster
+```
+
 ## Open items to confirm during implementation
 
 1. Multipart-finalize path: does it funnel through `new-data-item`, or is a second
