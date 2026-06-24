@@ -70,13 +70,13 @@ export class NullableContentTypeMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.string(columnNames.contentType).nullable();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           (table) => {
             table.string(columnNames.contentType).nullable().index();
-          }
+          },
         );
       },
     });
@@ -93,13 +93,13 @@ export class NullableContentTypeMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.dropColumn(columnNames.contentType);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           (table) => {
             table.dropColumn(columnNames.contentType);
-          }
+          },
         );
       },
     });
@@ -131,7 +131,7 @@ export class MultiPartMigrator extends Migrator {
               .timestamp(columnNames.expiresAt, this.noTimeZone)
               .notNullable()
               .defaultTo(this.knex.raw("now() + interval '1 day'")); // 24 hours
-          }
+          },
         );
 
         await this.knex.schema.createTable(
@@ -152,7 +152,7 @@ export class MultiPartMigrator extends Migrator {
               .notNullable()
               .defaultTo(this.knex.fn.now());
             table.string(columnNames.dataItemId).notNullable().index();
-          }
+          },
         );
       },
     });
@@ -163,10 +163,10 @@ export class MultiPartMigrator extends Migrator {
       name: "rollback from multipart upload",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         );
         await this.knex.schema.dropTableIfExists(
-          tableNames.finishedMultiPartUpload
+          tableNames.finishedMultiPartUpload,
         );
       },
     });
@@ -227,7 +227,7 @@ export class DedicatedBundlesMigrator extends Migrator {
             table
               .string(columnNames.premiumFeatureType)
               .defaultTo(defaultPremiumFeatureType);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
@@ -235,7 +235,7 @@ export class DedicatedBundlesMigrator extends Migrator {
             table
               .string(columnNames.premiumFeatureType)
               .defaultTo(defaultPremiumFeatureType);
-          }
+          },
         );
       },
     });
@@ -252,13 +252,13 @@ export class DedicatedBundlesMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.dropColumn(columnNames.premiumFeatureType);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           (table) => {
             table.dropColumn(columnNames.premiumFeatureType);
-          }
+          },
         );
       },
     });
@@ -281,7 +281,7 @@ export class SignatureFromDbMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.binary(columnNames.signature, maxSignatureLength).nullable();
-          }
+          },
         );
         // Don't include on permanent data item
       },
@@ -299,7 +299,7 @@ export class SignatureFromDbMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.dropColumn(columnNames.signature);
-          }
+          },
         );
       },
     });
@@ -362,7 +362,7 @@ export class MultiPartFailureReasonMigrator extends Migrator {
           tableNames.inFlightMultiPartUpload,
           async (table) => {
             table.string(columnNames.failedReason).nullable();
-          }
+          },
         );
       },
     });
@@ -376,7 +376,7 @@ export class MultiPartFailureReasonMigrator extends Migrator {
           tableNames.inFlightMultiPartUpload,
           (table) => {
             table.dropColumn(columnNames.failedReason);
-          }
+          },
         );
       },
     });
@@ -396,7 +396,7 @@ export class FinishedMultiPartFailureReasonMigrator extends Migrator {
           tableNames.finishedMultiPartUpload,
           async (table) => {
             table.string(columnNames.failedReason).nullable();
-          }
+          },
         );
       },
     });
@@ -410,7 +410,7 @@ export class FinishedMultiPartFailureReasonMigrator extends Migrator {
           tableNames.finishedMultiPartUpload,
           (table) => {
             table.dropColumn(columnNames.failedReason);
-          }
+          },
         );
       },
     });
@@ -430,19 +430,19 @@ export class DeadlineHeightMigrator extends Migrator {
           tableNames.newDataItem,
           async (table) => {
             table.string(columnNames.deadlineHeight).nullable();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.plannedDataItem,
           async (table) => {
             table.string(columnNames.deadlineHeight).nullable();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           async (table) => {
             table.string(columnNames.deadlineHeight).nullable();
-          }
+          },
         );
       },
     });
@@ -459,13 +459,13 @@ export class DeadlineHeightMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.dropColumn(columnNames.deadlineHeight);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           (table) => {
             table.dropColumn(columnNames.deadlineHeight);
-          }
+          },
         );
       },
     });
@@ -491,7 +491,7 @@ export class FailedDataItemMigrator extends Migrator {
               .defaultTo(this.knex.fn.now())
               .index();
             table.string(columnNames.failedReason).notNullable().index();
-          }
+          },
         );
       },
     });
@@ -529,7 +529,7 @@ export class BumpFailedBundlesCharLimitMigrator extends Migrator {
               .string(columnNames.failedBundles, failedBundleCSVColumnLength)
               .nullable()
               .alter();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.failedDataItem,
@@ -538,7 +538,7 @@ export class BumpFailedBundlesCharLimitMigrator extends Migrator {
               .string(columnNames.failedBundles, failedBundleCSVColumnLength)
               .nullable()
               .alter();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
@@ -547,7 +547,7 @@ export class BumpFailedBundlesCharLimitMigrator extends Migrator {
               .string(columnNames.failedBundles, failedBundleCSVColumnLength)
               .nullable()
               .alter();
-          }
+          },
         );
       },
     });
@@ -564,13 +564,13 @@ export class BumpFailedBundlesCharLimitMigrator extends Migrator {
           tableNames.plannedDataItem,
           (table) => {
             table.string(columnNames.failedBundles).nullable().alter();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.permanentDataItem,
           (table) => {
             table.string(columnNames.failedBundles).nullable().alter();
-          }
+          },
         );
       },
     });
@@ -773,151 +773,151 @@ export class PartitionedPermanentDataItemsMigrator extends Migrator {
       name: "rollback from partitioned permanent data items",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_pre_12_2023"
+          "permanent_data_items_pre_12_2023",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_12_2023_01"
+          "permanent_data_items_12_2023_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_12_2023_02"
+          "permanent_data_items_12_2023_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_01_2024_01"
+          "permanent_data_items_01_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_01_2024_02"
+          "permanent_data_items_01_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_02_2024_01"
+          "permanent_data_items_02_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_02_2024_02"
+          "permanent_data_items_02_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_03_2024_01"
+          "permanent_data_items_03_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_03_2024_02"
+          "permanent_data_items_03_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_04_2024_01"
+          "permanent_data_items_04_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_04_2024_02"
+          "permanent_data_items_04_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_05_2024_01"
+          "permanent_data_items_05_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_05_2024_02"
+          "permanent_data_items_05_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_06_2024_01"
+          "permanent_data_items_06_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_06_2024_02"
+          "permanent_data_items_06_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_07_2024_01"
+          "permanent_data_items_07_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_07_2024_02"
+          "permanent_data_items_07_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_08_2024_01"
+          "permanent_data_items_08_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_08_2024_02"
+          "permanent_data_items_08_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_09_2024_01"
+          "permanent_data_items_09_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_09_2024_02"
+          "permanent_data_items_09_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_10_2024_01"
+          "permanent_data_items_10_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_10_2024_02"
+          "permanent_data_items_10_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_11_2024_01"
+          "permanent_data_items_11_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_11_2024_02"
+          "permanent_data_items_11_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_12_2024_01"
+          "permanent_data_items_12_2024_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_12_2024_02"
+          "permanent_data_items_12_2024_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_01_2025_01"
+          "permanent_data_items_01_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_01_2025_02"
+          "permanent_data_items_01_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_02_2025_01"
+          "permanent_data_items_02_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_02_2025_02"
+          "permanent_data_items_02_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_03_2025_01"
+          "permanent_data_items_03_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_03_2025_02"
+          "permanent_data_items_03_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_04_2025_01"
+          "permanent_data_items_04_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_04_2025_02"
+          "permanent_data_items_04_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_05_2025_01"
+          "permanent_data_items_05_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_05_2025_02"
+          "permanent_data_items_05_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_06_2025_01"
+          "permanent_data_items_06_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_06_2025_02"
+          "permanent_data_items_06_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_07_2025_01"
+          "permanent_data_items_07_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_07_2025_02"
+          "permanent_data_items_07_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_08_2025_01"
+          "permanent_data_items_08_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_08_2025_02"
+          "permanent_data_items_08_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_09_2025_01"
+          "permanent_data_items_09_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_09_2025_02"
+          "permanent_data_items_09_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_10_2025_01"
+          "permanent_data_items_10_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_10_2025_02"
+          "permanent_data_items_10_2025_02",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_11_2025_01"
+          "permanent_data_items_11_2025_01",
         );
         await this.knex.schema.dropTableIfExists(
-          "permanent_data_items_11_2025_02"
+          "permanent_data_items_11_2025_02",
         );
         await this.knex.schema.dropTableIfExists("permanent_data_items_future");
       },
@@ -946,11 +946,11 @@ export async function backfillPermanentDataItems(knex: Knex) {
     "true"
       ? Array.from(
           { length: endBlock - startBlock + 1 },
-          (_, i) => i + startBlock
+          (_, i) => i + startBlock,
         )
       : (
           await knex<DeprecatedPermanentDataItemDBResult>(
-            tableNames.permanentDataItem
+            tableNames.permanentDataItem,
           ).distinct(columnNames.blockHeight)
         )
           .map((row) => Number(row.block_height))
@@ -958,14 +958,14 @@ export async function backfillPermanentDataItems(knex: Knex) {
           // Filter out blocks that are are outside the range
           .filter(
             (block_height) =>
-              block_height >= startBlock && block_height <= endBlock
+              block_height >= startBlock && block_height <= endBlock,
           );
 
   for (let i = 0; i < heightsToBackfill.length; i++) {
     const block_height = heightsToBackfill[i];
 
     const permanentDataItems = await knex<DeprecatedPermanentDataItemDBResult>(
-      tableNames.permanentDataItem
+      tableNames.permanentDataItem,
     ).where(columnNames.blockHeight, `${block_height}`);
 
     if (permanentDataItems.length === 0) {
@@ -981,7 +981,7 @@ export async function backfillPermanentDataItems(knex: Knex) {
         const maxAttempts = batch.length;
 
         async function performInsert(
-          batch: DeprecatedPermanentDataItemDBResult[]
+          batch: DeprecatedPermanentDataItemDBResult[],
         ): Promise<void> {
           try {
             await trx.batchInsert(
@@ -990,7 +990,7 @@ export async function backfillPermanentDataItems(knex: Knex) {
                 ...row,
                 block_height: Number(row.block_height),
                 deadline_height: Number(row.deadline_height),
-              }))
+              })),
             );
           } catch (error) {
             attempts++;
@@ -1001,7 +1001,7 @@ export async function backfillPermanentDataItems(knex: Knex) {
             }
 
             const failedId = (error as PostgresError).detail?.match(
-              /\(data_item_id\)=\(([^)]+)\)/
+              /\(data_item_id\)=\(([^)]+)\)/,
             )?.[1];
 
             if (
@@ -1011,13 +1011,13 @@ export async function backfillPermanentDataItems(knex: Knex) {
               isValidArweaveBase64URL(failedId)
             ) {
               const batchWithoutFailedId = batch.filter(
-                (row) => row.data_item_id !== failedId
+                (row) => row.data_item_id !== failedId,
               );
 
               if (batchWithoutFailedId.length === batch.length) {
                 logger.error(
                   "Failed id not found in batch to remove and proceed",
-                  failedId
+                  failedId,
                 );
                 throw error;
               }
@@ -1033,7 +1033,7 @@ export async function backfillPermanentDataItems(knex: Knex) {
     }
 
     logger.info(
-      `Backfilled ${permanentDataItems.length} permanent data items for block height ${block_height}`
+      `Backfilled ${permanentDataItems.length} permanent data items for block height ${block_height}`,
     );
   }
 }
@@ -1075,7 +1075,7 @@ export class BackfillPermanentDataItemsMigrator extends Migrator {
             table.string(columnNames.contentType).nullable();
             table.string(columnNames.premiumFeatureType).defaultTo("default");
             table.string(columnNames.deadlineHeight).nullable();
-          }
+          },
         );
       },
     });
@@ -1197,7 +1197,7 @@ export class PostedBundleRedriveMigrator extends Migrator {
               .timestamp(columnNames.createdAt, this.noTimeZone)
               .notNullable()
               .defaultTo(this.knex.fn.now());
-          }
+          },
         );
       },
     });
@@ -1208,7 +1208,7 @@ export class PostedBundleRedriveMigrator extends Migrator {
       name: "rollback from posted bundle redrive tracking",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          tableNames.postedBundleRedrive
+          tableNames.postedBundleRedrive,
         );
       },
     });
@@ -1255,6 +1255,68 @@ export class X402PaymentsMigrator extends Migrator {
       name: "rollback from x402 payments table",
       operation: async () => {
         await this.knex.schema.dropTableIfExists("x402_payments");
+      },
+    });
+  }
+}
+
+export class PostedDateIndexAndOwnerDedupeMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  private postedDateIndex = (table: string) =>
+    `${table}_${columnNames.postedDate}_index`;
+
+  // (item 5) Drop the duplicate single-column index on
+  // new_data_item(owner_public_address) added by the admin-dashboard migration —
+  // it duplicates the earlier CONCURRENT index
+  // new_data_item_owner_public_address_index, so it is pure write/storage
+  // overhead on the hottest-written table.
+  // (item 6) Add posted_date indexes on posted_bundle and seeded_bundle to back
+  // the `ORDER BY posted_date ... LIMIT FOR UPDATE` scans
+  // (getStalePostedBundles / getSeededBundles) — cheap insurance for when those
+  // transient tables back up (e.g. a seeding/permanence stall).
+  // All done CONCURRENTLY to avoid table locks (migration runs outside a txn).
+  public migrate() {
+    return this.operate({
+      name: "drop duplicate owner index + add posted_date indexes",
+      operation: async () => {
+        await this.knex.raw(
+          `DROP INDEX CONCURRENTLY IF EXISTS idx_new_data_items_owner;`,
+        );
+        await this.knex.raw(
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${this.postedDateIndex(
+            tableNames.postedBundle,
+          )} ON ${tableNames.postedBundle} (${columnNames.postedDate});`,
+        );
+        await this.knex.raw(
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${this.postedDateIndex(
+            tableNames.seededBundle,
+          )} ON ${tableNames.seededBundle} (${columnNames.postedDate});`,
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback drop duplicate owner index + posted_date indexes",
+      operation: async () => {
+        await this.knex.raw(
+          `DROP INDEX CONCURRENTLY IF EXISTS ${this.postedDateIndex(
+            tableNames.postedBundle,
+          )};`,
+        );
+        await this.knex.raw(
+          `DROP INDEX CONCURRENTLY IF EXISTS ${this.postedDateIndex(
+            tableNames.seededBundle,
+          )};`,
+        );
+        // Restore the (redundant) duplicate index to return to the prior state.
+        await this.knex.raw(
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_new_data_items_owner ON ${tableNames.newDataItem} (${columnNames.owner});`,
+        );
       },
     });
   }

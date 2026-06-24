@@ -122,7 +122,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async insertNewDataItem(
-    newDataItem: PostedNewDataItem
+    newDataItem: PostedNewDataItem,
   ): Promise<void> {
     const { signature, ...restOfNewDataItem } = newDataItem;
     this.log.debug("Inserting new data item...", {
@@ -137,7 +137,7 @@ export class PostgresDatabase implements Database {
 
     try {
       await this.writer(tableNames.newDataItem).insert(
-        this.newDataItemToDbInsert(newDataItem)
+        this.newDataItemToDbInsert(newDataItem),
       );
     } catch (error) {
       if (
@@ -164,7 +164,7 @@ export class PostgresDatabase implements Database {
   ] as const;
 
   public async getExistingDataItemIds(
-    dataItemIds: TransactionId[]
+    dataItemIds: TransactionId[],
   ): Promise<Set<TransactionId>> {
     const [
       existingNewIds,
@@ -176,18 +176,18 @@ export class PostgresDatabase implements Database {
         this.reader<DataItemDbResults>(tableName)
           .whereIn(columnNames.dataItemId, dataItemIds)
           .andWhereRaw(
-            `${columnNames.uploadedDate} > NOW() - interval '30 days'`
+            `${columnNames.uploadedDate} > NOW() - interval '30 days'`,
           )
           .select(columnNames.dataItemId)
-          .then((results) => results.map((r) => r.data_item_id))
-      )
+          .then((results) => results.map((r) => r.data_item_id)),
+      ),
     );
 
     // Delete any failed data items, as this read is checking before a re-insert
     if (existingFailedIds.length > 0) {
       this.log.warn(
         "Data items already exist in database as failed! Removing from database to retry...",
-        { existingFailedIds }
+        { existingFailedIds },
       );
       await this.writer(tableNames.failedDataItem)
         .whereIn(columnNames.dataItemId, existingFailedIds)
@@ -202,7 +202,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async insertNewDataItemBatch(
-    dataItemBatch: PostedNewDataItem[]
+    dataItemBatch: PostedNewDataItem[],
   ): Promise<void> {
     this.log.debug("Inserting new data item batch...", {
       dataItemBatch,
@@ -224,34 +224,34 @@ export class PostgresDatabase implements Database {
 
     // Check if any data items already exist in the database
     const existingDataItemIds = await this.getExistingDataItemIds(
-      dataItemBatch.map((newDataItem) => newDataItem.dataItemId)
+      dataItemBatch.map((newDataItem) => newDataItem.dataItemId),
     );
     if (existingDataItemIds.size > 0) {
       this.log.warn(
         "Data items already exist in database! Removing from batch insert...",
         {
           existingDataItemIds: Array.from(existingDataItemIds),
-        }
+        },
       );
       MetricRegistry.duplicateDataItemsFoundFromDatabaseReader.inc();
 
       dataItemBatch = dataItemBatch.filter(
-        (newDataItem) => !existingDataItemIds.has(newDataItem.dataItemId)
+        (newDataItem) => !existingDataItemIds.has(newDataItem.dataItemId),
       );
     }
 
     const performInsert: (
-      dataItemInserts: NewDataItemDBInsert[]
+      dataItemInserts: NewDataItemDBInsert[],
     ) => Promise<void> = async (dataItemInserts: NewDataItemDBInsert[]) => {
       try {
         await this.writer.batchInsert<NewDataItemDBInsert, NewDataItemDBResult>(
           tableNames.newDataItem,
-          dataItemInserts
+          dataItemInserts,
         );
       } catch (error) {
         if (isPostgresError(error)) {
           const failedId = error.detail.match(
-            /\(data_item_id\)=\(([^)]+)\)/
+            /\(data_item_id\)=\(([^)]+)\)/,
           )?.[1];
 
           if (
@@ -264,13 +264,13 @@ export class PostgresDatabase implements Database {
               {
                 error,
                 failedId,
-              }
+              },
             );
             MetricRegistry.primaryKeyErrorsEncounteredOnNewDataItemBatchInsert.inc();
 
             // Remove failed data item from batch and recurse to try again
             const batchExcludingFailedDataItem = dataItemInserts.filter(
-              (insert) => insert.data_item_id !== failedId
+              (insert) => insert.data_item_id !== failedId,
             );
 
             if (
@@ -282,14 +282,14 @@ export class PostgresDatabase implements Database {
                   error,
                   failedId,
                   dataItemIds: dataItemBatch.map((d) => d.dataItemId),
-                }
+                },
               );
               throw error;
             }
 
             if (batchExcludingFailedDataItem.length === 0) {
               this.log.warn(
-                "Data Item Batch is empty! No more work left to do in this job -- exiting..."
+                "Data Item Batch is empty! No more work left to do in this job -- exiting...",
               );
               return;
             }
@@ -308,7 +308,7 @@ export class PostgresDatabase implements Database {
 
     // Insert new data items
     const dataItemInserts = dataItemBatch.map((newDataItem) =>
-      this.newDataItemToDbInsert(newDataItem)
+      this.newDataItemToDbInsert(newDataItem),
     );
     await performInsert(dataItemInserts);
   }
@@ -363,11 +363,21 @@ export class PostgresDatabase implements Database {
         // plan job loops repeatedly (PE-8989).
         (
           (await this.writer.raw(
-            `SELECT *, uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc
+            // Explicit column list (not SELECT *) so the large `signature` BYTEA
+            // — up to ~2KB/row × (maxDataItemsPerBundle * 5) rows — is NOT pulled
+            // through on every plan tick. The plan path never reads the signature
+            // (it is carried new->planned by insertBundlePlan's DELETE ...
+            // RETURNING *); newDataItemDbResultToNewDataItemMap tolerates its
+            // absence (signature ?? undefined).
+            `SELECT assessed_winston_price, byte_count, data_item_id,
+                    owner_public_address, uploaded_date,
+                    uploaded_date AT TIME ZONE 'UTC' as uploaded_date_utc,
+                    data_start, failed_bundles, signature_type, content_type,
+                    premium_feature_type, deadline_height
               FROM ${tableNames.newDataItem}
               ORDER BY uploaded_date
               LIMIT ${maxDataItemsPerBundle * 5}
-            `
+            `,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           )) as any
         ).rows;
@@ -395,7 +405,7 @@ export class PostgresDatabase implements Database {
 
   public async insertBundlePlan(
     planId: PlanId,
-    dataItemIds: TransactionId[]
+    dataItemIds: TransactionId[],
   ): Promise<void> {
     this.log.debug("Inserting bundle plan...", {
       planId,
@@ -416,16 +426,16 @@ export class PostgresDatabase implements Database {
 
     try {
       logger.debug(
-        `Batch moving ${dataItemIdBatches.length} batches of ${batchingSize} or less data items from ${tableNames.newDataItem} table to  ${tableNames.plannedDataItem} table...`
+        `Batch moving ${dataItemIdBatches.length} batches of ${batchingSize} or less data items from ${tableNames.newDataItem} table to  ${tableNames.plannedDataItem} table...`,
       );
       let batchNumber = 1;
       for (const dataItemIds of dataItemIdBatches) {
         logger.debug(
-          `Moving batch ${batchNumber} of ${dataItemIdBatches.length} from ${tableNames.newDataItem} table to ${tableNames.plannedDataItem} table...`
+          `Moving batch ${batchNumber} of ${dataItemIdBatches.length} from ${tableNames.newDataItem} table to ${tableNames.plannedDataItem} table...`,
         );
         await this.writer.transaction(async (knexTransaction) => {
           const deletedDataItems = await knexTransaction<NewDataItemDBResult>(
-            tableNames.newDataItem
+            tableNames.newDataItem,
           )
             .whereIn("data_item_id", dataItemIds)
             .forUpdate()
@@ -438,7 +448,7 @@ export class PostgresDatabase implements Database {
               ...deletedDataItem,
               plan_id: planId,
               planned_date,
-            })
+            }),
           );
 
           await knexTransaction.batchInsert<
@@ -452,7 +462,7 @@ export class PostgresDatabase implements Database {
             dataItemIdBatches.length
           } from ${tableNames.newDataItem} table to ${
             tableNames.plannedDataItem
-          } table...`
+          } table...`,
         );
       }
     } catch (error) {
@@ -466,7 +476,7 @@ export class PostgresDatabase implements Database {
     // Confirm there are actually data items in the bundled plan, remove if not
     if (encounteredEmptyOrLockedDataItem) {
       const bundledDataItems = await this.reader(
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       ).where({ plan_id: planId });
 
       if (!bundledDataItems.length) {
@@ -482,18 +492,18 @@ export class PostgresDatabase implements Database {
   }
 
   public async getPlannedDataItemsForPlanId(
-    planId: PlanId
+    planId: PlanId,
   ): Promise<PlannedDataItem[]> {
     this.log.debug("Getting planned data items from database...", { planId });
 
     // Check if bundle plan still exists before getting planned data items
     const bundlePlanDbResult = await this.reader<BundlePlanDBResult>(
-      tableNames.bundlePlan
+      tableNames.bundlePlan,
     ).where({ plan_id: planId });
     if (bundlePlanDbResult.length === 0) {
       logger.warn(
         "No bundle plan found! Checking other tables for plan id...",
-        { planId }
+        { planId },
       );
       const bundlePlanResults = await Promise.all([
         this.reader<NewBundleDBResult>(tableNames.newBundle).where({
@@ -522,21 +532,21 @@ export class PostgresDatabase implements Database {
   }
 
   private async getPlannedDataItemsByPlanId(
-    planId: PlanId
+    planId: PlanId,
   ): Promise<PlannedDataItem[]> {
     const plannedDataItemDbResult = await this.reader<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).where({
       plan_id: planId,
     });
 
     return plannedDataItemDbResult.map(
-      plannedDataItemDbResultToPlannedDataItemMap
+      plannedDataItemDbResultToPlannedDataItemMap,
     );
   }
 
   public getPlannedDataItemsForVerification(
-    planId: PlanId
+    planId: PlanId,
   ): Promise<PlannedDataItem[]> {
     this.log.debug("Getting planned data items for verification...", {
       planId,
@@ -561,7 +571,7 @@ export class PostgresDatabase implements Database {
 
     return this.writer.transaction(async (knexTransaction) => {
       const bundlePlanDbResults = await knexTransaction<BundlePlanDBResult>(
-        tableNames.bundlePlan
+        tableNames.bundlePlan,
       )
         .where({ plan_id: planId })
         .forUpdate() // lock row
@@ -572,7 +582,7 @@ export class PostgresDatabase implements Database {
       if (bundlePlanDbResults.length === 0) {
         logger.warn(
           "No bundle plan found! Checking other tables for plan id...",
-          { planId, bundleId }
+          { planId, bundleId },
         );
         const bundlePlanResults = await Promise.all([
           knexTransaction<NewBundleDBResult>(tableNames.newBundle).where({
@@ -585,7 +595,7 @@ export class PostgresDatabase implements Database {
             plan_id: planId,
           }),
           knexTransaction<PermanentBundleDBResult>(
-            tableNames.permanentBundle
+            tableNames.permanentBundle,
           ).where({
             plan_id: planId,
           }),
@@ -617,7 +627,7 @@ export class PostgresDatabase implements Database {
     this.log.debug("Getting new_bundle from database...", { planId });
 
     const newBundleDbResult = await this.writer<NewBundleDBResult>(
-      tableNames.newBundle
+      tableNames.newBundle,
     ).where(columnNames.planId, planId);
 
     if (newBundleDbResult.length === 0) {
@@ -673,7 +683,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async getNextBundleAndDataItemsToSeedByPlanId(
-    planId: PlanId
+    planId: PlanId,
   ): Promise<{
     bundleToSeed: PostedBundle;
     dataItemsToSeed: PlannedDataItem[];
@@ -681,29 +691,29 @@ export class PostgresDatabase implements Database {
     this.log.debug("Getting posted bundle from database...", { planId });
 
     const postedBundleDbResult = await this.writer<PostedBundleDBResult>(
-      tableNames.postedBundle
+      tableNames.postedBundle,
     ).where({ plan_id: planId });
 
     if (postedBundleDbResult.length === 0) {
       // check if its already seeded
       const seededBundleDbResult = await this.writer<SeededBundleDBResult>(
-        tableNames.seededBundle
+        tableNames.seededBundle,
       ).where({ plan_id: planId });
       if (seededBundleDbResult.length > 0) {
         throw new BundlePlanExistsInAnotherStateWarning(
           planId,
-          seededBundleDbResult[0].bundle_id
+          seededBundleDbResult[0].bundle_id,
         );
       }
       // check if its already permanent
       const permanentBundleDbResult =
         await this.writer<PermanentBundleDBResult>(
-          tableNames.permanentBundle
+          tableNames.permanentBundle,
         ).where({ plan_id: planId });
       if (permanentBundleDbResult.length > 0) {
         throw new BundlePlanExistsInAnotherStateWarning(
           planId,
-          permanentBundleDbResult[0].bundle_id
+          permanentBundleDbResult[0].bundle_id,
         );
       }
 
@@ -711,15 +721,15 @@ export class PostgresDatabase implements Database {
     }
 
     const plannedDataItemDbResults = await this.writer<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).where({ plan_id: planId });
 
     return {
       bundleToSeed: postedBundleDbResultToPostedBundleMap(
-        postedBundleDbResult[0]
+        postedBundleDbResult[0],
       ),
       dataItemsToSeed: plannedDataItemDbResults.map(
-        plannedDataItemDbResultToPlannedDataItemMap
+        plannedDataItemDbResultToPlannedDataItemMap,
       ),
     };
   }
@@ -736,7 +746,7 @@ export class PostgresDatabase implements Database {
       )[0];
 
       return knexTransaction(tableNames.seededBundle).insert(
-        postedBundleDbResult
+        postedBundleDbResult,
       );
     });
   }
@@ -748,7 +758,7 @@ export class PostgresDatabase implements Database {
 
     try {
       const seededResultDbResult = await this.writer<SeededBundleDBResult>(
-        tableNames.seededBundle
+        tableNames.seededBundle,
       )
         .orderBy(columnNames.postedDate)
         .limit(limit)
@@ -775,7 +785,7 @@ export class PostgresDatabase implements Database {
   public async updateBundleAsPermanent(
     planId: string,
     blockHeight: number,
-    indexedOnGQL: boolean
+    indexedOnGQL: boolean,
   ): Promise<void> {
     await this.writer.transaction(async (dbTx) => {
       // Delete the seeded bundle entry
@@ -802,7 +812,7 @@ export class PostgresDatabase implements Database {
   }: UpdateDataItemsToPermanentParams): Promise<void> {
     if (dataItemIds.length > batchingSize) {
       throw Error(
-        `This method expects ${batchingSize} data items at a time! Please batch those data items up`
+        `This method expects ${batchingSize} data items at a time! Please batch those data items up`,
       );
     }
 
@@ -810,7 +820,7 @@ export class PostgresDatabase implements Database {
       // Fast path: promote the whole batch atomically in one transaction.
       await this.writer.transaction(async (dbTx) => {
         const dataItems = await dbTx<PlannedDataItemDBResult>(
-          tableNames.plannedDataItem
+          tableNames.plannedDataItem,
         )
           .whereIn(columnNames.dataItemId, dataItemIds)
           .del()
@@ -821,13 +831,13 @@ export class PostgresDatabase implements Database {
             plannedDataItemToPermanentInsert(
               plannedDataItem,
               blockHeight,
-              bundleId
-            )
+              bundleId,
+            ),
           );
 
         await dbTx.batchInsert<PermanentDataItemDBResult>(
           tableNames.permanentDataItems,
-          permanentDataItemInserts
+          permanentDataItemInserts,
         );
       });
     } catch (error) {
@@ -851,7 +861,7 @@ export class PostgresDatabase implements Database {
           blockHeight,
           code: (error as PostgresError).code,
           dataItemIds,
-        }
+        },
       );
 
       await this.isolateAndPromoteDataItems(dataItemIds, blockHeight, bundleId);
@@ -869,13 +879,13 @@ export class PostgresDatabase implements Database {
   private async isolateAndPromoteDataItems(
     dataItemIds: TransactionId[],
     blockHeight: number,
-    bundleId: TransactionId
+    bundleId: TransactionId,
   ): Promise<void> {
     for (const dataItemId of dataItemIds) {
       try {
         await this.writer.transaction(async (dbTx) => {
           const [plannedDataItem] = await dbTx<PlannedDataItemDBResult>(
-            tableNames.plannedDataItem
+            tableNames.plannedDataItem,
           )
             .where({ [columnNames.dataItemId]: dataItemId })
             .del()
@@ -887,13 +897,13 @@ export class PostgresDatabase implements Database {
           }
 
           await dbTx<PermanentDataItemDBResult>(
-            tableNames.permanentDataItems
+            tableNames.permanentDataItems,
           ).insert(
             plannedDataItemToPermanentInsert(
               plannedDataItem,
               blockHeight,
-              bundleId
-            )
+              bundleId,
+            ),
           );
         });
       } catch (error) {
@@ -905,7 +915,7 @@ export class PostgresDatabase implements Database {
         await this.deadLetterDataItemFailedPermanentInsert(
           dataItemId,
           bundleId,
-          error as PostgresError
+          error as PostgresError,
         );
       }
     }
@@ -917,16 +927,16 @@ export class PostgresDatabase implements Database {
   private async deadLetterDataItemFailedPermanentInsert(
     dataItemId: TransactionId,
     bundleId: TransactionId,
-    error: PostgresError
+    error: PostgresError,
   ): Promise<void> {
     this.log.error(
       "Dead-lettering data item that could not be inserted as permanent",
-      { dataItemId, bundleId, code: error.code, detail: error.detail }
+      { dataItemId, bundleId, code: error.code, detail: error.detail },
     );
 
     await this.writer.transaction(async (dbTx) => {
       const [plannedDataItem] = await dbTx<PlannedDataItemDBResult>(
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       )
         .where({ [columnNames.dataItemId]: dataItemId })
         .del()
@@ -954,11 +964,11 @@ export class PostgresDatabase implements Database {
 
   public async updateDataItemsToBeRePacked(
     dataItemIds: TransactionId[],
-    failedBundleId: TransactionId
+    failedBundleId: TransactionId,
   ): Promise<void> {
     if (dataItemIds.length > batchingSize) {
       throw Error(
-        `This method expects ${batchingSize} data items at a time! Please batch those data items up`
+        `This method expects ${batchingSize} data items at a time! Please batch those data items up`,
       );
     }
 
@@ -969,7 +979,7 @@ export class PostgresDatabase implements Database {
 
     return this.writer.transaction(async (knexTransaction) => {
       const deletedDataItems = await knexTransaction<PlannedDataItemDBResult>(
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       )
         .whereIn("data_item_id", dataItemIds)
         .del()
@@ -994,7 +1004,7 @@ export class PostgresDatabase implements Database {
             failed_bundles: failedBundles.join(","),
           };
           await knexTransaction(tableNames.failedDataItem).insert(
-            failedDbInsert
+            failedDbInsert,
           );
         } else {
           dbInserts.push({
@@ -1012,7 +1022,7 @@ export class PostgresDatabase implements Database {
 
   public async updateSeededBundleToDropped(
     planId: PlanId,
-    bundleId: TransactionId
+    bundleId: TransactionId,
   ): Promise<void> {
     await this.rePackDataItemsForPlanId(planId, bundleId);
 
@@ -1034,7 +1044,7 @@ export class PostgresDatabase implements Database {
   // Migrates new bundle that failed the post bundle job and its planned data items to their failed and unplanned ("new") counterparts, respectively
   public async updateNewBundleToFailedToPost(
     planId: PlanId,
-    bundleId: TransactionId
+    bundleId: TransactionId,
   ): Promise<void> {
     this.log.info("Inserting failed to post bundle...", { bundleId, planId });
     await this.rePackDataItemsForPlanId(planId, bundleId);
@@ -1067,7 +1077,7 @@ export class PostgresDatabase implements Database {
    */
   public async getStalePostedBundles(
     olderThanMs: number,
-    limit = 50
+    limit = 50,
   ): Promise<PostedBundle[]> {
     this.log.debug("Getting stale posted bundles from database...", {
       olderThanMs,
@@ -1076,14 +1086,14 @@ export class PostgresDatabase implements Database {
 
     try {
       const postedDbResult = await this.writer<PostedBundleDBResult>(
-        tableNames.postedBundle
+        tableNames.postedBundle,
       )
         .where(
           columnNames.postedDate,
           "<",
           this.writer.raw(`now() - (? * interval '1 millisecond')`, [
             olderThanMs,
-          ])
+          ]),
         )
         .orderBy(columnNames.postedDate)
         .limit(limit)
@@ -1114,7 +1124,7 @@ export class PostgresDatabase implements Database {
    */
   public async incrementPostedBundleRedrive(
     planId: PlanId,
-    bundleId: TransactionId
+    bundleId: TransactionId,
   ): Promise<number> {
     const [row] = await this.writer
       .raw(
@@ -1125,7 +1135,7 @@ export class PostgresDatabase implements Database {
          DO UPDATE SET ${columnNames.seedRedrives} =
            ${tableNames.postedBundleRedrive}.${columnNames.seedRedrives} + 1
          RETURNING ${columnNames.seedRedrives}`,
-        [bundleId, planId]
+        [bundleId, planId],
       )
       .then((result: { rows: { seed_redrives: number }[] }) => result.rows);
 
@@ -1140,7 +1150,7 @@ export class PostgresDatabase implements Database {
    */
   public async updatePostedBundleToFailed(
     planId: PlanId,
-    bundleId: TransactionId
+    bundleId: TransactionId,
   ): Promise<void> {
     this.log.info("Inserting failed-to-seed bundle...", { bundleId, planId });
     await this.rePackDataItemsForPlanId(planId, bundleId);
@@ -1173,20 +1183,20 @@ export class PostgresDatabase implements Database {
   /** For a given plan Id, move data items from planned_data_item to new_data_item for repacking in plan job */
   private async rePackDataItemsForPlanId(
     planId: PlanId,
-    failedBundleId: TransactionId
+    failedBundleId: TransactionId,
   ): Promise<void> {
     logger.debug("Repacking data items for plan...", {
       planId,
       failedBundleId,
     });
     const plannedDataItems = await this.reader<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).where({ plan_id: planId });
 
     const rePackDataItemInsertBatches = [
       ...generateArrayChunks<DataItemId>(
         plannedDataItems.map((pdi) => pdi.data_item_id),
-        batchingSize
+        batchingSize,
       ),
     ];
 
@@ -1213,7 +1223,7 @@ export class PostgresDatabase implements Database {
 
     // Check for brand new data item
     const newDataItemDbResult = await this.reader<NewDataItemDBResult>(
-      tableNames.newDataItem
+      tableNames.newDataItem,
     ).where({ data_item_id: dataItemId });
     if (newDataItemDbResult.length > 0) {
       return {
@@ -1221,7 +1231,7 @@ export class PostgresDatabase implements Database {
         assessedWinstonPrice: W(newDataItemDbResult[0].assessed_winston_price),
         // TODO: HANDLE POSTGRES TIMEZONE ISSUE IF NECESSARY
         uploadedTimestamp: new Date(
-          newDataItemDbResult[0].uploaded_date
+          newDataItemDbResult[0].uploaded_date,
         ).getTime(),
         deadlineHeight: newDataItemDbResult[0].deadline_height
           ? +newDataItemDbResult[0].deadline_height
@@ -1232,7 +1242,7 @@ export class PostgresDatabase implements Database {
 
     // Check for a bundled data item that's not yet permanent
     const plannedDataItemDbResult = await this.reader<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).where({ data_item_id: dataItemId });
     if (plannedDataItemDbResult.length > 0) {
       const bundleDbResult = await Promise.all([
@@ -1255,11 +1265,11 @@ export class PostgresDatabase implements Database {
       return {
         status: "pending",
         assessedWinstonPrice: W(
-          plannedDataItemDbResult[0].assessed_winston_price
+          plannedDataItemDbResult[0].assessed_winston_price,
         ),
         bundleId,
         uploadedTimestamp: new Date(
-          plannedDataItemDbResult[0].uploaded_date
+          plannedDataItemDbResult[0].uploaded_date,
         ).getTime(),
         deadlineHeight: plannedDataItemDbResult[0].deadline_height
           ? +plannedDataItemDbResult[0].deadline_height
@@ -1271,17 +1281,17 @@ export class PostgresDatabase implements Database {
     // Check for a permanent data item
     const permanentDataItemDbResult =
       await this.reader<PermanentDataItemDBResult>(
-        tableNames.permanentDataItems
+        tableNames.permanentDataItems,
       ).where({ data_item_id: dataItemId });
     if (permanentDataItemDbResult.length > 0) {
       return {
         status: "permanent",
         assessedWinstonPrice: W(
-          permanentDataItemDbResult[0].assessed_winston_price
+          permanentDataItemDbResult[0].assessed_winston_price,
         ),
         bundleId: permanentDataItemDbResult[0].bundle_id,
         uploadedTimestamp: new Date(
-          permanentDataItemDbResult[0].uploaded_date
+          permanentDataItemDbResult[0].uploaded_date,
         ).getTime(),
         deadlineHeight: permanentDataItemDbResult[0].deadline_height
           ? +permanentDataItemDbResult[0].deadline_height
@@ -1292,16 +1302,16 @@ export class PostgresDatabase implements Database {
 
     // Check for a failed data item
     const failedDataItemDbResult = await this.reader<FailedDataItemDBResult>(
-      tableNames.failedDataItem
+      tableNames.failedDataItem,
     ).where({ data_item_id: dataItemId });
     if (failedDataItemDbResult.length > 0) {
       return {
         status: "failed",
         assessedWinstonPrice: W(
-          failedDataItemDbResult[0].assessed_winston_price
+          failedDataItemDbResult[0].assessed_winston_price,
         ),
         uploadedTimestamp: new Date(
-          failedDataItemDbResult[0].uploaded_date
+          failedDataItemDbResult[0].uploaded_date,
         ).getTime(),
         deadlineHeight: failedDataItemDbResult[0].deadline_height
           ? +failedDataItemDbResult[0].deadline_height
@@ -1316,14 +1326,14 @@ export class PostgresDatabase implements Database {
   }
 
   public async getLastDataItemInBundle(
-    plan_id: string
+    plan_id: string,
   ): Promise<PlannedDataItem> {
     this.log.debug("Getting last data item in bundle ...", {
       plan_id,
     });
 
     const plannedDataItemDbResult = await this.writer<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).where({ plan_id });
     const lastDataItemDbResult = plannedDataItemDbResult.pop();
 
@@ -1347,7 +1357,7 @@ export class PostgresDatabase implements Database {
     const result = await this.writer.transaction(async (knexTransaction) => {
       const [insertedRow] =
         await knexTransaction<InFlightMultiPartUploadDBResult>(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         )
           .insert({
             upload_id: uploadId,
@@ -1379,7 +1389,7 @@ export class PostgresDatabase implements Database {
     return this.writer.transaction(async (knexTransaction) => {
       const inFlightMultiPartUploadDbResult = (
         await knexTransaction<InFlightMultiPartUploadDBResult>(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         )
           .where({ upload_id: uploadId })
           .del()
@@ -1394,7 +1404,7 @@ export class PostgresDatabase implements Database {
       }
 
       await knexTransaction(
-        tableNames.finishedMultiPartUpload
+        tableNames.finishedMultiPartUpload,
       ).insert<FinishedMultiPartUploadDBInsert>({
         ...inFlightMultiPartUploadDbResult,
         etag,
@@ -1404,14 +1414,14 @@ export class PostgresDatabase implements Database {
   }
 
   public async getInflightMultiPartUpload(
-    uploadId: UploadId
+    uploadId: UploadId,
   ): Promise<InFlightMultiPartUpload> {
     this.log.debug("Getting in flight multipart upload...", {
       uploadId,
     });
 
     const inFlightUpload = await this.reader<InFlightMultiPartUploadDBResult>(
-      tableNames.inFlightMultiPartUpload
+      tableNames.inFlightMultiPartUpload,
     )
       .where({ upload_id: uploadId })
       .first();
@@ -1442,7 +1452,7 @@ export class PostgresDatabase implements Database {
       // begin by failing the in flight upload
       const updatedInFlightUpload = (
         await knexTransaction<InFlightMultiPartUploadDBResult>(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         )
           .update({
             failed_reason: failedReason,
@@ -1454,13 +1464,13 @@ export class PostgresDatabase implements Database {
       // end by cleaning up all in flight uploads that are past their expires_at date
       const numDeletedRows =
         await knexTransaction<InFlightMultiPartUploadDBResult>(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         )
           .whereRaw("expires_at < NOW()")
           .del();
 
       this.log.info(
-        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
+        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`,
       );
 
       return entityToInFlightMultiPartUpload(updatedInFlightUpload);
@@ -1483,7 +1493,7 @@ export class PostgresDatabase implements Database {
       // begin by failing the finished upload
       const updatedFinishedUpload = (
         await knexTransaction<FinishedMultiPartUploadDBResult>(
-          tableNames.finishedMultiPartUpload
+          tableNames.finishedMultiPartUpload,
         )
           .update({
             failed_reason: failedReason,
@@ -1495,13 +1505,13 @@ export class PostgresDatabase implements Database {
       // end by cleaning up all in flight uploads that are past their expires_at date
       const numDeletedRows =
         await knexTransaction<InFlightMultiPartUploadDBResult>(
-          tableNames.inFlightMultiPartUpload
+          tableNames.inFlightMultiPartUpload,
         )
           .whereRaw("expires_at < NOW()")
           .del();
 
       this.log.info(
-        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`
+        `Deleted ${numDeletedRows} in flight uploads past their expired dates.`,
       );
 
       return {
@@ -1516,7 +1526,7 @@ export class PostgresDatabase implements Database {
         etag: updatedFinishedUpload.etag,
         dataItemId: updatedFinishedUpload.data_item_id,
         failedReason: isMultipartUploadFailedReason(
-          updatedFinishedUpload.failed_reason
+          updatedFinishedUpload.failed_reason,
         )
           ? updatedFinishedUpload.failed_reason
           : undefined,
@@ -1525,14 +1535,14 @@ export class PostgresDatabase implements Database {
   }
 
   public async getFinalizedMultiPartUpload(
-    uploadId: UploadId
+    uploadId: UploadId,
   ): Promise<FinishedMultiPartUpload> {
     this.log.debug("Getting finalized multipart upload...", {
       uploadId,
     });
 
     const finalizedUpload = await this.reader<FinishedMultiPartUploadDBResult>(
-      tableNames.finishedMultiPartUpload
+      tableNames.finishedMultiPartUpload,
     )
       .where({ upload_id: uploadId })
       .first();
@@ -1560,7 +1570,7 @@ export class PostgresDatabase implements Database {
 
   public async updateMultipartChunkSize(
     chunkSize: number,
-    upload: InFlightMultiPartUpload
+    upload: InFlightMultiPartUpload,
   ): Promise<number> {
     this.log.debug("Updating multipart chunk size...", {
       chunkSize,
@@ -1602,7 +1612,7 @@ export class PostgresDatabase implements Database {
         {
           currentChunkSize: bestKnownChunkSize,
           attemptedChunkSize: chunkSize,
-        }
+        },
       );
     } else {
       this.log.debug("Chunk size updated successfully.", {
@@ -1626,7 +1636,7 @@ export class PostgresDatabase implements Database {
 
     await this.writer.transaction(async (knexTransaction) => {
       const plannedDataItem = await knexTransaction<PlannedDataItemDBResult>(
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       )
         .where({ data_item_id: dataItemId })
         .del()
@@ -1638,7 +1648,7 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction(
-        tableNames.failedDataItem
+        tableNames.failedDataItem,
       ).insert<FailedDataItemDBInsert>(dbInsert);
     });
   }
@@ -1668,7 +1678,7 @@ export class PostgresDatabase implements Database {
 
   async linkX402PaymentToDataItem(
     paymentId: string,
-    dataItemId: DataItemId
+    dataItemId: DataItemId,
   ): Promise<void> {
     await this.writer("x402_payments")
       .where({ payment_id: paymentId })
@@ -1695,7 +1705,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async updatePlannedDataItemsToDefaultDeadlineHeight(
-    dataItemIds: DataItemId[]
+    dataItemIds: DataItemId[],
   ): Promise<void> {
     this.log.info("Updating planned data items to default deadline height...", {
       dataItemIds,
@@ -1712,13 +1722,13 @@ export class PostgresDatabase implements Database {
 }
 
 function isMultipartUploadFailedReason(
-  reason: string | undefined
+  reason: string | undefined,
 ): reason is MultipartUploadFailedReason {
   return ["INVALID", "UNDERFUNDED"].includes(reason ?? "");
 }
 
 function entityToInFlightMultiPartUpload(
-  entity: InFlightMultiPartUploadDBResult
+  entity: InFlightMultiPartUploadDBResult,
 ): InFlightMultiPartUpload {
   return {
     uploadId: entity.upload_id,
@@ -1738,7 +1748,7 @@ function entityToInFlightMultiPartUpload(
 function plannedDataItemToPermanentInsert(
   { signature: _signature, ...restOfPlannedDataItem }: PlannedDataItemDBResult,
   blockHeight: number,
-  bundleId: TransactionId
+  bundleId: TransactionId,
 ): PermanentDataItemDBInsert {
   return {
     ...restOfPlannedDataItem,
