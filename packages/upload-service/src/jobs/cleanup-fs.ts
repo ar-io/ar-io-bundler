@@ -24,6 +24,7 @@ import winston from "winston";
 import { ObjectStore } from "../arch/objectStore";
 import { columnNames, tableNames } from "../arch/db/dbConstants";
 import { getReaderConfig, getWriterConfig } from "../arch/db/knexConfig";
+import { enqueueBatch } from "../arch/queues";
 import { jobLabels } from "../constants";
 import defaultLogger from "../logger";
 import { PermanentDataItemDBResult, Timestamp } from "../types/dbTypes";
@@ -503,6 +504,14 @@ export interface ReclaimBundleResult {
   payloadDeleted: boolean;
   txDeleted: boolean;
   rawDeleted: number;
+  /**
+   * Archive (HDD) keys that were expected but not yet confirmed present. The
+   * sweep re-enqueues an `archive-copy` for these so a permanently-dropped
+   * best-effort enqueue (e.g. a Redis blip at ingest, or process death between
+   * the DB insert and the enqueue) self-heals instead of stranding the SSD copy
+   * — and the persist cursor — forever.
+   */
+  missingArchiveKeys: string[];
 }
 
 /**
@@ -544,19 +553,21 @@ export async function reclaimBundleFromSsd({
       payloadDeleted: false,
       txDeleted: false,
       rawDeleted: 0,
+      missingArchiveKeys: [payloadKey],
     };
   }
 
   // Reclaim each permanent data item's raw object, gated on its HDD copy.
   let rawDeleted = 0;
-  let bundleComplete = true;
+  const missingArchiveKeys: string[] = [];
   for (const dataItemId of dataItemIds) {
     const rawKey = `${dataItemPrefix}/${dataItemId}`;
     if (await headExists(archiveObjectStore, rawKey)) {
       if (await deleteIfPresent(objectStore, rawKey, logger)) rawDeleted++;
     } else {
-      // This item's HDD copy isn't ready; leave its SSD copy and revisit.
-      bundleComplete = false;
+      // This item's HDD copy isn't ready; leave its SSD copy and revisit. Record
+      // the key so the sweep can re-request the (possibly dropped) copy.
+      missingArchiveKeys.push(rawKey);
     }
   }
 
@@ -570,27 +581,220 @@ export async function reclaimBundleFromSsd({
     logger
   );
 
-  return { deferred: !bundleComplete, payloadDeleted, txDeleted, rawDeleted };
+  return {
+    deferred: missingArchiveKeys.length > 0,
+    payloadDeleted,
+    txDeleted,
+    rawDeleted,
+    missingArchiveKeys,
+  };
+}
+
+interface PermanentBundleRow {
+  plan_id: string;
+  bundle_id: string;
+  permanent_date: string;
+}
+
+export interface SsdReclaimSweepStats {
+  bundlesSwept: number;
+  payloadsDeleted: number;
+  txDeleted: number;
+  rawDeleted: number;
+  deferredBundles: number;
+  reEnqueuedKeys: number;
+  persistedCursor: ArchiveCleanupCursor;
+  scannedThrough: ArchiveCleanupCursor;
 }
 
 /**
- * Two-tier MinIO post-permanence SSD reclamation.
+ * Injectable dependencies for the SSD-reclaim sweep. All I/O (DB pagination,
+ * object-store reclaim, cursor persistence, re-enqueue) is passed in so the
+ * cursor/deferral/reconciliation control flow can be unit-tested without a DB or
+ * object store. `cleanupSsdAfterArchive` binds these to the real knex + stores.
+ */
+export interface SsdReclaimSweepDeps {
+  /** Next page of permanent bundles strictly after `scanCursor` (ordered by
+   * permanent_date, bundle_id), already filtered by the grace cutoff. */
+  fetchPage: (scanCursor: ArchiveCleanupCursor) => Promise<PermanentBundleRow[]>;
+  /** Permanent data-item ids for a bundle. */
+  fetchItemIds: (bundleId: string) => Promise<string[]>;
+  /** Reclaim one bundle's SSD copies, gated on archive presence. */
+  reclaim: (args: {
+    planId: string;
+    bundleId: string;
+    dataItemIds: string[];
+  }) => Promise<ReclaimBundleResult>;
+  /** Read the persisted resume cursor (undefined = start from the beginning). */
+  getCursor: () => Promise<ArchiveCleanupCursor | undefined>;
+  /** Persist the resume cursor. */
+  setCursor: (cursor: ArchiveCleanupCursor) => Promise<void>;
+  /** Re-request archive copies for keys whose HDD copy wasn't confirmed. */
+  enqueueArchiveCopy: (keys: string[]) => Promise<void>;
+  pageSize: number;
+  logger: winston.Logger;
+}
+
+/**
+ * Two-tier MinIO post-permanence SSD reclamation — the pure control flow.
  *
  * For each bundle in `permanent_bundle` (forward cursor on permanent_date), once
- * its HDD copies are CONFIRMED present, delete its copies from the primary (SSD)
- * store to free the small fast disk quickly:
- *   - `bundle-payload/{plan_id}` and `bundle/{bundle_id}` once the HDD
- *     bundle-payload copy is confirmed.
- *   - each `raw-data-item/{id}` (from `permanent_data_items`) once that item's
- *     HDD copy is confirmed.
+ * its HDD copies are CONFIRMED present, its SSD copies are deleted to free the
+ * small fast disk quickly. The archive HEAD gate (inside `reclaim`) is the
+ * critical safety guard: an SSD copy is NEVER deleted until the HDD copy is
+ * confirmed (the gateway reads only the HDD).
  *
- * The archive HEAD gate is the critical safety guard: we NEVER delete the SSD
- * copy until the HDD copy is confirmed (the gateway reads only the HDD). If a
- * copy for a bundle isn't on the HDD yet, that bundle is deferred: the persisted
- * cursor parks at the first such hole so it's retried next run, but the scan
- * still continues past it and reclaims newer bundles — one missed copy (e.g. a
- * best-effort archive-copy enqueue that was permanently dropped) therefore can't
- * starve reclamation for the whole tail and fill the SSD.
+ * Deferral + reconciliation: if a copy for a bundle isn't on the HDD yet, that
+ * bundle is deferred. Two cursors keep a single deferred bundle from starving the
+ * tail:
+ *  - `scanCursor` advances over EVERY bundle examined (drives pagination), so we
+ *    keep reclaiming later bundles even after a deferral.
+ *  - `persistCursor` is the last CONTIGUOUS reclaimed bundle; it stops advancing
+ *    at the first deferral (the "hole") and is what we persist, so the hole is
+ *    retried next run while the tail still gets reclaimed this run.
+ *
+ * Crucially, every deferral also RE-ENQUEUES the missing archive-copy keys. The
+ * archive-copy enqueues at ingest are best-effort, so one can be permanently
+ * dropped (Redis blip / process death); without this re-enqueue the HDD copy
+ * would never arrive, the hole would never resolve, and the persist cursor would
+ * wedge forever (re-scanning the whole tail every run). The sweep is the only
+ * place that re-detects the gap, so it closes the loop here.
+ */
+export async function runSsdReclaimSweep(
+  deps: SsdReclaimSweepDeps
+): Promise<SsdReclaimSweepStats> {
+  const {
+    fetchPage,
+    fetchItemIds,
+    reclaim,
+    getCursor,
+    setCursor,
+    enqueueArchiveCopy,
+    pageSize,
+    logger,
+  } = deps;
+
+  const startCursor: ArchiveCleanupCursor = (await getCursor()) ?? {
+    permanentDate: "1970-01-01T00:00:00.000Z",
+    bundleId: undefined,
+  };
+
+  let scanCursor: ArchiveCleanupCursor = { ...startCursor };
+  let persistCursor: ArchiveCleanupCursor = { ...startCursor };
+  let holeSeen = false;
+  // Set whenever persistCursor actually advances; cleared after a write so we
+  // persist exactly once per real advance (never re-writing the same frozen
+  // value page after page once a hole has parked the cursor).
+  let persistDirty = false;
+
+  let bundlesSwept = 0;
+  let payloadsDeleted = 0;
+  let txDeleted = 0;
+  let rawDeleted = 0;
+  let deferredBundles = 0;
+  let reEnqueuedKeys = 0;
+
+  for (;;) {
+    const bundles = await fetchPage(scanCursor);
+    if (bundles.length === 0) break;
+
+    for (const bundle of bundles) {
+      const dataItemIds = await fetchItemIds(bundle.bundle_id);
+
+      const result = await reclaim({
+        planId: bundle.plan_id,
+        bundleId: bundle.bundle_id,
+        dataItemIds,
+      });
+
+      if (result.payloadDeleted) payloadsDeleted++;
+      if (result.txDeleted) txDeleted++;
+      rawDeleted += result.rawDeleted;
+
+      // Always advance the scan position so we keep examining newer bundles.
+      scanCursor = {
+        permanentDate: bundle.permanent_date,
+        bundleId: bundle.bundle_id,
+      };
+
+      // Reconciliation backstop: re-request any archive copy that wasn't
+      // confirmed, so a permanently-dropped best-effort enqueue self-heals
+      // instead of wedging this bundle (and the persist cursor) forever. The
+      // re-enqueue is idempotent (the archive-copy handler skips when the object
+      // already exists) and best-effort — a failure just retries next run.
+      if (result.missingArchiveKeys.length > 0) {
+        try {
+          await enqueueArchiveCopy(result.missingArchiveKeys);
+          reEnqueuedKeys += result.missingArchiveKeys.length;
+        } catch (error) {
+          logger.error(
+            "Failed to re-enqueue archive-copy for a deferred bundle",
+            {
+              bundleId: bundle.bundle_id,
+              missingArchiveKeys: result.missingArchiveKeys,
+              error: error instanceof Error ? error.message : error,
+            }
+          );
+        }
+      }
+
+      if (result.deferred) {
+        deferredBundles++;
+        holeSeen = true;
+        continue;
+      }
+
+      bundlesSwept++;
+      // Only advance the persisted cursor while no hole has been seen, so it
+      // stays at the first unresolved deferral.
+      if (!holeSeen) {
+        persistCursor = {
+          permanentDate: bundle.permanent_date,
+          bundleId: bundle.bundle_id,
+        };
+        persistDirty = true;
+      }
+    }
+
+    // Persist only when the cursor actually advanced this page — once a hole
+    // freezes persistCursor, later pages re-write nothing.
+    if (persistDirty) {
+      await setCursor(persistCursor);
+      persistDirty = false;
+    }
+
+    // Stop only when the page wasn't full (tail exhausted). Deferrals no longer
+    // halt the scan.
+    if (bundles.length < pageSize) break;
+  }
+
+  const stats: SsdReclaimSweepStats = {
+    bundlesSwept,
+    payloadsDeleted,
+    txDeleted,
+    rawDeleted,
+    deferredBundles,
+    reEnqueuedKeys,
+    persistedCursor: persistCursor,
+    scannedThrough: scanCursor,
+  };
+
+  logger.info("✅ Archive SSD cleanup complete", {
+    ...stats,
+    // deferredBundles > 0 means some bundles' HDD copies weren't confirmed yet;
+    // their copies were re-enqueued (reEnqueuedKeys), the persisted cursor parks
+    // at the first such hole and is retried next run (newer bundles were still
+    // reclaimed this run — no head-of-line stall).
+  });
+
+  return stats;
+}
+
+/**
+ * Two-tier MinIO post-permanence SSD reclamation — DB/object-store binding.
+ *
+ * Builds the real (knex + object-store + queue) dependencies and delegates the
+ * cursor/deferral/reconciliation control flow to `runSsdReclaimSweep`.
  */
 async function cleanupSsdAfterArchive({
   logger,
@@ -607,134 +811,66 @@ async function cleanupSsdAfterArchive({
     Date.now() - SSD_CLEANUP_GRACE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  const stored = await getConfigValue(ARCHIVE_SSD_CURSOR_KEY);
-  const startCursor: ArchiveCleanupCursor = stored
-    ? JSON.parse(stored)
-    : { permanentDate: "1970-01-01T00:00:00.000Z", bundleId: undefined };
-
-  // Two cursors so one deferred bundle can't starve newer ones:
-  //  - scanCursor advances over EVERY bundle examined (drives pagination), so we
-  //    keep reclaiming later bundles even after a deferral.
-  //  - persistCursor is the last CONTIGUOUS reclaimed bundle; it stops advancing
-  //    at the first deferral (the "hole") and is what we persist, so the hole is
-  //    retried next run while the tail still gets reclaimed this run.
-  let scanCursor: ArchiveCleanupCursor = { ...startCursor };
-  let persistCursor: ArchiveCleanupCursor = { ...startCursor };
-  let holeSeen = false;
-  let persistAdvanced = false;
-
-  let bundlesSwept = 0;
-  let payloadsDeleted = 0;
-  let txDeleted = 0;
-  let rawDeleted = 0;
-  let deferredBundles = 0;
-
   logger.info("Archive SSD cleanup started", {
-    cursor: startCursor,
     graceCutoff,
     grace_days: SSD_CLEANUP_GRACE_DAYS,
   });
 
-  for (;;) {
-    const bundles: {
-      plan_id: string;
-      bundle_id: string;
-      permanent_date: string;
-    }[] = await knexClient(tableNames.permanentBundle)
-      .select(
-        columnNames.planId,
-        columnNames.bundleId,
-        columnNames.permanentDate
-      )
-      .andWhere(columnNames.permanentDate, "<=", graceCutoff)
-      .andWhere(function () {
-        void this.where(
-          columnNames.permanentDate,
-          ">",
-          scanCursor.permanentDate
-        ).orWhere(function () {
+  await runSsdReclaimSweep({
+    pageSize: PERMANENT_BUNDLE_BATCH_SIZE,
+    logger,
+    getCursor: async () => {
+      const stored = await getConfigValue(ARCHIVE_SSD_CURSOR_KEY);
+      return stored ? (JSON.parse(stored) as ArchiveCleanupCursor) : undefined;
+    },
+    setCursor: (cursor) =>
+      setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(cursor)),
+    fetchPage: async (scanCursor) =>
+      knexClient(tableNames.permanentBundle)
+        .select(
+          columnNames.planId,
+          columnNames.bundleId,
+          columnNames.permanentDate
+        )
+        .andWhere(columnNames.permanentDate, "<=", graceCutoff)
+        .andWhere(function () {
           void this.where(
             columnNames.permanentDate,
-            "=",
+            ">",
             scanCursor.permanentDate
-          ).andWhere(columnNames.bundleId, ">", scanCursor.bundleId ?? "");
-        });
-      })
-      .orderBy(columnNames.permanentDate)
-      .orderBy(columnNames.bundleId)
-      .limit(PERMANENT_BUNDLE_BATCH_SIZE);
-
-    if (bundles.length === 0) break;
-
-    for (const bundle of bundles) {
+          ).orWhere(function () {
+            void this.where(
+              columnNames.permanentDate,
+              "=",
+              scanCursor.permanentDate
+            ).andWhere(columnNames.bundleId, ">", scanCursor.bundleId ?? "");
+          });
+        })
+        .orderBy(columnNames.permanentDate)
+        .orderBy(columnNames.bundleId)
+        .limit(PERMANENT_BUNDLE_BATCH_SIZE),
+    fetchItemIds: async (bundleId) => {
       const items: { data_item_id: string }[] = await knexClient(
         tableNames.permanentDataItems
       )
         .select(columnNames.dataItemId)
-        .where(columnNames.bundleId, bundle.bundle_id);
-
-      const result = await reclaimBundleFromSsd({
+        .where(columnNames.bundleId, bundleId);
+      return items.map((item) => item.data_item_id);
+    },
+    reclaim: ({ planId, bundleId, dataItemIds }) =>
+      reclaimBundleFromSsd({
         objectStore,
         archiveObjectStore,
-        planId: bundle.plan_id,
-        bundleId: bundle.bundle_id,
-        dataItemIds: items.map((item) => item.data_item_id),
+        planId,
+        bundleId,
+        dataItemIds,
         logger,
-      });
-
-      if (result.payloadDeleted) payloadsDeleted++;
-      if (result.txDeleted) txDeleted++;
-      rawDeleted += result.rawDeleted;
-
-      // Always advance the scan position so we keep examining newer bundles.
-      scanCursor = {
-        permanentDate: bundle.permanent_date,
-        bundleId: bundle.bundle_id,
-      };
-
-      if (result.deferred) {
-        // A HDD copy wasn't confirmed yet. Mark the hole so the persisted cursor
-        // parks here (retried next run), but DO NOT stop — a single deferred
-        // bundle (e.g. a best-effort archive-copy enqueue that was permanently
-        // missed) must not block reclamation of every newer bundle and let the
-        // SSD fill. We keep scanning and reclaiming the rest of the tail.
-        deferredBundles++;
-        holeSeen = true;
-        continue;
-      }
-
-      bundlesSwept++;
-      // Only advance the persisted cursor while no hole has been seen, so it
-      // stays at the first unresolved deferral.
-      if (!holeSeen) {
-        persistCursor = {
-          permanentDate: bundle.permanent_date,
-          bundleId: bundle.bundle_id,
-        };
-        persistAdvanced = true;
-      }
-    }
-
-    if (persistAdvanced) {
-      await setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(persistCursor));
-    }
-
-    // Stop only when the page wasn't full (tail exhausted). Deferrals no longer
-    // halt the scan.
-    if (bundles.length < PERMANENT_BUNDLE_BATCH_SIZE) break;
-  }
-
-  logger.info("✅ Archive SSD cleanup complete", {
-    bundlesSwept,
-    payloadsDeleted,
-    txDeleted,
-    rawDeleted,
-    // deferredBundles > 0 means some bundles' HDD copies weren't confirmed yet;
-    // the persisted cursor parks at the first such hole and is retried next run
-    // (newer bundles were still reclaimed this run — no head-of-line stall).
-    deferredBundles,
-    persistedCursor: persistCursor,
-    scannedThrough: scanCursor,
+      }),
+    enqueueArchiveCopy: (keys) =>
+      enqueueBatch(
+        jobLabels.archiveCopy,
+        keys.map((key) => ({ key }))
+      ),
   });
 }
 
