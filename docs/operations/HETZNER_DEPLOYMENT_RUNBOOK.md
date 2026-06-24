@@ -270,6 +270,14 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
   `X402_FEE_PERCENT`, and **`UPLOAD_SERVICE_PUBLIC_URL`** = the real public HTTPS URL (not localhost) — x402 signing depends on it.
 - **Prod basics:** `NODE_ENV=production`, `REQUEST_TIMEOUT_MS=600000` (10 GiB uploads), worker concurrencies,
   `API_INSTANCES`/`WORKER_INSTANCES`, `RATE_LIMIT_*`, `OTEL_*`, `PROMETHEUS_PORT=9090`.
+- **Slack notifications (optional but recommended):** one Slack **bot token** (`chat.postMessage`, not a
+  webhook) drives both ops alerts and payment notifications. Set `SLACK_OAUTH_TOKEN` (xoxb), then:
+  `SLACK_ALERT_CHANNEL_ID` + `ALERTS_ENABLED=true` for the admin-dashboard **health alerter** (mirrors the
+  dashboard health rollup; tune with `ALERT_CHECK_INTERVAL_MS`/`ALERT_REMINDER_MS`), and
+  `SLACK_TURBO_TOP_UP_CHANNEL_ID` for **top-up notifications** (crypto + x402 USDC). ⚠️ **invite the bot to each
+  channel** (`/invite @YourBot`) or posts fail with `not_in_channel`. Verify with
+  `node packages/admin-service/admin/notifier/test-slack.js both` before go-live. (Top-ups are skipped only when
+  `NODE_ENV=dev`, so prod posts them automatically; Stripe notifies via Stripe directly.)
 - **Vertical-integration + pricing vars (from backport lanes — defaults preserve old behavior):**
   - `PRICE_ORACLE_GATEWAY_URL` — Arweave byte-price oracle gateway (Lane 3; default `https://arweave.net/price`).
     **Set this to your own gateway** (e.g. `http://localhost:3000/price` / `https://turbo-gateway.com/price`).
@@ -420,8 +428,32 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
      copies to reclaim the small/fast SSD.
      **Rollout order (do not skip steps):** (1) stand up the archive MinIO (§5 compose override); (2) set the
      `ARCHIVE_*` vars (§7) and restart `upload-workers`; (3) confirm the `archive-copy` queue is populating the
-     archive (Bull Board + `mc ls hdd/archive-data-items`) **before** touching the gateway; (4) repoint the gateway
+     archive (Bull Board + `mc ls archive/archive-data-items`) **before** touching the gateway; (4) repoint the gateway
      `AWS_ENDPOINT` to the archive MinIO; (5) only then confirm the bundler post-verify cleanup is reclaiming space.
+     - 🔴 **Enabling on a deployment that ALREADY has permanent bundles (existing DB): seed the bundler-cleanup
+       cursor first.** The post-permanence bundler sweep scans `permanent_bundle` from the beginning. Every
+       pre-existing permanent bundle has no archive copy yet, so the sweep defers it and **re-enqueues an
+       `archive-copy`** for it (the self-healing reconciliation backstop). For old bundles whose bundler objects
+       were already deleted by the prior 90-day cleanup, that copy can never succeed, the bundle stays
+       deferred forever, and the persisted cursor **wedges at the oldest un-archivable bundle** — so every
+       cleanup run re-scans the whole table and re-enqueues thousands of doomed jobs. Avoid this by pinning
+       the cursor to "now" before enabling, so only **newly**-permanent bundles (which get archive copies at
+       ingest) are swept:
+       ```sql
+       -- run against the upload_service DB BEFORE setting ARCHIVE_*
+       INSERT INTO config (key, value) VALUES (
+         'archive-ssd-cleanup-cursor',
+         json_build_object('permanentDate', (SELECT max(permanent_date) FROM permanent_bundle)::text,
+                           'bundleId', NULL)::text)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+       ```
+       (Skip the seed only if you deliberately want a full historical bundler→archive backfill — then size the archive for
+       the entire corpus and expect heavy `archive-copy` load plus many *expected* `result="error"` copies on
+       bundles whose bundler source was already cleaned.)
+     - **Monitor:** `archive_copy_total{kind,result}` (copy outcomes by `raw-data-item`/`bundle-payload` and
+       `success`/`error`/`skipped`) and the `upload-archive-copy` queue depth. The bundler reclaim resume point
+       lives in the `config` row `archive-ssd-cleanup-cursor`; a cursor that never advances across runs means a
+       persistent deferral (an archive copy that never lands) — investigate the `error`-result copies.
 4. **Bundle seeding (chunks) →** `AR_IO_NODE_URLS` (comma-separated). The `broadcast-chunks` worker POSTs each chunk to **one of** these dedicated AR.IO chunk-distributor nodes (shuffle + per-node retry + failover); each distributor fans the chunk out to Arweave tip nodes, so reaching one healthy node lands it. Use the distributors' **private IPs** — chunk POSTs are plaintext; `/chunk` is served on the gateway/envoy port (`:3000`). Example: `AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000`.
    - **Single-node fallback:** if `AR_IO_NODE_URLS` is **unset**, chunk seeding falls back to the single `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
    - **Why direct-to-core:4000 (fallback path):** the fallback carries **chunks only** (`POST /chunk`) — core accepts + caches them optimistically, and going direct skips TLS/nginx/rate-limit/x402 overhead. This is purely a chunk-delivery endpoint.
@@ -513,10 +545,51 @@ per-path routing test.) The three prod hostnames (mirrors the proven perma.onlin
 - **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
   and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST
   body parsing — learned the hard way).
-- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block**.
+- Admin portal + Bull Board (`:3002`) get an **IP-restricted** TLS block (§14a) — the only admin surface
+  exposed over HTTPS. MinIO console (`:9001`) and Prometheus (`:9090`) stay tunnel-only (no server block).
 
 TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-Forwarded-Proto`, so
 **`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL** (x402 depends on it).
+
+### 14a. Admin portal + Bull Board over HTTPS (IP-restricted)
+
+The `admin-dashboard` process is both the portal **and** Bull Board (dashboard `/admin/dashboard`, queues
+`/admin/queues`) on one port (`:3002`) behind one login, so one TLS vhost covers both. It can trigger
+refunds and recovery actions, so it gets HTTPS **and** an IP allowlist — never the open-internet treatment
+upload/payment get.
+
+Config: the `admin.services.perma.online` server block in `infrastructure/nginx/ar-io-bundler.conf`
+(`upstream bundler_admin → 127.0.0.1:3002`) + `snippets/bundler-loc-admin.conf`. The snippet sets strict
+headers and, by design, omits `bundler-headers` so `Access-Control-Allow-Origin *` is never on the admin
+surface.
+
+Steps:
+1. **DNS:** `admin.services.perma.online` A/AAAA → the bundler box.
+2. **Allowlist:** set the `allow … ; deny all;` lines in the admin `:443` block to your operator/VPN IPs.
+3. **`.env` on the box** — behind a proxy only ONE admin var is required:
+   ```bash
+   ADMIN_TRUST_PROXY=true   # REQUIRED behind nginx: read the real client IP from X-Forwarded-For
+                            # (lockout/audit). Off by default so a directly-reachable instance
+                            # can't be IP-spoofed to bypass the brute-force lockout.
+   ```
+   The rest are already correct by default — do NOT set unless overriding: `ADMIN_COOKIE_SECURE`
+   defaults to Secure (HTTPS-only); `ADMIN_SESSION_SECRET` auto-derives from `PRIVATE_ROUTE_SECRET`.
+   `BIND_ADDRESS` is the **shared** bind you already set for upload/payment — admin binds the same
+   interface. Then restart `admin-dashboard` and firewall `:3002` (allow the router/localhost only).
+4. **Install config:** `cp infrastructure/nginx/snippets/* /etc/nginx/snippets/`; conf → `sites-available`
+   → `sites-enabled`. Comment the admin `:443` block for now (its cert does not exist yet); leave the
+   admin `:80` block active. `nginx -t && systemctl reload nginx`.
+5. **Per-host cert** (the `:80` block serves the challenge):
+   ```bash
+   certbot certonly --webroot -w /var/www/certbot -d admin.services.perma.online \
+     --deploy-hook "systemctl reload nginx"
+   ```
+6. **Enable TLS:** uncomment the admin `:443` block, `nginx -t && systemctl reload nginx`.
+7. **First run:** open `https://admin.services.perma.online/admin/setup` and set the admin password (hashed
+   server-side, stored as a hash only). Setup then closes.
+
+Notes: the session cookie is **host-only** (no `Domain`), so it never reaches sibling
+`*.services.perma.online` hosts. Renewal reuses the `:80` ACME block — keep port 80 reachable.
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 
@@ -576,6 +649,10 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
   Alert on queue depth (BullMQ), worker liveness (esp. payment-workers + upload-workers), DB pool saturation,
   disk usage (MinIO/Postgres growth), and post/verify failure rates.
 - **Queues:** Bull Board / admin-dashboard at `:3002` (admin-only).
+- **Alerts:** the admin-dashboard's built-in **Slack health alerter** (`ALERTS_ENABLED=true` +
+  `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID`) pushes the dashboard's health-rollup verdict to Slack
+  (service/infra down, pipeline/wallet/payment/queue issues), with anti-spam reminders + resolved messages. See
+  §7 for setup; complements (does not replace) Prometheus/Grafana alerting.
 - **Logs:** install `pm2-logrotate` (PM2 logs) and logrotate for cron logs; the dev box rotates neither.
 
 ---
@@ -605,6 +682,7 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 - [ ] Vertical integration verified against both gateways (optical + MinIO retrieval)
 - [ ] Backport lanes 1–5 integrated, full build + integration tests green
 - [ ] Monitoring + log rotation live
+- [ ] Slack alerter configured (`ALERTS_ENABLED=true`) + top-up channel set; bot invited to channels and a test message delivered (`test-slack.js both`)
 
 ---
 

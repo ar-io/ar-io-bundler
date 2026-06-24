@@ -97,7 +97,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 │  │                    Infrastructure Layer                               │  │
 │  │                                                                       │  │
 │  │  PostgreSQL (2 DBs)  •  Redis (Cache + Queues)  •  MinIO (S3)       │  │
-│  │  BullMQ (14 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
+│  │  BullMQ (15 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │                                      │                                       │
@@ -326,7 +326,7 @@ X402_PAYMENT_TIMEOUT_MS=3600000  # 1 hour
      - Moves to `credited_payment_transaction` table
      - Credits user Winston balance
      - Creates audit log entry
-     - Sends Slack notification (if configured)
+     - Sends a Slack top-up notification to `SLACK_TURBO_TOP_UP_CHANNEL_ID` (if configured; skipped when `NODE_ENV=dev`). x402 (USDC) top-ups post to the same channel.
 
 3. **Pricing Conversion:**
    - Non-AR tokens → USD → AR → Winston
@@ -2194,6 +2194,8 @@ http://localhost:9001           # MinIO Console
 - ⚠️ `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` - Stripe integration
 - ⚠️ `AR_IO_ADMIN_KEY` - AR.IO Gateway authentication
 - ⚠️ `ALLOW_LISTED_ADDRESSES` - Free upload addresses
+- ⚠️ `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID` + `ALERTS_ENABLED=true` - Slack health alerts (admin-dashboard)
+- ⚠️ `SLACK_TURBO_TOP_UP_CHANNEL_ID` - Slack notifications for crypto + x402 top-ups
 
 **Production Considerations:**
 - 🔒 Never commit `.env` files to git
@@ -2203,7 +2205,7 @@ http://localhost:9001           # MinIO Console
 - 🔒 Configure `LOG_LEVEL=info` or `warn`
 - 🔒 Enable OpenTelemetry for production monitoring
 - 🔒 Set up Prometheus scraping for metrics
-- 🔒 Configure Slack webhooks for alerts
+- 🔒 Configure the Slack health alerter (bot token + `SLACK_ALERT_CHANNEL_ID` + `ALERTS_ENABLED=true`; uses `chat.postMessage`, not incoming webhooks)
 
 ### 8.3 Common Troubleshooting
 

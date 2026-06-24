@@ -134,12 +134,23 @@ export function getArchiveS3ObjectStore(): ObjectStore | undefined {
  * content type) is preserved so range/payload reads stay valid on the archive
  * copy; everything else (`bundle-payload/{planId}`) copies as a plain octet
  * stream. Overwrites are harmless, so the copy is idempotent.
+ *
+ * Integrity guard: the post-permanence bundler sweep deletes the bundler copy once a
+ * `headObject` confirms the archive key EXISTS — but HEAD is existence-only, so a
+ * silently truncated copy (e.g. a source GET that ends short without emitting an
+ * error) would pass that gate and the gateway would then serve short bytes as
+ * authoritative. So after the write we assert the archived byte count matches the
+ * source. On mismatch we delete the bad archive object before throwing, otherwise
+ * the archive-copy idempotency HEAD would treat the truncated object as "already
+ * archived" on the BullMQ retry and never re-copy it.
  */
 export async function copyKeyToArchive(
   primary: ObjectStore,
   archive: ObjectStore,
   key: string
 ): Promise<void> {
+  const sourceByteCount = await primary.getObjectByteCount(key);
+
   if (key.startsWith(`${dataItemPrefix}/`)) {
     const payloadInfo = await primary.getObjectPayloadInfo(key);
     const { readable } = await primary.getObject(key);
@@ -149,6 +160,17 @@ export async function copyKeyToArchive(
     await archive.putObject(key, readable, {
       contentType: octetStreamContentType,
     });
+  }
+
+  const archivedByteCount = await archive.getObjectByteCount(key);
+  if (archivedByteCount !== sourceByteCount) {
+    // Remove the partial/wrong-size object so the retry re-copies instead of the
+    // idempotency HEAD short-circuiting on it.
+    await archive.deleteObject(key).catch(() => undefined);
+    throw new Error(
+      `Archive copy size mismatch for ${key}: source=${sourceByteCount} bytes, ` +
+        `archived=${archivedByteCount} bytes`
+    );
   }
 }
 

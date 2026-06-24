@@ -99,6 +99,8 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
    - Instances: 1 (fork mode)
    - Script: `packages/admin-service/server.js`
    - Admin stats dashboard with embedded Bull Board for monitoring all 15 BullMQ queues
+   - Also runs the opt-in **Slack health alerter** (`ALERTS_ENABLED=true`) that mirrors the dashboard's
+     health rollup and pushes alerts to Slack (`SLACK_ALERT_CHANNEL_ID`). See ADMIN_GUIDE → Alerting.
    - Access at: http://localhost:3002/admin/queues
 
 ## Script Coverage

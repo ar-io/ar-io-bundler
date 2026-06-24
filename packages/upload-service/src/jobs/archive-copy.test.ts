@@ -41,8 +41,15 @@ interface PutCall {
 class FakeStore {
   public objects = new Map<string, PayloadInfo | undefined>();
   public putCalls: PutCall[] = [];
+  public deleted: string[] = [];
   public getCount = 0;
   public putShouldThrow = false;
+  // Default reported byte count for any present object ("data".length). Per-key
+  // overrides live in `byteCounts`; `putByteCountOverride` lets a test simulate a
+  // truncated archive write (the stored object reports fewer bytes than source).
+  public defaultByteCount = 4;
+  public byteCounts = new Map<string, number>();
+  public putByteCountOverride?: number;
 
   constructor(seed: Record<string, PayloadInfo | undefined> = {}) {
     for (const [k, v] of Object.entries(seed)) this.objects.set(k, v);
@@ -63,6 +70,12 @@ class FakeStore {
     return { readable: Readable.from(["data"]), etag: "e" };
   };
 
+  getObjectByteCount = async (Key: string): Promise<number> => {
+    if (this.byteCounts.has(Key)) return this.byteCounts.get(Key) as number;
+    if (!this.objects.has(Key)) throw new Error("NoSuchKey");
+    return this.defaultByteCount;
+  };
+
   getObjectPayloadInfo = async (Key: string): Promise<PayloadInfo> => {
     const info = this.objects.get(Key);
     if (!info) throw new Error("No payload info found");
@@ -81,6 +94,13 @@ class FakeStore {
       contentType: Options.contentType,
     });
     this.objects.set(Key, Options.payloadInfo);
+    this.byteCounts.set(Key, this.putByteCountOverride ?? this.defaultByteCount);
+  };
+
+  deleteObject = async (Key: string) => {
+    this.objects.delete(Key);
+    this.byteCounts.delete(Key);
+    this.deleted.push(Key);
   };
 }
 
@@ -159,6 +179,33 @@ describe("archiveCopyHandler", () => {
 
     expect(primary.getCount).to.equal(0);
     expect(archive.putCalls).to.have.length(0);
+  });
+
+  it("deletes the bad archive object and throws when the archived byte count doesn't match the source (truncation guard)", async () => {
+    const primary = new FakeStore({ "raw-data-item/abc": payloadInfo });
+    primary.byteCounts.set("raw-data-item/abc", 100); // source is 100 bytes
+    const archive = new FakeStore();
+    archive.putByteCountOverride = 60; // simulate a truncated archive write
+
+    let threw = false;
+    try {
+      await archiveCopyHandler(
+        { key: "raw-data-item/abc" },
+        {
+          objectStore: asStore(primary),
+          archiveObjectStore: asStore(archive),
+          logger: silentLogger,
+        }
+      );
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).to.equal(true);
+    // The wrong-size object MUST be removed so the BullMQ retry re-copies instead
+    // of the idempotency HEAD short-circuiting on the truncated object.
+    expect(archive.deleted).to.include("raw-data-item/abc");
+    expect(archive.objects.has("raw-data-item/abc")).to.equal(false);
   });
 
   it("throws on copy failure so BullMQ retries", async () => {

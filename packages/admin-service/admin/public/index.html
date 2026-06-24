@@ -3,30 +3,51 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AR.IO Bundler - Admin Dashboard</title>
+  <title>ar.io Bundler — Admin</title>
+  <link rel="icon" type="image/svg+xml" href="/admin/dashboard/brand/ario-black.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Besley:wght@600;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/admin/dashboard/dashboard.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <!-- Navigation -->
+  <header class="topbar">
   <nav class="navbar">
     <div class="nav-left">
-      <h1>🚀 AR.IO Bundler Admin</h1>
+      <img class="nav-logo" src="/admin/dashboard/brand/ario-full-white.svg" alt="ar.io">
+      <span class="nav-product">Bundler</span>
     </div>
     <div class="nav-center">
       <a href="/admin/dashboard" class="nav-link active">Dashboard</a>
       <a href="/admin/queues" class="nav-link">Queues</a>
     </div>
     <div class="nav-right">
+      <label class="autorefresh">
+        <input type="checkbox" id="autorefresh-toggle" onchange="toggleAutoRefresh()"> Auto
+      </label>
       <button id="refresh-btn" class="refresh-btn" onclick="fetchStats()">
-        <span id="refresh-icon">🔄</span> Refresh
+        <span id="refresh-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></span> Refresh
       </button>
       <div class="refresh-indicator">
         <span class="status-dot" id="status-dot"></span>
         <span id="last-refresh">Never</span>
       </div>
+      <button id="logout-btn" class="nav-link" onclick="logout()">Sign out</button>
     </div>
   </nav>
+  <nav class="section-nav">
+    <a href="#sec-health">Health</a>
+    <a href="#sec-pipeline">Pipeline</a>
+    <a href="#sec-system">System</a>
+    <a href="#sec-queues">Queues</a>
+    <a href="#sec-failures">Failures</a>
+    <a href="#sec-find">Find</a>
+    <a href="#sec-money">Money</a>
+    <a href="#sec-business">Business</a>
+  </nav>
+  </header>
 
   <div class="container">
     <!-- Loading State -->
@@ -37,27 +58,122 @@
 
     <!-- Error State -->
     <div id="error" class="error-banner" style="display: none;">
-      <strong>⚠️ Error:</strong> <span id="error-message"></span>
+      <strong><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg> Error:</strong> <span id="error-message"></span>
       <button onclick="fetchStats()">Retry</button>
     </div>
 
     <!-- Dashboard Content -->
     <div id="dashboard" style="display: none;">
 
-      <!-- System Health Section -->
+      <!-- Aggregate Status Banner -->
+      <div id="status-banner" class="status-banner"></div>
+
+      <!-- Windowed pipeline health (good/bad over 1h/24h/7d) -->
+      <section class="section" id="sec-health">
+        <div class="section-head">
+          <h2>Pipeline Health</h2>
+          <div class="window-selector" id="window-selector">
+            <button type="button" data-window="1h" onclick="selectWindow('1h')">1h</button>
+            <button type="button" data-window="24h" class="active" onclick="selectWindow('24h')">24h</button>
+            <button type="button" data-window="7d" onclick="selectWindow('7d')">7d</button>
+          </div>
+        </div>
+        <div id="window-health"></div>
+      </section>
+
+      <!-- Pipeline (data flowing to permanence) -->
+      <section class="section" id="sec-pipeline">
+        <div class="section-head">
+          <h2>Bundle Pipeline</h2>
+          <div class="section-actions">
+            <button class="btn btn-sm" onclick="triggerAction('plan','Trigger a bundle-planning run now?')">Trigger plan</button>
+            <button class="btn btn-sm" onclick="triggerAction('redrive','Re-drive stuck posted bundles now?')">Re-drive posted</button>
+          </div>
+        </div>
+        <div id="pipeline-atrisk" class="atrisk-grid"></div>
+        <div id="pipeline-funnel" class="funnel"></div>
+      </section>
+
+      <!-- Operations: wallet + throughput -->
+      <div class="charts-row">
+        <section class="section">
+          <h2>Bundle Wallet</h2>
+          <div id="wallet-card"></div>
+        </section>
+        <section class="section">
+          <h2>Throughput &amp; Latency (24h)</h2>
+          <div id="throughput-grid" class="kv-grid"></div>
+        </section>
+      </div>
+
+      <!-- Trends (window-driven sparklines) -->
       <section class="section">
+        <h2 id="trends-title">Trends (24h)</h2>
+        <div id="trends-empty" class="muted" style="display:none;">Collecting data — trends appear as samples accumulate.</div>
+        <div class="spark-grid">
+          <div class="spark"><div class="spark-title">Backlog (unbundled)</div><canvas id="spark-backlog"></canvas></div>
+          <div class="spark"><div class="spark-title">Failures / hour</div><canvas id="spark-failed"></canvas></div>
+          <div class="spark"><div class="spark-title">Bundles permanent / hour</div><canvas id="spark-bundles"></canvas></div>
+          <div class="spark"><div class="spark-title">Wallet balance (AR)</div><canvas id="spark-wallet"></canvas></div>
+        </div>
+      </section>
+
+      <!-- System Health Section -->
+      <section class="section" id="sec-system">
         <h2>System Health</h2>
         <div id="health-grid" class="health-grid">
           <!-- Populated by JS -->
         </div>
+        <h3 class="subhead">Storage</h3>
+        <div id="storage-grid" class="health-grid"></div>
+        <h3 class="subhead">Schedulers</h3>
+        <div id="scheduler-grid" class="health-grid"></div>
+      </section>
+
+      <!-- Queue Health -->
+      <section class="section" id="sec-queues">
+        <h2>Queue Status</h2>
+        <div class="queue-summary" id="queue-summary">
+          <!-- Populated by JS -->
+        </div>
+        <div class="queue-grid" id="queue-grid">
+          <!-- Populated by JS -->
+        </div>
+      </section>
+
+      <!-- Failed Bundles (with reason) -->
+      <section class="section" id="sec-failures">
+        <h2>Failed Bundles</h2>
+        <div class="table-container">
+          <table id="failed-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Posted Bundles (awaiting seed/verify) -->
+      <section class="section">
+        <h2>Posted Bundles (awaiting seed &amp; verify)</h2>
+        <div class="table-container">
+          <table id="posted-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Lookup (investigate a specific id) -->
+      <section class="section lookup-section" id="sec-find">
+        <div class="section-head"><h2>Find an item</h2></div>
+        <div class="lookup-bar">
+          <input type="text" id="lookup-input" placeholder="Find a data item, bundle, or wallet by id…"
+                 onkeydown="if(event.key==='Enter')doLookup()">
+          <button class="btn" onclick="doLookup()">Search</button>
+        </div>
+        <div id="lookup-result" class="lookup-result"></div>
       </section>
 
       <!-- Stats Overview Cards -->
-      <section class="section">
+      <section class="section" id="sec-business">
         <h2>Overview</h2>
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-icon">📤</div>
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg></div>
             <div class="stat-content">
               <div class="stat-label">Today's Uploads</div>
               <div class="stat-value" id="today-uploads">--</div>
@@ -66,7 +182,7 @@
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon">📦</div>
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg></div>
             <div class="stat-content">
               <div class="stat-label">All Time Uploads</div>
               <div class="stat-value" id="total-uploads">--</div>
@@ -75,7 +191,7 @@
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon">👥</div>
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></svg></div>
             <div class="stat-content">
               <div class="stat-label">Unique Users</div>
               <div class="stat-value" id="unique-users">--</div>
@@ -84,16 +200,25 @@
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon">💳</div>
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg></div>
             <div class="stat-content">
-              <div class="stat-label">Traditional Payments</div>
-              <div class="stat-value" id="traditional-total">--</div>
-              <div class="stat-meta" id="traditional-count">--</div>
+              <div class="stat-label">Credit Top-ups (Stripe + crypto)</div>
+              <div class="stat-value" id="topup-total">--</div>
+              <div class="stat-meta" id="topup-count">--</div>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon">💰</div>
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.744 17.736a6 6 0 1 1-7.48-7.48"/><path d="M15 6h1v4"/><path d="m6.134 14.768.866-.5 2 3.464"/><circle cx="16" cy="8" r="6"/></svg></div>
+            <div class="stat-content">
+              <div class="stat-label">Outstanding Credit Balances</div>
+              <div class="stat-value" id="balance-total">--</div>
+              <div class="stat-meta" id="balance-users">--</div>
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg></div>
             <div class="stat-content">
               <div class="stat-label">x402 Payments (USDC)</div>
               <div class="stat-value" id="x402-total">--</div>
@@ -113,33 +238,40 @@
           </div>
         </section>
 
-        <!-- Traditional Payment Types Distribution -->
+        <!-- Crypto Top-ups by Token -->
         <section class="section chart-section">
-          <h2>Traditional Payment Types</h2>
+          <h2>Crypto Top-ups by Token</h2>
           <div class="chart-container">
-            <canvas id="payment-type-chart"></canvas>
+            <canvas id="crypto-token-chart"></canvas>
           </div>
         </section>
       </div>
 
-      <!-- Networks Chart -->
+      <!-- Top-ups by Provider -->
       <section class="section">
-        <h2>x402 Payments by Network</h2>
-        <div class="chart-container-wide">
-          <canvas id="network-chart"></canvas>
+        <h2>Credit Top-ups by Provider</h2>
+        <div class="table-container">
+          <table id="topup-provider-table">
+            <!-- Populated by JS -->
+          </table>
         </div>
       </section>
 
-      <!-- Queue Health -->
-      <section class="section">
-        <h2>Queue Status</h2>
-        <div class="queue-summary" id="queue-summary">
-          <!-- Populated by JS -->
-        </div>
-        <div class="queue-grid" id="queue-grid">
-          <!-- Populated by JS -->
-        </div>
-      </section>
+      <!-- x402 Payment Modes + Networks -->
+      <div class="charts-row">
+        <section class="section chart-section">
+          <h2>x402 Payment Modes</h2>
+          <div class="chart-container">
+            <canvas id="payment-type-chart"></canvas>
+          </div>
+        </section>
+        <section class="section chart-section">
+          <h2>x402 Payments by Network</h2>
+          <div class="chart-container">
+            <canvas id="network-chart"></canvas>
+          </div>
+        </section>
+      </div>
 
       <!-- Top Uploaders -->
       <section class="section">
@@ -161,29 +293,45 @@
         </div>
       </section>
 
-      <!-- Recent Traditional Payments -->
+      <!-- Recent Top-ups (Stripe + crypto) -->
       <section class="section">
-        <h2>Recent Traditional Payments</h2>
+        <h2>Recent Credit Top-ups</h2>
         <div class="table-container">
-          <table id="recent-traditional-payments-table">
+          <table id="recent-topups-table">
             <!-- Populated by JS -->
           </table>
         </div>
       </section>
 
-      <!-- Recent x402 Payments -->
-      <section class="section">
-        <h2>Recent x402 Payments (USDC)</h2>
+      <!-- Money Integrity -->
+      <section class="section" id="sec-money">
+        <h2>Money Integrity</h2>
+        <div id="integrity-grid" class="atrisk-grid"></div>
         <div class="table-container">
-          <table id="recent-x402-payments-table">
-            <!-- Populated by JS -->
-          </table>
+          <table id="failed-payments-table"><!-- Populated by JS --></table>
         </div>
       </section>
 
-      <!-- Recent Bundles -->
+      <!-- Recent x402 activity — payment service + upload service (tabbed) -->
       <section class="section">
-        <h2>Recent Bundles</h2>
+        <div class="section-head">
+          <h2>Recent x402 Activity (USDC)</h2>
+          <div class="window-selector" id="x402-tabs">
+            <button type="button" class="active" onclick="showX402('payment')">Payment Service</button>
+            <button type="button" onclick="showX402('upload')">Upload Service</button>
+          </div>
+        </div>
+        <div id="x402-tab-payment" class="table-container">
+          <table id="recent-traditional-payments-table"><!-- Populated by JS --></table>
+        </div>
+        <div id="x402-tab-upload" class="table-container" style="display:none;">
+          <table id="recent-x402-payments-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Recent Permanent Bundles -->
+      <section class="section">
+        <h2>Recent Permanent Bundles</h2>
         <div class="table-container">
           <table id="recent-bundles-table">
             <!-- Populated by JS -->

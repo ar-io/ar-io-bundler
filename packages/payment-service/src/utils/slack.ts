@@ -26,6 +26,7 @@ import globalLogger from "../logger";
 import { baseAmountToTokenAmount, tokenExponentMap } from "../pricing/pricing";
 import { winstonToCredits } from "../types";
 import { zeroDecimalCurrencyTypes } from "../types/supportedCurrencies";
+import { Winston } from "../types/winston";
 
 export const slackChannels = {
   admin: process.env.SLACK_TURBO_ADMIN_CHANNEL_ID,
@@ -86,6 +87,7 @@ export const sendCryptoFundSlackMessage = async ({
   tokenType,
   winstonCreditAmount,
   usdEquivalent,
+  referer,
 }: (PendingPaymentTransaction | CreateNewCreditedTransactionParams) & {
   usdEquivalent: number;
 }) => {
@@ -113,6 +115,9 @@ export const sendCryptoFundSlackMessage = async ({
     return;
   }
 
+  // Match the legacy Turbo format, which included the referrer when present.
+  const referrerLine = referer ? `\nReferrer: ${referer}` : "";
+
   return sendSlackMessage({
     channel: slackChannels.topUp,
     message: `New crypto payment credited:\`\`\`
@@ -120,7 +125,53 @@ Tokens: ${tokens} ${tokenType}
 Credits: ${credits}
 USD Equivalent: ${usdEquivalent === 0 ? "less than $0.01" : `$${usdEquivalent}`}
 Address: ${destinationAddress}
-TxID: ${transactionId}\`\`\``,
+TxID: ${transactionId}${referrerLine}\`\`\``,
+  });
+};
+
+export const sendX402TopUpSlackMessage = async ({
+  address,
+  payerAddress,
+  usdcAmount,
+  winstonCreditAmount,
+  network,
+  txHash,
+  mode,
+}: {
+  address: string;
+  payerAddress: string;
+  /** USDC paid, in atomic 6-decimal units (as stored on the payment row). */
+  usdcAmount: string;
+  winstonCreditAmount: Winston;
+  network: string;
+  txHash: string;
+  /** "topup" (full credit) or "hybrid" (excess credited after an upload). */
+  mode: string;
+}) => {
+  if (isDevEnv) {
+    // Don't send slack messages in dev env
+    return;
+  }
+
+  // USDC is 6-decimal; 1 USDC ≈ $1, so the dollar value is the same number.
+  // Note: for hybrid mode this is the TOTAL paid (part funded an upload); the
+  // Credits line below is only what was credited to balance — Mode disambiguates.
+  const usdc = new BigNumber(usdcAmount).dividedBy(1e6);
+  const credits = baseAmountToTokenAmount(
+    winstonCreditAmount.toString(),
+    "arweave"
+  ).toFixed(12);
+
+  return sendSlackMessage({
+    channel: slackChannels.topUp,
+    message: `New x402 USDC top-up credited:\`\`\`
+USDC paid: ${usdc.toFixed(6)} ($${usdc.toFixed(2)})
+Credits: ${credits}
+Address: ${address}
+Payer: ${payerAddress}
+Network: ${network}
+Mode: ${mode}
+TxID: ${txHash}\`\`\``,
   });
 };
 
