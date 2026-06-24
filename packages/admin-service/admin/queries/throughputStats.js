@@ -40,19 +40,25 @@ async function countSince(db, table, dateColumn, interval) {
   return { count: parseInt(row.count) || 0, bytes: String(row.bytes) };
 }
 
-/** Posted→permanent latency distribution (seconds) over a recent window. */
+/**
+ * True end-to-end upload→permanent latency distribution (seconds) over a recent
+ * window. permanent_data_items retains the original uploaded_date, so this is the
+ * user-facing SLA: how long from accepting an upload to it being permanent.
+ */
 async function getPermanenceLatency(db, interval = '24 hours') {
-  if (!(await db.schema.hasTable('permanent_bundle'))) {
-    return { avgSec: null, p50Sec: null, maxSec: null, sampleCount: 0 };
+  if (!(await db.schema.hasTable('permanent_data_items'))) {
+    return { avgSec: null, p50Sec: null, maxSec: null, sampleCount: 0, basis: 'upload→permanent' };
   }
-  const row = await db('permanent_bundle')
+  const lat = `EXTRACT(EPOCH FROM (permanent_date - uploaded_date))`;
+  const row = await db('permanent_data_items')
     .where('permanent_date', '>=', db.raw(`NOW() - INTERVAL '${interval}'`))
-    .whereNotNull('posted_date')
+    .whereNotNull('uploaded_date')
+    .whereRaw(`permanent_date >= uploaded_date`)
     .select(
       db.raw('COUNT(*) as sample_count'),
-      db.raw('AVG(EXTRACT(EPOCH FROM (permanent_date - posted_date))) as avg_sec'),
-      db.raw('PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (permanent_date - posted_date))) as p50_sec'),
-      db.raw('MAX(EXTRACT(EPOCH FROM (permanent_date - posted_date))) as max_sec')
+      db.raw(`AVG(${lat}) as avg_sec`),
+      db.raw(`PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${lat}) as p50_sec`),
+      db.raw(`MAX(${lat}) as max_sec`)
     )
     .first();
 
@@ -62,6 +68,7 @@ async function getPermanenceLatency(db, interval = '24 hours') {
     p50Sec: num(row.p50_sec),
     maxSec: num(row.max_sec),
     sampleCount: parseInt(row.sample_count) || 0,
+    basis: 'upload→permanent',
   };
 }
 

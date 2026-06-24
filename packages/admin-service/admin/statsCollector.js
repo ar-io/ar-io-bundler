@@ -218,6 +218,9 @@ async function getStats(queues = []) {
     // Server-side health rollup (status banner + thresholds in one place).
     stats.health = computeHealthRollup(stats, runtimeConfig.thresholds || {});
 
+    // Record a compact history point for trend sparklines (rate-limited).
+    await recordHistoryPoint(stats);
+
     // Cache result
     if (cacheRedis) {
       try {
@@ -486,7 +489,84 @@ async function lookupEntity(q) {
     } catch (e) { /* ignore */ }
   }
 
+  // No exact hit: fall back to a bounded prefix search on indexed id columns
+  // (only for reasonably specific prefixes, to keep it index-friendly).
+  if (results.length === 0 && q.length >= 6 && /^[A-Za-z0-9_-]+$/.test(q)) {
+    // Escape LIKE wildcards so '_' / '%' in an id are treated literally (data
+    // item ids are base64url and legitimately contain '_' and '-').
+    const prefix = q.replace(/[\\%_]/g, '\\$&') + '%';
+    const prefixTables = [
+      ['new_data_item', 'data_item_id', 'data item', 'new — awaiting bundling'],
+      ['planned_data_item', 'data_item_id', 'data item', 'planned'],
+      ['permanent_data_items', 'data_item_id', 'data item', 'permanent'],
+      ['permanent_bundle', 'bundle_id', 'bundle', 'permanent'],
+      ['posted_bundle', 'bundle_id', 'bundle', 'posted'],
+      ['failed_bundle', 'bundle_id', 'bundle', 'failed'],
+    ];
+    for (const [table, col, kind, state] of prefixTables) {
+      try {
+        if (!(await uploadDb.schema.hasTable(table))) continue;
+        const rows = await uploadDb(table).whereRaw(`${col} LIKE ? ESCAPE '\\'`, [prefix]).select(col).limit(5);
+        rows.forEach((r) => results.push({ kind, state, detail: `${col} ${r[col]} (prefix match)` }));
+        if (results.length >= 15) break;
+      } catch (e) { /* ignore */ }
+    }
+  }
+
   return { found: results.length > 0, results };
+}
+
+const HISTORY_KEY = 'admin:history:v1';
+const HISTORY_MAX = 1500;        // ~24h at ~1/min
+const HISTORY_MIN_GAP_MS = 55000; // don't record denser than ~1/min
+
+/**
+ * Append a compact trend datapoint (rate-limited) for the sparklines.
+ */
+async function recordHistoryPoint(stats) {
+  if (!cacheRedis) return;
+  try {
+    const newestRaw = await cacheRedis.lindex(HISTORY_KEY, 0);
+    if (newestRaw) {
+      const newest = JSON.parse(newestRaw);
+      if (newest && Date.now() - newest.t < HISTORY_MIN_GAP_MS) return;
+    }
+    const risk = (stats.pipeline && stats.pipeline.atRisk) || {};
+    const tp = stats.throughput || {};
+    const point = {
+      t: Date.now(),
+      bk: risk.backlogItems || 0,
+      ba: risk.backlogOldestAgeSec || 0,
+      rf: (stats.system && stats.system.queues && stats.system.queues.totalRecentFailed) || 0,
+      ib: risk.inFlightBundles || 0,
+      ar: (tp.arrivals && tp.arrivals.lastHour) || 0,
+      bp: (tp.bundlesPermanent && tp.bundlesPermanent.lastHour) || 0,
+      w: stats.wallet && stats.wallet.balanceAr != null ? Number(stats.wallet.balanceAr) : null,
+      s: stats.health && stats.health.status,
+    };
+    await cacheRedis.lpush(HISTORY_KEY, JSON.stringify(point));
+    await cacheRedis.ltrim(HISTORY_KEY, 0, HISTORY_MAX - 1);
+  } catch (error) {
+    console.warn('Failed to record history point:', error.message);
+  }
+}
+
+/**
+ * Return trend datapoints (oldest→newest) within the last `hours`.
+ */
+async function getHistory(hours = 24) {
+  if (!cacheRedis) return { points: [] };
+  try {
+    const raw = await cacheRedis.lrange(HISTORY_KEY, 0, HISTORY_MAX - 1);
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    const points = raw
+      .map((r) => { try { return JSON.parse(r); } catch { return null; } })
+      .filter((p) => p && p.t >= cutoff)
+      .reverse();
+    return { points };
+  } catch (error) {
+    return { points: [], error: error.message };
+  }
 }
 
 module.exports = {
@@ -494,5 +574,7 @@ module.exports = {
   getStats,
   invalidateCache,
   lookupEntity,
+  getHistory,
+  recordHistoryPoint,
   cleanup
 };

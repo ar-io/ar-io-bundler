@@ -34,8 +34,10 @@ const DEFAULTS = {
   pendingPayAgeCritSec: 7200,
   diskWarnPct: 80,
   diskCritPct: 90,
-  queueFailedWarn: 25,
-  queueFailedCrit: 250,
+  // Alert on the RECENT failure rate (last hour), not lifetime totals — BullMQ
+  // keeps failed jobs until cleaned, so cumulative counts are mostly stale cruft.
+  queueRecentFailedWarn: 10,
+  queueRecentFailedCrit: 50,
   // PM2 processes whose outage is critical to the pipeline / money path.
   criticalServices: ['upload-workers', 'payment-workers'],
 };
@@ -121,10 +123,13 @@ function computeHealthRollup(stats, overrides = {}) {
       add('critical', 'service', `${name} is ${svc.status}`);
   });
 
-  // --- Queue failures (aggregate) ---
-  const totalFailed = (stats.system && stats.system.queues && stats.system.queues.totalFailed) || 0;
-  if (totalFailed >= t.queueFailedCrit) add('critical', 'queues', `${totalFailed} failed jobs across queues`);
-  else if (totalFailed >= t.queueFailedWarn) add('degraded', 'queues', `${totalFailed} failed jobs across queues`);
+  // --- Queue failures (RECENT rate, last hour — not lifetime totals) ---
+  const q = (stats.system && stats.system.queues) || {};
+  const recentFailed = q.totalRecentFailed || 0;
+  if (recentFailed >= t.queueRecentFailedCrit)
+    add('critical', 'queues', `${recentFailed}+ jobs failed in the last hour`);
+  else if (recentFailed >= t.queueRecentFailedWarn)
+    add('degraded', 'queues', `${recentFailed} jobs failed in the last hour`);
 
   // Overall status = worst issue.
   let status = 'ok';

@@ -52,7 +52,7 @@ const { enqueue } = require(uploadServicePath + '/lib/arch/queues');
 
 const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
-const { initializeStatsCollector, getStats, lookupEntity, cleanup } = require("./admin/statsCollector");
+const { initializeStatsCollector, getStats, lookupEntity, getHistory, cleanup } = require("./admin/statsCollector");
 
 const app = new Koa();
 const router = new Router();
@@ -275,6 +275,17 @@ router.get('/admin/stats', statsRateLimiter, async (ctx) => {
   }
 });
 
+// Trend history for sparklines.
+router.get('/admin/history', statsRateLimiter, async (ctx) => {
+  const hours = Math.min(168, Math.max(1, parseInt(ctx.query.hours) || 24));
+  try {
+    ctx.body = await getHistory(hours);
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'history failed', message: error.message };
+  }
+});
+
 // Lookup: where does a data item / bundle / wallet currently live?
 router.get('/admin/lookup', statsRateLimiter, async (ctx) => {
   const q = (ctx.query.q || '').toString().trim();
@@ -416,9 +427,24 @@ const server = app.listen(PORT, () => {
   }
 });
 
+// Background trend sampler: record a history datapoint on a fixed cadence so the
+// sparklines have continuous data even when nobody is viewing the dashboard.
+// Set ADMIN_HISTORY_SAMPLE_MS=0 to disable.
+const HISTORY_SAMPLE_MS = process.env.ADMIN_HISTORY_SAMPLE_MS != null
+  ? parseInt(process.env.ADMIN_HISTORY_SAMPLE_MS)
+  : 120000;
+let historyTimer = null;
+if (HISTORY_SAMPLE_MS > 0) {
+  historyTimer = setInterval(() => {
+    getStats(queues).catch((e) => console.warn('history sampler:', e.message));
+  }, HISTORY_SAMPLE_MS);
+  if (typeof historyTimer.unref === 'function') historyTimer.unref();
+}
+
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('\n🛑 SIGTERM received, shutting down gracefully...');
+  if (historyTimer) clearInterval(historyTimer);
   await cleanup();
   server.close(() => {
     console.log('✅ Server closed');

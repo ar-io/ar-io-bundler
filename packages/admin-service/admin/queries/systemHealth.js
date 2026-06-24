@@ -327,12 +327,38 @@ async function getQueueHealth(queues) {
             queue.getDelayedCount()
           ]);
 
+          // Distinguish a live incident from stale cruft: BullMQ keeps failed
+          // jobs until cleaned, so a large `failed` may be months old. Sample the
+          // NEWEST failures (highest indices in the ascending-by-time set) and
+          // count how many landed in the last hour + how fresh the newest is.
+          let recentFailed = 0;
+          let newestFailedAgeSec = null;
+          if (failed > 0) {
+            const SAMPLE = 50;
+            const start = Math.max(0, failed - SAMPLE);
+            const jobs = await queue.getFailed(start, failed - 1);
+            const now = Date.now();
+            let newest = 0;
+            for (const j of jobs) {
+              const ts = j.finishedOn || j.timestamp;
+              if (!ts) continue;
+              if (ts > newest) newest = ts;
+              if (now - ts <= 3600 * 1000) recentFailed += 1;
+            }
+            if (newest) newestFailedAgeSec = Math.max(0, Math.round((now - newest) / 1000));
+            // recentFailed is capped at the sample size; flag it as a floor.
+            if (recentFailed === SAMPLE) recentFailed = SAMPLE; // ">=" semantics in UI
+          }
+
           return {
             name: queue.name,
             waiting,
             active,
             failed,
-            delayed
+            delayed,
+            recentFailed,
+            recentFailedCapped: failed > 50 && recentFailed === 50,
+            newestFailedAgeSec
           };
         } catch (error) {
           console.error(`Failed to get stats for queue ${adapter.queue?.name}:`, error);
@@ -342,6 +368,8 @@ async function getQueueHealth(queues) {
             active: 0,
             failed: 0,
             delayed: 0,
+            recentFailed: 0,
+            newestFailedAgeSec: null,
             error: error.message
           };
         }
@@ -352,12 +380,14 @@ async function getQueueHealth(queues) {
     const totalWaiting = queueStats.reduce((sum, q) => sum + q.waiting, 0);
     const totalFailed = queueStats.reduce((sum, q) => sum + q.failed, 0);
     const totalDelayed = queueStats.reduce((sum, q) => sum + q.delayed, 0);
+    const totalRecentFailed = queueStats.reduce((sum, q) => sum + (q.recentFailed || 0), 0);
 
     return {
       totalActive,
       totalWaiting,
       totalFailed,
       totalDelayed,
+      totalRecentFailed,
       byQueue: queueStats
     };
   } catch (error) {

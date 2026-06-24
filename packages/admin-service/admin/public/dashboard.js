@@ -13,6 +13,69 @@ let signatureChart = null;
 let paymentModeChart = null;
 let networkChart = null;
 let cryptoTokenChart = null;
+const sparkCharts = {};
+
+/**
+ * Fetch trend history and render sparklines.
+ */
+async function fetchHistory() {
+  try {
+    const res = await fetch('/admin/history?hours=24', { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSparklines(data.points || []);
+  } catch (err) {
+    /* trends are best-effort */
+  }
+}
+
+function renderSparkline(canvasId, points, accessor, color) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const vals = points.map(accessor);
+  const cfg = {
+    type: 'line',
+    data: {
+      labels: points.map(p => p.t),
+      datasets: [{
+        data: vals,
+        borderColor: color,
+        backgroundColor: color + '22',
+        borderWidth: 2,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          title: (items) => new Date(items[0].label).toLocaleTimeString(),
+          label: (item) => `${item.formattedValue}`,
+        },
+      } },
+      scales: {
+        x: { display: false },
+        y: { display: true, beginAtZero: true, ticks: { maxTicksLimit: 3, font: { size: 10 } }, grid: { display: false } },
+      },
+    },
+  };
+  if (sparkCharts[canvasId]) sparkCharts[canvasId].destroy();
+  sparkCharts[canvasId] = new Chart(canvas.getContext('2d'), cfg);
+}
+
+function renderSparklines(points) {
+  const empty = document.getElementById('trends-empty');
+  if (points.length < 2) { if (empty) empty.style.display = 'block'; return; }
+  if (empty) empty.style.display = 'none';
+  renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
+  renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
+  renderSparkline('spark-bundles', points, p => p.bp, '#16a34a');
+  renderSparkline('spark-wallet', points, p => p.w, '#0070f3');
+}
 
 /**
  * Fetch stats from API and update dashboard
@@ -78,6 +141,9 @@ async function fetchStats() {
 
     // Update last refresh time
     updateLastRefresh(stats.timestamp, stats._cached, stats._cacheAge);
+
+    // Trends (separate, non-blocking)
+    fetchHistory();
 
   } catch (err) {
     console.error('Failed to fetch stats:', err);
@@ -230,8 +296,8 @@ function updateThroughput(tp) {
     kv('Items permanent', `${tp.itemsPermanent.lastHour}/h · ${tp.itemsPermanent.last24h}/24h`) +
     kv('Bundles permanent', `${tp.bundlesPermanent.lastHour}/h · ${tp.bundlesPermanent.last24h}/24h`) +
     kv('Data permanent (24h)', fmtBytes(tp.bundlesPermanent.bytes24h)) +
-    kv('Post→permanent p50', fmtDur(lat.p50Sec)) +
-    kv('Post→permanent avg/max', `${fmtDur(lat.avgSec)} / ${fmtDur(lat.maxSec)}`);
+    kv('Upload→permanent p50', fmtDur(lat.p50Sec)) +
+    kv('Upload→permanent avg/max', `${fmtDur(lat.avgSec)} / ${fmtDur(lat.maxSec)}`);
 }
 
 /**
@@ -695,8 +761,10 @@ function updateNetworkChart(byNetwork) {
  * Update queue status summary and grid
  */
 function updateQueueStatus(queues) {
-  // Summary
+  // Summary — "Failed (1h)" is the alerting signal; "Failed (total)" is mostly
+  // stale cruft BullMQ keeps until cleaned.
   const summary = document.getElementById('queue-summary');
+  const recent = queues.totalRecentFailed || 0;
   summary.innerHTML = `
     <div class="queue-stat">
       <div class="queue-stat-value">${queues.totalActive || 0}</div>
@@ -707,8 +775,12 @@ function updateQueueStatus(queues) {
       <div class="queue-stat-label">Waiting</div>
     </div>
     <div class="queue-stat">
-      <div class="queue-stat-value">${queues.totalFailed || 0}</div>
-      <div class="queue-stat-label">Failed</div>
+      <div class="queue-stat-value ${recent > 0 ? 'text-danger' : ''}">${recent}${recent >= 50 ? '+' : ''}</div>
+      <div class="queue-stat-label">Failed (1h)</div>
+    </div>
+    <div class="queue-stat">
+      <div class="queue-stat-value muted">${(queues.totalFailed || 0).toLocaleString()}</div>
+      <div class="queue-stat-label">Failed (total)</div>
     </div>
     <div class="queue-stat">
       <div class="queue-stat-value">${queues.totalDelayed || 0}</div>
@@ -722,12 +794,19 @@ function updateQueueStatus(queues) {
 
   (queues.byQueue || []).forEach(q => {
     const el = document.createElement('div');
-    el.className = `queue-card ${q.failed > 0 ? 'has-failures' : ''}`;
+    // Highlight only queues failing RECENTLY (active incident); a big stale
+    // `failed` total with 0 recent is not alarming.
+    const activeIncident = (q.recentFailed || 0) > 0;
+    el.className = `queue-card ${activeIncident ? 'has-failures' : ''}`;
     const boardUrl = `/admin/queues/queue/${encodeURIComponent(q.name)}`;
+    const failedLabel = activeIncident
+      ? `${q.recentFailed}${q.recentFailedCapped ? '+' : ''} in 1h`
+      : (q.failed > 0 ? `${q.failed.toLocaleString()} (stale)` : '0');
+    const failedClass = activeIncident ? 'text-danger' : (q.failed > 0 ? 'muted' : '');
     el.innerHTML = `
       <div class="queue-head">
         <a class="queue-name" href="${boardUrl}" title="Open in Bull Board">${q.name} ↗</a>
-        ${q.failed > 0 ? `<button class="btn btn-xs" onclick="retryQueue('${escapeHtml(q.name)}')">Retry ${q.failed}</button>` : ''}
+        ${q.failed > 0 ? `<button class="btn btn-xs" onclick="retryQueue('${escapeHtml(q.name)}')">Retry ${q.failed.toLocaleString()}</button>` : ''}
       </div>
       <div class="queue-stats">
         <span>
@@ -739,7 +818,7 @@ function updateQueueStatus(queues) {
           <div class="label">Waiting</div>
         </span>
         <span>
-          <div class="value ${q.failed > 0 ? 'text-danger' : ''}">${q.failed}</div>
+          <div class="value ${failedClass}" style="font-size:15px;">${failedLabel}</div>
           <div class="label">Failed</div>
         </span>
       </div>
@@ -1156,10 +1235,18 @@ let autoRefreshTimer = null;
 
 function toggleAutoRefresh() {
   const on = document.getElementById('autorefresh-toggle').checked;
+  try { localStorage.setItem('adminAutoRefresh', on ? '1' : '0'); } catch (e) {}
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
   if (on) {
     autoRefreshTimer = setInterval(fetchStats, 15000); // 15s (cache is 30s server-side)
   }
+}
+
+function restoreAutoRefresh() {
+  let on = false;
+  try { on = localStorage.getItem('adminAutoRefresh') === '1'; } catch (e) {}
+  const cb = document.getElementById('autorefresh-toggle');
+  if (cb && on) { cb.checked = true; toggleAutoRefresh(); }
 }
 
 /**
@@ -1246,4 +1333,5 @@ async function logout() {
 }
 
 // Initial load
+restoreAutoRefresh();
 fetchStats();
