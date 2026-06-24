@@ -59,7 +59,11 @@ const pick = (...keys) =>
 const gatewayEnv = pick(
   "PRICE_ORACLE_GATEWAY_URL",
   "ARWEAVE_GATEWAY",
+  "ARWEAVE_GATEWAYS",
   "ARWEAVE_UPLOAD_NODE",
+  // AR.IO chunk-distributor nodes (broadcast-chunks worker). Pin like the other
+  // gateway endpoints so a bare restart can't drop it back to single-node seeding.
+  "AR_IO_NODE_URLS",
   "PUBLIC_ACCESS_GATEWAY",
   // Optical bridge config — pin from .env too. Previously OPTICAL_BRIDGE_URL was
   // HARDCODED to http://localhost:4000 in the upload-workers env block, which
