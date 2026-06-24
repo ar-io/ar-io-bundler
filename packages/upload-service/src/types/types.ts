@@ -75,3 +75,20 @@ export interface DataItemOffsetsInfo {
   parentDataItemId?: TransactionId;
   startOffsetInParentDataItemPayload?: number;
 }
+
+/**
+ * One unit of work for the `broadcast-chunks` queue: everything needed to POST a
+ * single Arweave chunk to an AR.IO node EXCEPT the chunk bytes themselves, which
+ * are stored in the object store at `chunks/{data_root}/{offset}` (the worker
+ * loads them by this header). All numeric fields are stringified (BullMQ/JSON).
+ */
+export interface ChunkHeader {
+  planId: string;
+  bundleId: string;
+  data_root: string;
+  data_size: string;
+  data_path: string;
+  offset: string;
+  chunkIndex: string;
+  chunkByteLength: string;
+}

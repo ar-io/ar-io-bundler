@@ -83,21 +83,31 @@ export async function seedBundleHandler(
     ]),
   });
 
+  let enqueuedChunkCount: number;
   try {
-    await arweave.uploadChunksFromPayloadStream(
-      () => getBundlePayload(objectStore, planId),
-      bundleTx
-    );
+    // Prepare the bundle's chunks, stage each chunk's bytes in the object store,
+    // and enqueue one broadcast-chunks job per chunk. The actual per-chunk
+    // broadcast to the AR.IO distributor nodes runs asynchronously in that queue.
+    enqueuedChunkCount =
+      await arweave.uploadAndEnqueueChunksToObjectStoreFromPayloadStream({
+        planId,
+        getPayloadStream: () => getBundlePayload(objectStore, planId),
+        objectStore,
+        bundleTx,
+      });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
-    logger.error("Error when uploading chunks: ", {
+    logger.error("Error when staging/enqueuing chunks: ", {
       error: message,
       bundleToSeed,
     });
     throw error;
   }
 
-  logger.info("Finished uploading chunks.", { bundleToSeed });
+  logger.info("Finished staging + enqueuing chunks for broadcast.", {
+    bundleToSeed,
+    enqueuedChunkCount,
+  });
 
   // Optimistic surface 3 (best-effort, env-gated CHUNK_CACHE_BRIDGE_ENABLED):
   // warm the read gateway's /chunk cache before the tx mines. Fired DETACHED and
