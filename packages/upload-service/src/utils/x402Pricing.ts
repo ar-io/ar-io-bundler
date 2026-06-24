@@ -19,6 +19,13 @@ import axios from "axios";
 import logger from "../logger";
 import { W, Winston } from "../types/types";
 
+// Hard ceiling on how stale a cached AR/USD price may be and still be used to
+// price x402 payments when CoinGecko is failing. Past this, fail CLOSED rather
+// than charging off an arbitrarily old price. Mirrors the payment-service oracle.
+const MAX_STALE_AR_PRICE_MS = +(
+  process.env.MAX_STALE_AR_PRICE_MS || 60 * 60 * 1000
+);
+
 /**
  * Simple x402 pricing oracle for converting Winston to USDC
  *
@@ -60,18 +67,32 @@ export class X402PricingOracle {
     } catch (error) {
       logger.error("Failed to fetch AR price from CoinGecko", { error });
 
-      // Fallback to cached price if available
+      // Bounded stale fallback: ride out a SHORT oracle outage with the last good
+      // price, but fail CLOSED once it is too stale. Pricing x402 payments off an
+      // unbounded-stale (or, previously, a hardcoded $20) price can materially
+      // under/over-charge as the market moves.
       if (this.arPriceCache) {
-        logger.warn("Using stale AR price from cache", {
+        const staleAge = Date.now() - this.arPriceCache.timestamp;
+        if (staleAge <= MAX_STALE_AR_PRICE_MS) {
+          logger.warn("Using stale AR price from cache", {
+            price: this.arPriceCache.price,
+            age: staleAge,
+            maxStaleMs: MAX_STALE_AR_PRICE_MS,
+          });
+          return this.arPriceCache.price;
+        }
+        logger.error("Cached AR price is too stale to price payments", {
           price: this.arPriceCache.price,
-          age: Date.now() - this.arPriceCache.timestamp,
+          age: staleAge,
+          maxStaleMs: MAX_STALE_AR_PRICE_MS,
         });
-        return this.arPriceCache.price;
       }
 
-      // Ultimate fallback
-      logger.warn("Using fallback AR price of $20");
-      return 20; // Fallback price
+      // No usable cached price → fail closed. (Previously fell back to a hardcoded
+      // $20, which silently mis-priced uploads whenever AR != $20.)
+      throw new Error(
+        "Failed to fetch AR price and no sufficiently-fresh cached price available"
+      );
     }
   }
 
