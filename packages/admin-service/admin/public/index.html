@@ -69,16 +69,6 @@
         <div id="window-health"></div>
       </section>
 
-      <!-- Lookup -->
-      <section class="section lookup-section">
-        <div class="lookup-bar">
-          <input type="text" id="lookup-input" placeholder="Find a data item, bundle, or wallet by id…"
-                 onkeydown="if(event.key==='Enter')doLookup()">
-          <button class="btn" onclick="doLookup()">Search</button>
-        </div>
-        <div id="lookup-result" class="lookup-result"></div>
-      </section>
-
       <!-- Pipeline (data flowing to permanence) -->
       <section class="section">
         <div class="section-head">
@@ -126,6 +116,44 @@
         <div id="storage-grid" class="health-grid"></div>
         <h3 class="subhead">Schedulers</h3>
         <div id="scheduler-grid" class="health-grid"></div>
+      </section>
+
+      <!-- Queue Health -->
+      <section class="section">
+        <h2>Queue Status</h2>
+        <div class="queue-summary" id="queue-summary">
+          <!-- Populated by JS -->
+        </div>
+        <div class="queue-grid" id="queue-grid">
+          <!-- Populated by JS -->
+        </div>
+      </section>
+
+      <!-- Failed Bundles (with reason) -->
+      <section class="section">
+        <h2>Failed Bundles</h2>
+        <div class="table-container">
+          <table id="failed-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Posted Bundles (awaiting seed/verify) -->
+      <section class="section">
+        <h2>Posted Bundles (awaiting seed &amp; verify)</h2>
+        <div class="table-container">
+          <table id="posted-bundles-table"><!-- Populated by JS --></table>
+        </div>
+      </section>
+
+      <!-- Lookup (investigate a specific id) -->
+      <section class="section lookup-section">
+        <div class="section-head"><h2>Find an item</h2></div>
+        <div class="lookup-bar">
+          <input type="text" id="lookup-input" placeholder="Find a data item, bundle, or wallet by id…"
+                 onkeydown="if(event.key==='Enter')doLookup()">
+          <button class="btn" onclick="doLookup()">Search</button>
+        </div>
+        <div id="lookup-result" class="lookup-result"></div>
       </section>
 
       <!-- Stats Overview Cards -->
@@ -233,17 +261,6 @@
         </section>
       </div>
 
-      <!-- Queue Health -->
-      <section class="section">
-        <h2>Queue Status</h2>
-        <div class="queue-summary" id="queue-summary">
-          <!-- Populated by JS -->
-        </div>
-        <div class="queue-grid" id="queue-grid">
-          <!-- Populated by JS -->
-        </div>
-      </section>
-
       <!-- Top Uploaders -->
       <section class="section">
         <h2>Top Uploaders (Last 30 Days)</h2>
@@ -300,22 +317,6 @@
           <table id="recent-x402-payments-table">
             <!-- Populated by JS -->
           </table>
-        </div>
-      </section>
-
-      <!-- Failed Bundles (with reason) -->
-      <section class="section">
-        <h2>Failed Bundles</h2>
-        <div class="table-container">
-          <table id="failed-bundles-table"><!-- Populated by JS --></table>
-        </div>
-      </section>
-
-      <!-- Posted Bundles (awaiting seed/verify) -->
-      <section class="section">
-        <h2>Posted Bundles (awaiting seed &amp; verify)</h2>
-        <div class="table-container">
-          <table id="posted-bundles-table"><!-- Populated by JS --></table>
         </div>
       </section>
 
