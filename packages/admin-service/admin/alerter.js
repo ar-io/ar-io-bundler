@@ -251,8 +251,10 @@ async function maybeHeartbeat(stats) {
   lastHeartbeatDay = day;
 
   const health = stats.health || {};
-  const status = health.status || "ok";
   const open = (health.issues || []).length;
+  // Never show a green "ok" heartbeat if the rollup omitted a status but there
+  // are open issues — derive a non-clear status from the issue count instead.
+  const status = health.status || (open > 0 ? "degraded" : "ok");
 
   // Digest lines (the envelope renders the status header + color/env label).
   const lines = [`${open} open issue(s).`];

@@ -253,8 +253,9 @@ export const sendArNSBuySlackMessage = async ({
 
   const lines = [`Type: ${type}${years ? ` for ${years} years` : ""}`];
 
-  if (paymentAmount && currencyType) {
-    // Was a Fiat purchase to stripe
+  if (paymentAmount != null && currencyType) {
+    // Was a Fiat purchase to stripe (paymentAmount may legitimately be 0 for a
+    // fully promo-discounted purchase — use a null check, not a truthy check).
     const payment = zeroDecimalCurrencyTypes.includes(currencyType)
       ? paymentAmount.toString()
       : // convert from 2 decimal currency
