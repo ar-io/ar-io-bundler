@@ -260,6 +260,27 @@ async function computeStats(queues = []) {
 }
 
 /**
+ * Get a fresh, uncached system-health snapshot for the alerter.
+ *
+ * Reuses the stats-collector's existing DB/Redis connections. Deliberately
+ * bypasses the 30s stats cache so alerting reacts to the live state, and
+ * isolated from getStats() so a stats failure never blocks alerting.
+ *
+ * @param {array} queues - BullMQ queue adapters (from server.js)
+ * @returns {Promise<object>} { services, infrastructure, queues }
+ */
+async function getSystemHealthSnapshot(queues = []) {
+  return getSystemHealth({
+    uploadDb,
+    paymentDb,
+    redis: cacheRedis,
+    queueRedis,
+    minioClient: null, // MinIO health check can be added later
+    queues,
+  });
+}
+
+/**
  * Manually invalidate stats cache
  */
 async function invalidateCache() {
@@ -646,6 +667,7 @@ async function getHistory(hours = 24) {
 module.exports = {
   initializeStatsCollector,
   getStats,
+  getSystemHealthSnapshot,
   invalidateCache,
   lookupEntity,
   getHistory,
