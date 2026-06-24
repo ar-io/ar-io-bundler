@@ -28,10 +28,19 @@ const DEFAULTS = {
   backlogAgeCritSec: 7200, // 2 h   — backlog this old means something's stuck
   stuckPostedWarn: 1,
   stuckPostedCrit: 10,
+  // Bundles seeded but not yet permanent. Permanence legitimately lags posting
+  // (waiting on Arweave confirmations), so these are generous — only flag a
+  // genuine verify pileup, not normal confirmation latency.
+  seededAgeWarnSec: 7200, // 2 h
+  seededAgeCritSec: 21600, // 6 h — verify almost certainly stuck
   failedBundlesWarn: 1,
   failedBundlesCrit: 20,
   pendingPayAgeWarnSec: 1800,
   pendingPayAgeCritSec: 7200,
+  // x402-paid uploads stuck in pending_validation (never finalized). Generous —
+  // a slow/large upload legitimately sits here until it completes + reconciles.
+  x402StuckAgeWarnSec: 21600, // 6 h
+  x402StuckAgeCritSec: 86400, // 24 h
   diskWarnPct: 80,
   diskCritPct: 90,
   // Alert on the RECENT failure rate (last hour), not lifetime totals — BullMQ
@@ -84,6 +93,13 @@ function computeHealthRollup(stats, overrides = {}) {
     add('critical', 'pipeline', `${risk.failedBundles} failed bundles`);
   else if (risk.failedBundles >= t.failedBundlesWarn)
     add('degraded', 'pipeline', `${risk.failedBundles} failed bundles need review`);
+  // Verify pileup: seeded but not reaching permanent (verify stage stuck).
+  if (risk.seededBundles > 0 && risk.seededOldestAgeSec != null) {
+    if (risk.seededOldestAgeSec >= t.seededAgeCritSec)
+      add('critical', 'pipeline', `${risk.seededBundles} bundles seeded but not permanent, oldest ${fmtAge(risk.seededOldestAgeSec)} — verify stuck?`);
+    else if (risk.seededOldestAgeSec >= t.seededAgeWarnSec)
+      add('degraded', 'pipeline', `${risk.seededBundles} bundles seeded ${fmtAge(risk.seededOldestAgeSec)}+ awaiting permanence`);
+  }
 
   // --- Money integrity (never take money without crediting) ---
   const integ = (stats.payments && stats.payments.integrity) || {};
@@ -96,6 +112,15 @@ function computeHealthRollup(stats, overrides = {}) {
   }
   if ((integ.failedCrypto || {}).count > 0)
     add('degraded', 'payments', `${integ.failedCrypto.count} failed crypto payments`);
+  // x402-paid uploads that settled but never finalized (excludes top-ups, which
+  // legitimately stay pending_validation).
+  const x402stuck = integ.x402StuckUploads || {};
+  if (x402stuck.count > 0 && x402stuck.oldestAgeSec != null) {
+    if (x402stuck.oldestAgeSec >= t.x402StuckAgeCritSec)
+      add('critical', 'payments', `${x402stuck.count} x402-paid uploads not finalized, oldest ${fmtAge(x402stuck.oldestAgeSec)} — settlement/finalize stuck`);
+    else if (x402stuck.oldestAgeSec >= t.x402StuckAgeWarnSec)
+      add('degraded', 'payments', `${x402stuck.count} x402-paid uploads awaiting finalize (oldest ${fmtAge(x402stuck.oldestAgeSec)})`);
+  }
 
   // --- Storage ---
   const storage = stats.system && stats.system.storage ? stats.system.storage : {};
@@ -126,10 +151,23 @@ function computeHealthRollup(stats, overrides = {}) {
   // --- Queue failures (RECENT rate, last hour — not lifetime totals) ---
   const q = (stats.system && stats.system.queues) || {};
   const recentFailed = q.totalRecentFailed || 0;
-  if (recentFailed >= t.queueRecentFailedCrit)
-    add('critical', 'queues', `${recentFailed}+ jobs failed in the last hour`);
-  else if (recentFailed >= t.queueRecentFailedWarn)
-    add('degraded', 'queues', `${recentFailed} jobs failed in the last hour`);
+  if (recentFailed >= t.queueRecentFailedWarn) {
+    // Name the worst-offending queues so the alert is ACTIONABLE — i.e. tell the
+    // operator it's optical-post / verify-bundle / seed-bundle specifically,
+    // not just "something failed". (optical failures have no DB signal, so this
+    // queue breakdown is how they surface.)
+    const offenders = (Array.isArray(q.byQueue) ? q.byQueue : [])
+      .filter((x) => (x.recentFailed || 0) > 0)
+      .sort((a, b) => (b.recentFailed || 0) - (a.recentFailed || 0))
+      .slice(0, 4)
+      .map((x) => `${x.name}: ${x.recentFailed}`)
+      .join(', ');
+    const detail = offenders ? ` (${offenders})` : '';
+    if (recentFailed >= t.queueRecentFailedCrit)
+      add('critical', 'queues', `${recentFailed}+ jobs failed in the last hour${detail}`);
+    else
+      add('degraded', 'queues', `${recentFailed} jobs failed in the last hour${detail}`);
+  }
 
   // Overall status = worst issue.
   let status = 'ok';

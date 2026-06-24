@@ -303,11 +303,12 @@ async function getRecentX402Payments(db, limit = 25) {
  *  - failed crypto / failed top-up quotes / chargebacks: need attention.
  */
 async function getPaymentIntegrity(db) {
-  const [hasPending, hasFailed, hasFailedQuote, hasChargeback] = await Promise.all([
+  const [hasPending, hasFailed, hasFailedQuote, hasChargeback, hasX402] = await Promise.all([
     db.schema.hasTable(tableNames.pendingPaymentTransaction),
     db.schema.hasTable(tableNames.failedPaymentTransaction),
     db.schema.hasTable(tableNames.failedTopUpQuote),
     db.schema.hasTable(tableNames.chargebackReceipt),
+    db.schema.hasTable(tableNames.x402PaymentTransaction),
   ]);
 
   let pendingCrypto = { count: 0, winc: '0', ar: '0.000000', oldestAgeSec: null };
@@ -365,7 +366,31 @@ async function getPaymentIntegrity(db) {
     chargebacks = { count: parseInt(r.count) || 0 };
   }
 
-  return { pendingCrypto, failedCrypto, failedTopUpQuotes, chargebacks };
+  // x402 uploads that paid but were never finalized. The status starts at
+  // `pending_validation` and only x402Finalize (the post-upload reconciliation)
+  // moves it to confirmed/refunded/fraud_penalty. A row stuck there with a
+  // data_item_id = an upload that paid but never reconciled.
+  // CRITICAL: filter on `data_item_id IS NOT NULL` — pure top-ups (and topup-mode
+  // payments) have NO data item and are NEVER finalized, so they stay
+  // pending_validation forever by design; including them would false-alert on
+  // every successful top-up. Age from paid_at, computed in SQL (UTC-correct).
+  let x402StuckUploads = { count: 0, oldestAgeSec: null };
+  if (hasX402) {
+    const row = await db(tableNames.x402PaymentTransaction)
+      .where('status', 'pending_validation')
+      .whereNotNull('data_item_id')
+      .select(
+        db.raw('COUNT(*) as count'),
+        db.raw('EXTRACT(EPOCH FROM (now() - MIN(paid_at)))::bigint as oldest_age_sec')
+      )
+      .first();
+    const oldestAgeSec = row.oldest_age_sec != null
+      ? Math.max(0, Math.round(Number(row.oldest_age_sec)))
+      : null;
+    x402StuckUploads = { count: parseInt(row.count) || 0, oldestAgeSec };
+  }
+
+  return { pendingCrypto, failedCrypto, failedTopUpQuotes, chargebacks, x402StuckUploads };
 }
 
 module.exports = {
