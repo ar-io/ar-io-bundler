@@ -329,13 +329,18 @@ router.post('/admin/actions/retry-failed', async (ctx) => {
     return;
   }
   try {
-    const failed = await queue.getFailed(0, 999);
+    // Retry up to a bounded batch per request so a queue with thousands of
+    // failures can't hang the request; report what remains so the operator
+    // knows to click again.
+    const BATCH = 1000;
+    const failed = await queue.getFailed(0, BATCH - 1);
     let retried = 0;
     for (const job of failed) {
       try { await job.retry(); retried += 1; } catch { /* skip individual */ }
     }
-    console.log(`🔧 Admin ${ctx.state.adminUser || 'admin'} retried ${retried} failed jobs in ${queue.name} from ${ctx.ip}`);
-    ctx.body = { ok: true, retried, queue: queue.name };
+    const remaining = await queue.getFailedCount();
+    console.log(`🔧 Admin ${ctx.state.adminUser || 'admin'} retried ${retried} failed jobs in ${queue.name} (${remaining} remain) from ${ctx.ip}`);
+    ctx.body = { ok: true, retried, remaining, queue: queue.name };
   } catch (error) {
     ctx.status = 500;
     ctx.body = { error: 'retry failed', message: error.message };

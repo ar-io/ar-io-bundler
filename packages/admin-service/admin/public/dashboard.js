@@ -1222,8 +1222,11 @@ async function retryQueue(queueName) {
     });
     if (res.status === 401) { window.location.href = '/admin/login'; return; }
     const data = await res.json();
-    if (res.ok) { alert(`✅ Retried ${data.retried} job(s) in ${queueName}`); fetchStats(); }
-    else alert(`❌ ${data.error || 'Failed'}`);
+    if (res.ok) {
+      const more = data.remaining > 0 ? ` — ${data.remaining} still failed (click Retry again to continue)` : '';
+      alert(`✅ Retried ${data.retried} job(s) in ${queueName}${more}`);
+      fetchStats();
+    } else alert(`❌ ${data.error || 'Failed'}`);
   } catch (err) {
     alert(`❌ ${err.message}`);
   }
