@@ -131,13 +131,14 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (11 queues)
+- Asynchronous job processing via BullMQ (15 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
 **Admin Service** (`packages/admin-service/`):
 - Plain-JS (CommonJS) Koa app — more than Bull Board: a custom admin dashboard (`admin/`) with a stats collector and query modules (`bundleStats.js`, `x402Stats.js`, `uploadStats.js`, `systemHealth.js`) plus an HTML/CSS/JS frontend under `admin/public/`, behind auth + rate-limit middleware
 - Embeds Bull Board (`@bull-board/koa`) for queue monitoring at port 3002
+- Opt-in **Slack health alerter** (`admin/alerter.js` + `admin/notifier/slack.js`, `ALERTS_ENABLED=true`): consumes the dashboard's health rollup (`stats.health`) and posts matching ops alerts to Slack via a bot token, with an anti-spam fire-once/remind/resolve state machine. Test with `node packages/admin-service/admin/notifier/test-slack.js both`. Setup in `docs/operations/ADMIN_GUIDE.md` → Alerting.
 
 ### Dependency Injection Pattern
 
@@ -187,26 +188,32 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 11 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "11 queues"):
+BullMQ with 15 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "15 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`, `archive-copy`
 
-**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
-- `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
-- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1
+**Per-chunk seed broadcast (`broadcast-chunks`):** `seed-bundle` no longer uploads a bundle's chunks to a single node. It prepares each chunk, stages the bytes in the object store (`chunks/{data_root}/{offset}`), and enqueues **one `broadcast-chunks` job per chunk**. The `broadcast-chunks` worker POSTs each chunk to **one of several AR.IO chunk-distributor nodes** (`AR_IO_NODE_URLS`, shuffled, per-node retry + failover); each distributor performs its own multi-tip broadcast, so reaching one healthy node lands the chunk. Unset `AR_IO_NODE_URLS` → falls back to the single `ARWEAVE_UPLOAD_NODE` (unchanged single-node behavior). One job per chunk = independent retry + parallelism (not a whole-bundle re-seed on a single chunk failure). Metric: `chunk_seed_post_total{endpoint,result}`. The TX header is posted separately via `ARWEAVE_GATEWAYS` (unrelated to chunk seeding).
+
+**Durable balance refunds (`refund-balance`):** when a reserved payment must be returned (e.g. the upload fails after a balance reserve) and the synchronous refund to the payment service fails on the critical path, the refund is enqueued here. The worker retries `refundBalanceForData` (`throwOnFailure: true` → BullMQ attempts/backoff) until it lands, so a wallet is always credited back even through an extended payment-service outage. Added in the "fast-fail payment reserve + durable refund retry" work (commit c0b92c5).
+
+**Posted-bundle recovery (`redrive-posted`, #40):** a bundle whose `seed-bundle` exhausts its retries used to be stranded forever in `posted_bundle`. The `redrive-posted` scheduler re-enqueues seeding for stale `posted_bundle` rows (`POSTED_STALE_THRESHOLD_MS`, default 30 min) and after `MAX_SEED_REDRIVES` (default 5) demotes the bundle to `failed_bundle` (items repacked to `new_data_item`), emitting `posted_bundle_failed_to_seed_total`. Attempt counts live in the `posted_bundle_redrive` table.
+
+**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). **Five** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
+- `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3), `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (default 10 — chunks are small + independent, so this is the highest)
+- Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1, redrive-posted=1, refund-balance=3
 
 **Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
 
 **Bundle planning is scheduled in-process (no cron needed)**: the always-running
 `upload-workers` process registers BullMQ job schedulers at startup
-(`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min and `cleanup-fs` daily
-at 02:00. This replaced the old external `cron-trigger-*.sh` crons (which were a
-silent-failure footgun: a cron never added to crontab, or one that couldn't find
-`node` on cron's minimal PATH, meant nothing ever bundled). The schedules are
-env-tunable and disable-able:
-- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
-- Set either to `""` to disable that schedule.
+(`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min, `cleanup-fs` daily
+at 02:00, and `redrive-posted` every 10 min. This replaced the old external
+`cron-trigger-*.sh` crons (which were a silent-failure footgun: a cron never
+added to crontab, or one that couldn't find `node` on cron's minimal PATH, meant
+nothing ever bundled). The schedules are env-tunable and disable-able:
+- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`), `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+- Set any to `""` to disable that schedule.
 - BullMQ dedupes each schedule by id in the shared queue Redis, so exactly one
   job fires per interval even if workers ever run multi-instance/multi-box.
 - The `cron-trigger-*.sh` / `trigger-*.js` scripts remain as **manual** on-demand
@@ -242,6 +249,16 @@ Data Age      Filesystem    MinIO      Storage
 ```
 
 Configure via `FILESYSTEM_CLEANUP_DAYS=7` and `MINIO_CLEANUP_DAYS=90`.
+
+**Optional two-tier MinIO (SSD hot + HDD archive)**: gated on `ARCHIVE_*` env
+(default OFF → unchanged single-MinIO behavior). When enabled, a second
+HDD-backed MinIO mirrors served content (raw data items + bundle payloads) via
+the `archive-copy` queue and takes all gateway reads, while the SSD MinIO is
+reserved for the bundling pipeline. The SSD copies are then reclaimed
+**post-permanence** (HEAD-gated on the confirmed HDD copy) instead of on the
+90-day rule, and the HDD enforces a native 90-day MinIO ILM expiry. Infra lives
+in `docker-compose.hdd.yml` (override). See
+`docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
 
 **Cleanup is scheduled in-process** alongside bundle planning (see the job-scheduler note above): the `upload-workers` process registers the `cleanup-fs` schedule (`CLEANUP_SCHEDULE_CRON`, default `0 2 * * *`) at startup. `cron-trigger-cleanup.sh` / `trigger-cleanup.js` remain as manual on-demand triggers — no crontab entry required.
 
@@ -284,6 +301,25 @@ ARWEAVE_GATEWAY=http://localhost:3000
 OPTICAL_BRIDGING_ENABLED=true
 OPTICAL_BRIDGE_URL=http://localhost:4000/ar-io/admin/queue-data-item
 AR_IO_ADMIN_KEY=<your-key>
+
+# Gateway redundancy + permanence trust (#41). defaultArchitecture wires a
+# MultiGatewayArweaveGateway. ARWEAVE_GATEWAYS (comma-separated) makes reads +
+# the bundle-tx POST fail over; unset = single ARWEAVE_GATEWAY (unchanged).
+# PERMANENCE_CONFIRMATION_SOURCES (default 1) optionally requires N independent
+# gateways to confirm before a bundle is irreversibly permanent (opt-in).
+# ARWEAVE_GATEWAYS=http://localhost:3000,https://arweave.net
+# PERMANENCE_CONFIRMATION_SOURCES=1   # GATEWAY_READ_TIMEOUT_MS=15000   # CLEANUP_REQUIRE_PERMANENT_BUNDLE=true
+
+# Optimistic gateway-warming pushes — all best-effort, default OFF (#42/optical):
+# OPTIMISTIC_TX_BRIDGE_ENABLED=false  # OPTIMISTIC_TX_BRIDGE_URL=<override>  # CHUNK_CACHE_BRIDGE_ENABLED=false
+
+# Chunk-seed distributor failover list (comma-separated). The broadcast-chunks
+# worker POSTs each chunk to ONE of these AR.IO nodes (shuffled + failover); use
+# PRIVATE IPs (plaintext POSTs), /chunk is on the gateway/envoy port (:3000).
+# Unset → single ARWEAVE_UPLOAD_NODE (unchanged). Tunables:
+# BROADCAST_CHUNKS_WORKER_CONCURRENCY (10), CHUNK_POST_MAX_TRIES (3),
+# CHUNK_POST_RETRY_DELAY_MS (2000), CHUNK_POST_TIMEOUT_MS (60000).
+# AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000
 
 # X402 (USDC payments)
 X402_PAYMENT_ADDRESS=<ethereum-address>
@@ -351,4 +387,4 @@ TypeScript 5 / Node.js 22+ (required by @ar.io/sdk v4, ESM-only) • Yarn 3.6.0 
 - **docs/operations/ADMIN_GUIDE.md**: Day-to-day administration
 - **docs/api/README.md**: REST API reference
 - **docs/guides/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details (signed + unsigned uploads)
-- **docs/archive/**, **docs/migration/**: historical artifacts only (not current state)
+- **docs/archive/**: historical analyses/audits only (not current state)

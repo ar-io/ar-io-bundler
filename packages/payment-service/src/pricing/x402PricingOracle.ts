@@ -24,6 +24,15 @@ const USDC_DECIMALS = 6; // USDC has 6 decimals
 const COINGECKO_API_URL = "https://api.coingecko.com/api/v3/simple/price";
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
+// Hard ceiling on how stale a cached AR/USD price may be and still be used to
+// price x402 payments when CoinGecko is failing. Past this, fail CLOSED rather
+// than computing payment requirements / Winston credit from an arbitrarily old
+// price (which can materially under/over-charge as the market moves). Rides out a
+// short oracle outage; configurable via MAX_STALE_AR_PRICE_MS (default 1h).
+const MAX_STALE_AR_PRICE_MS = +(
+  process.env.MAX_STALE_AR_PRICE_MS || 60 * 60 * 1000
+);
+
 export class X402PricingOracle {
   private cachedArPrice: number | null = null;
   private cacheTimestamp = 0;
@@ -137,18 +146,29 @@ export class X402PricingOracle {
     } catch (error) {
       logger.error("Failed to fetch AR price from CoinGecko", { error });
 
-      // If we have a cached price (even if stale), use it as fallback
-      if (this.cachedArPrice !== null) {
+      // Bounded stale fallback: ride out a SHORT oracle outage with the last good
+      // price, but fail CLOSED once it is too stale. Using an unbounded stale price
+      // to compute x402 payment requirements / Winston credit can materially
+      // under/over-charge as the market moves away from it.
+      const staleAge = now - this.cacheTimestamp;
+      if (
+        this.cachedArPrice !== null &&
+        staleAge <= MAX_STALE_AR_PRICE_MS
+      ) {
         logger.warn("Using stale cached AR price as fallback", {
           price: this.cachedArPrice,
-          age: now - this.cacheTimestamp,
+          age: staleAge,
+          maxStaleMs: MAX_STALE_AR_PRICE_MS,
         });
         return this.cachedArPrice;
       }
 
-      // No cache available, throw error
+      // No cache, or cache too stale to price payments safely → fail closed.
       throw new Error(
-        "Failed to fetch AR price and no cached price available"
+        this.cachedArPrice !== null
+          ? `Failed to fetch AR price; cached price is too stale to use ` +
+            `(age ${staleAge}ms > MAX_STALE_AR_PRICE_MS ${MAX_STALE_AR_PRICE_MS}ms)`
+          : "Failed to fetch AR price and no cached price available"
       );
     }
   }

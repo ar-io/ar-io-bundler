@@ -18,6 +18,7 @@ import { Next } from "koa";
 
 import {
   defaultX402PaymentMode,
+  x402PaymentAddress,
   x402PaymentModes,
   x402PaymentTimeoutMs,
   x402PricingBufferPercent,
@@ -28,6 +29,7 @@ import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
+import { sendX402TopUpSlackMessage } from "../utils/slack";
 
 /**
  * Process an x402 payment
@@ -182,7 +184,12 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
       description: `Upload ${byteCount || 0} bytes to Arweave via Turbo`,
       mimeType: "application/octet-stream",
       asset: networkConfig.usdcAddress,
-      payTo: authorization.to,
+      // SECURITY: bind the required recipient to the operator's configured
+      // address — NOT the attacker-controlled authorization.to. The recipient
+      // check in x402Service compares authorization.to against this value, so
+      // using authorization.to here would make it a client-controlled tautology
+      // (settle a self-transfer and still get credited).
+      payTo: x402PaymentAddress!,
       maxTimeoutSeconds: Math.floor(x402PaymentTimeoutMs / 1000),
       extra: {
         name: "USD Coin",
@@ -300,6 +307,17 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
         wincCredited,
         paymentId: payment.id,
       });
+
+      // Best-effort Slack notification (never delay/break the payment response).
+      void sendX402TopUpSlackMessage({
+        address,
+        payerAddress: authorization.from,
+        usdcAmount: authorization.value,
+        winstonCreditAmount: wincCredited,
+        network,
+        txHash: settlement.transactionHash!,
+        mode: "topup",
+      });
     } else {
       // Hybrid: Reserve for data item, credit excess
       wincReserved = winstonCost;
@@ -328,6 +346,17 @@ export async function x402PaymentRoute(ctx: KoaContext, next: Next) {
           address,
           wincCredited,
           paymentId: payment.id,
+        });
+
+        // Best-effort Slack notification for the credited excess.
+        void sendX402TopUpSlackMessage({
+          address,
+          payerAddress: authorization.from,
+          usdcAmount: authorization.value,
+          winstonCreditAmount: wincCredited,
+          network,
+          txHash: settlement.transactionHash!,
+          mode: "hybrid",
         });
       }
     }

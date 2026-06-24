@@ -17,7 +17,7 @@ This document lists all infrastructure components and how they're managed by our
    
 3. **Redis Queues** (port 6381)
    - Container: `ar-io-bundler-redis-queues`
-   - Used for: BullMQ job queues (11 queues)
+   - Used for: BullMQ job queues (15 queues)
    - Healthcheck: `redis-cli -p 6381 ping`
    
 4. **MinIO** (ports 9000-9001)
@@ -37,6 +37,34 @@ This document lists all infrastructure components and how they're managed by our
    
 > Database migrations are NOT containerized. They run on the host via
 > `yarn db:migrate` (invoked by `scripts/start.sh`) against both databases.
+
+### Optional: Two-Tier MinIO (HDD archive) — `docker-compose.hdd.yml`
+
+Opt-in, **not started by default**. Gated on `ARCHIVE_*` env. Brings up a second,
+HDD-backed MinIO that mirrors served content (raw data items + bundle payloads) and
+takes all AR.IO gateway reads, while the SSD MinIO above stays reserved for the
+ingest → bundle → post → seed → verify pipeline. Defined in the `docker-compose.hdd.yml`
+override (layered on top of the base compose file):
+
+6. **MinIO HDD** (ports 9002-9003)
+   - Container: `ar-io-bundler-minio-hdd`
+   - HDD-backed S3 storage for gateway reads
+   - Port 9002: S3 API · Port 9003: Web Console UI
+   - Volume bind-mounted to the HDD via `ARCHIVE_MINIO_DATA_PATH`
+   - Bucket: `raw-data-items` (holds `raw-data-item/{id}` + `bundle-payload/{planId}`)
+
+7. **MinIO Init HDD** (runs once, exits)
+   - Container: `ar-io-bundler-minio-init-hdd`
+   - Creates the HDD bucket + `gateway-readonly` user, sets anonymous download, and
+     installs a native ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90 days)
+
+Bring up both base + HDD layers with:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d
+```
+The async `archive-copy` BullMQ job streams SSD → HDD; the gateway's S3 `AWS_ENDPOINT`
+should point at the HDD MinIO (port 9002). Leave `ARCHIVE_*` unset to keep single-MinIO
+behavior. See `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
 
 ## PM2 Services
 
@@ -64,13 +92,15 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
    - Process name: `upload-workers`
    - Instances: 1 (fork mode - IMPORTANT: must be single instance)
    - Script: `packages/upload-service/lib/workers/allWorkers.js`
-   - Handles 11 BullMQ job queues
+   - Handles 15 BullMQ job queues
 
-5. **Bull Board** (port 3002)
-   - Process name: `bull-board`
+5. **Admin Dashboard** (port 3002)
+   - Process name: `admin-dashboard`
    - Instances: 1 (fork mode)
-   - Script: `packages/upload-service/bull-board-server.js`
-   - Provides web UI for monitoring all 11 BullMQ queues
+   - Script: `packages/admin-service/server.js`
+   - Admin stats dashboard with embedded Bull Board for monitoring all 15 BullMQ queues
+   - Also runs the opt-in **Slack health alerter** (`ALERTS_ENABLED=true`) that mirrors the dashboard's
+     health rollup and pushes alerts to Slack (`SLACK_ALERT_CHANNEL_ID`). See ADMIN_GUIDE → Alerting.
    - Access at: http://localhost:3002/admin/queues
 
 ## Script Coverage
@@ -81,7 +111,7 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
 - ✅ Runs MinIO initialization (creates buckets)
 - ✅ Runs database migrations (payment + upload)
 - ✅ Checks for builds, wallet, .env files
-- ✅ Starts all PM2 services via ecosystem.config.js (payment-service, payment-workers, upload-api, upload-workers, bull-board)
+- ✅ Starts all PM2 services via ecosystem.config.js (payment-service, payment-workers, upload-api, upload-workers, admin-dashboard)
 
 ### ./scripts/stop.sh
 **Stops all components:**
@@ -152,6 +182,8 @@ Ensure no other services are using these ports:
 - 6381 (Redis Queues)
 - 9000 (MinIO S3 API)
 - 9001 (MinIO Console)
+- 9002 (MinIO HDD S3 API — only with the optional `docker-compose.hdd.yml`)
+- 9003 (MinIO HDD Console — only with the optional `docker-compose.hdd.yml`)
 
 ## Verification Commands
 

@@ -12,7 +12,7 @@ deeper references.
 
 ### [architecture/](./architecture/)
 - [**ARCHITECTURE.md**](./architecture/ARCHITECTURE.md) — Full system architecture:
-  services, the two PostgreSQL databases, the 11-queue BullMQ pipeline, MinIO
+  services, the two PostgreSQL databases, the 12-queue BullMQ pipeline, MinIO
   object storage, APIs, and data flows.
 - [**X402_END_TO_END_DEEP_DIVE.md**](./architecture/X402_END_TO_END_DEEP_DIVE.md) —
   How an x402 USDC payment threads through the upload and payment services.
@@ -41,10 +41,12 @@ deeper references.
 - [**X402_INTEGRATION_GUIDE.md**](./guides/X402_INTEGRATION_GUIDE.md) — Integrating
   x402 USDC payments (signed and unsigned uploads).
 
-### [archive/](./archive/) and [migration/](./migration/)
-Historical artifacts only — the completed AWS → open-source migration phases,
-superseded plans, status reports, and decision analyses. **Not current state.**
-Kept for reference; do not treat as authoritative.
+### [archive/](./archive/)
+Historical decision analyses and audits kept for reference only (gateway/x402
+analysis, the Hetzner-migration feasibility study, HA/DR design). **Not current
+state.** Superseded plans, status reports, testing checklists, and the completed
+AWS → open-source migration phase logs were removed in a docs cleanup (still in
+git history). Do not treat as authoritative.
 
 ## Quick links
 

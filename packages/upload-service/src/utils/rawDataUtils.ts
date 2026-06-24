@@ -143,3 +143,47 @@ export function validateRawData(data: Buffer, maxSize: number): { valid: boolean
 
   return { valid: true };
 }
+
+/** Thrown by bufferRequestBodyWithLimit when a body exceeds the allowed size. */
+export class RawBodyTooLargeError extends Error {
+  constructor(public readonly maxBytes: number) {
+    super(
+      `Request body exceeds the maximum allowed size of ${maxBytes} bytes`
+    );
+    this.name = "RawBodyTooLargeError";
+  }
+}
+
+/**
+ * Buffer a request body into memory, bounded by `maxBytes`.
+ *
+ * SECURITY: raw uploads must read the WHOLE body (to inspect / sign it), unlike
+ * the streaming signed-data-item path. Without a bound, an unauthenticated
+ * client could force unbounded allocation before any size/payment check. This
+ * caps allocation two ways: it rejects by the declared Content-Length BEFORE
+ * reading, and tracks the running size DURING reading — covering chunked or
+ * Content-Length-lying requests — throwing RawBodyTooLargeError rather than
+ * continuing to buffer.
+ */
+export async function bufferRequestBodyWithLimit(
+  req: AsyncIterable<Buffer> & {
+    headers?: Record<string, string | string[] | undefined>;
+  },
+  maxBytes: number
+): Promise<Buffer> {
+  const declared = Number(req.headers?.["content-length"]);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new RawBodyTooLargeError(maxBytes);
+  }
+
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw new RawBodyTooLargeError(maxBytes);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}

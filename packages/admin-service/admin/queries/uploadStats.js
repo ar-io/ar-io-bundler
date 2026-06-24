@@ -29,6 +29,22 @@
 const uploadServicePath = require('path').join(__dirname, '../../../upload-service');
 const { tableNames, columnNames } = require(uploadServicePath + '/lib/arch/db/dbConstants');
 
+// Canonical ANS-104 signature-type → name map (matches signatureTypeInfo in
+// upload-service/src/constants.ts). Used everywhere so labels never disagree.
+const SIGNATURE_TYPE_NAMES = {
+  1: 'Arweave',
+  2: 'ED25519',
+  3: 'Ethereum',
+  4: 'Solana',
+  5: 'InjectedAptos',
+  6: 'MultiAptos',
+  7: 'TypedEthereum',
+};
+
+function signatureTypeName(type) {
+  return SIGNATURE_TYPE_NAMES[type] || `Type ${type}`;
+}
+
 /**
  * Get comprehensive upload statistics
  * @param {object} db - Knex database connection (reader)
@@ -61,154 +77,64 @@ async function getUploadStats(db) {
   }
 }
 
+// Item state tables that retain uploaded_date. An item lives in exactly one of
+// these at a time, so counting by uploaded_date across all of them counts each
+// item once, by WHEN IT WAS UPLOADED — independent of its current state.
+const ITEM_STATE_TABLES = ['new_data_item', 'planned_data_item', 'permanent_data_items', 'failed_data_item'];
+
 /**
- * Get all-time upload statistics
+ * Aggregate uploads by uploaded_date across every state table. `sinceSql` is a
+ * trusted SQL date expression (e.g. 'CURRENT_DATE') or null for all-time.
+ *
+ * Replaces the previous logic that mixed date columns (new.uploaded_date +
+ * planned.planned_date + permanent.permanent_date), which double-counted by
+ * milestone and used a Math.max approximation for unique uploaders.
  */
-async function getAllTimeStats(db) {
-  // Query BOTH planned_data_item AND permanent_data_items for complete stats
-  // permanent_data_items contains successfully uploaded and bundled data
-  const [plannedResult, permanentResult] = await Promise.all([
-    db(tableNames.plannedDataItem)
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders'),
-        db.raw('COALESCE(AVG(CAST(byte_count AS BIGINT)), 0) as average_size')
-      )
-      .first(),
-
-    db('permanent_data_items')
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders'),
-        db.raw('COALESCE(AVG(CAST(byte_count AS BIGINT)), 0) as average_size')
-      )
-      .first()
-  ]);
-
-  const totalUploads = parseInt(plannedResult.total_uploads) + parseInt(permanentResult.total_uploads);
-  const totalBytes = BigInt(plannedResult.total_bytes) + BigInt(permanentResult.total_bytes);
+async function uploadedAggregate(db, sinceSql) {
+  let totalUploads = 0;
+  let totalBytes = 0n;
+  const ownerSelects = [];
+  for (const t of ITEM_STATE_TABLES) {
+    if (!(await db.schema.hasTable(t))) continue;
+    if (!(await db.schema.hasColumn(t, 'uploaded_date'))) continue;
+    const where = sinceSql ? `WHERE uploaded_date >= ${sinceSql}` : '';
+    const r = await db.raw(
+      `SELECT COUNT(*) AS c, COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) AS b FROM ${t} ${where}`
+    );
+    totalUploads += parseInt(r.rows[0].c) || 0;
+    totalBytes += BigInt(r.rows[0].b);
+    ownerSelects.push(`SELECT owner_public_address FROM ${t} ${where}`);
+  }
+  let uniqueUploaders = 0;
+  if (ownerSelects.length) {
+    // UNION (distinct) dedupes an address that uploaded across multiple states.
+    const u = await db.raw(`SELECT COUNT(*) AS c FROM (${ownerSelects.join(' UNION ')}) z`);
+    uniqueUploaders = parseInt(u.rows[0].c) || 0;
+  }
   const averageSize = totalUploads > 0 ? Number(totalBytes) / totalUploads : 0;
-
-  // Count unique uploaders across both tables (approximation - may count same address twice)
-  const uniqueUploaders = parseInt(plannedResult.unique_uploaders) + parseInt(permanentResult.unique_uploaders);
-
   return {
     totalUploads,
     totalBytes: totalBytes.toString(),
     totalBytesFormatted: formatBytes(totalBytes.toString()),
     uniqueUploaders,
     averageSize: Math.round(averageSize),
-    averageSizeFormatted: formatBytes(Math.round(averageSize))
+    averageSizeFormatted: formatBytes(Math.round(averageSize)),
   };
 }
 
-/**
- * Get today's upload statistics
- */
+/** All-time uploads (every item ever accepted, counted once). */
+async function getAllTimeStats(db) {
+  return uploadedAggregate(db, null);
+}
+
+/** Items uploaded today (by uploaded_date). */
 async function getTodayStats(db) {
-  // Check ALL tables: new_data_item (pending), planned_data_item, and permanent_data_items (completed today)
-  const [newResults, plannedResults, permanentResults] = await Promise.all([
-    db(tableNames.newDataItem)
-      .where(db.raw('DATE(uploaded_date)'), '=', db.raw('CURRENT_DATE'))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first(),
-
-    db(tableNames.plannedDataItem)
-      .where(db.raw('DATE(planned_date)'), '=', db.raw('CURRENT_DATE'))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first(),
-
-    db('permanent_data_items')
-      .where(db.raw('DATE(permanent_date)'), '=', db.raw('CURRENT_DATE'))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first()
-  ]);
-
-  const totalUploads = parseInt(newResults.total_uploads) +
-                       parseInt(plannedResults.total_uploads) +
-                       parseInt(permanentResults.total_uploads);
-  const totalBytes = BigInt(newResults.total_bytes) +
-                     BigInt(plannedResults.total_bytes) +
-                     BigInt(permanentResults.total_bytes);
-  const uniqueUploaders = Math.max(
-    parseInt(newResults.unique_uploaders),
-    parseInt(plannedResults.unique_uploaders),
-    parseInt(permanentResults.unique_uploaders)
-  );
-
-  return {
-    totalUploads,
-    totalBytes: totalBytes.toString(),
-    totalBytesFormatted: formatBytes(totalBytes.toString()),
-    uniqueUploaders
-  };
+  return uploadedAggregate(db, 'CURRENT_DATE');
 }
 
-/**
- * Get this week's upload statistics
- */
+/** Items uploaded in the last 7 days (by uploaded_date). */
 async function getWeekStats(db) {
-  const [newResults, plannedResults, permanentResults] = await Promise.all([
-    db(tableNames.newDataItem)
-      .where('uploaded_date', '>=', db.raw("CURRENT_DATE - INTERVAL '7 days'"))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first(),
-
-    db(tableNames.plannedDataItem)
-      .where('planned_date', '>=', db.raw("CURRENT_DATE - INTERVAL '7 days'"))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first(),
-
-    db('permanent_data_items')
-      .where('permanent_date', '>=', db.raw("CURRENT_DATE - INTERVAL '7 days'"))
-      .select(
-        db.raw('COUNT(*) as total_uploads'),
-        db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as total_bytes'),
-        db.raw('COUNT(DISTINCT owner_public_address) as unique_uploaders')
-      )
-      .first()
-  ]);
-
-  const totalUploads = parseInt(newResults.total_uploads) +
-                       parseInt(plannedResults.total_uploads) +
-                       parseInt(permanentResults.total_uploads);
-  const totalBytes = BigInt(newResults.total_bytes) +
-                     BigInt(plannedResults.total_bytes) +
-                     BigInt(permanentResults.total_bytes);
-  const uniqueUploaders = Math.max(
-    parseInt(newResults.unique_uploaders),
-    parseInt(plannedResults.unique_uploaders),
-    parseInt(permanentResults.unique_uploaders)
-  );
-
-  return {
-    totalUploads,
-    totalBytes: totalBytes.toString(),
-    totalBytesFormatted: formatBytes(totalBytes.toString()),
-    uniqueUploaders
-  };
+  return uploadedAggregate(db, "CURRENT_DATE - INTERVAL '7 days'");
 }
 
 /**
@@ -230,20 +156,9 @@ async function getSignatureTypeStats(db) {
     ORDER BY count DESC
   `);
 
-  // Map signature type numbers to readable names
-  const signatureTypeNames = {
-    1: 'Arweave',
-    2: 'ED25519', // Solana
-    3: 'Ethereum',
-    4: 'Solana',
-    5: 'Injective',
-    6: 'Avalanche',
-    7: 'BIP-137' // Bitcoin
-  };
-
   const stats = {};
   results.rows.forEach(row => {
-    const typeName = signatureTypeNames[row.signature_type] || `Type ${row.signature_type}`;
+    const typeName = signatureTypeName(row.signature_type);
     stats[typeName] = {
       count: parseInt(row.count),
       percentage: parseFloat(row.percentage),
@@ -290,36 +205,32 @@ async function getTopUploaders(db, limit = 10) {
  * Get recent uploads (last 50)
  */
 async function getRecentUploads(db, limit = 50) {
-  // Query ALL three tables and combine
+  // Push ORDER BY + LIMIT INTO each subquery so each uses its date index and
+  // returns only `limit` rows, instead of UNION-ing three FULL tables and then
+  // sorting the entire dataset (which scans everything on a large deployment).
   const results = await db.raw(`
     SELECT * FROM (
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        uploaded_date as timestamp
-      FROM ${tableNames.newDataItem}
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, uploaded_date as timestamp
+       FROM ${tableNames.newDataItem}
+       ORDER BY uploaded_date DESC LIMIT ?)
       UNION ALL
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        planned_date as timestamp
-      FROM ${tableNames.plannedDataItem}
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, planned_date as timestamp
+       FROM ${tableNames.plannedDataItem}
+       ORDER BY planned_date DESC LIMIT ?)
       UNION ALL
-      SELECT
-        ${columnNames.dataItemId} as id,
-        byte_count as size,
-        signature_type,
-        owner_public_address as owner,
-        permanent_date as timestamp
-      FROM permanent_data_items
+      (SELECT
+        ${columnNames.dataItemId} as id, byte_count as size, signature_type,
+        owner_public_address as owner, permanent_date as timestamp
+       FROM permanent_data_items
+       ORDER BY permanent_date DESC LIMIT ?)
     ) combined
     ORDER BY timestamp DESC
     LIMIT ?
-  `, [limit]);
+  `, [limit, limit, limit, limit]);
 
   // Format results
   return results.rows.map(row => ({
@@ -336,16 +247,7 @@ async function getRecentUploads(db, limit = 50) {
  * Helper: Get readable signature type name
  */
 function getSignatureTypeName(type) {
-  const names = {
-    1: 'Arweave',
-    2: 'Solana',
-    3: 'Ethereum',
-    4: 'Solana',
-    5: 'Injective',
-    6: 'Avalanche',
-    7: 'Bitcoin'
-  };
-  return names[type] || `Type ${type}`;
+  return signatureTypeName(type);
 }
 
 /**

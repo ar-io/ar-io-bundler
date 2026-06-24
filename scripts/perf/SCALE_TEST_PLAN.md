@@ -116,12 +116,37 @@ rationale` table; fill the `?` rows during the audit.
 
 | Subsystem | Knob(s) | Current | Notes |
 |---|---|---|---|
-| DB | `DB_POOL_MIN` / `DB_POOL_MAX` · PG `max_connections` | 5 / 50 · 100 | next ceiling; raise pool + PG together |
+| DB | `DB_POOL_MIN` / `DB_POOL_MAX` · PG `max_connections` | ~~5 / 50 · 100~~ → **5 / 20 · 500** | **FIXED (finding #1, PR #39):** raise pool + PG together; rule `max_conns ≥ procs×DB_POOL_MAX + overhead` |
 | S3 / MinIO | `S3_MAX_SOCKETS` | 256 | from PR #36 |
 | Redis (cache + queues) | ioredis pool / connection limits | ? | check defaults |
-| Payment svc | axios pool + opossum circuit-breaker | ? | inter-service hot path |
+| Payment svc | upload→payment axios `retries`/`timeout` + opossum breaker | **8 retries · 60s timeout** | **OPEN (finding #2):** inter-service hot path saturates under burst → 503s; see findings log below |
 | Workers | BullMQ concurrencies (`*_WORKER_CONCURRENCY` + hardcoded) | mixed | rebalance for 32 cores |
 | Server | `REQUEST_/KEEPALIVE_/HEADERS_TIMEOUT_MS` | set | confirm vs load |
+
+### Findings log
+
+**#1 — PG connection over-subscription (FIXED, PR #39).** Under a 400-conc upload
+burst, PG logged 108,185 "too many clients": container ran default
+`max_connections=100`, but pools demand `procs × DB_POOL_MAX` (test: ~19 × 50 ≈
+950). Fix: `max_connections=500` + `shared_buffers=256MB` (docker-compose) and
+`DB_POOL_MAX 50→20`. Verified: 0 "too many clients" on the same burst; PG peaked at
+94 connections.
+
+**#2 — upload→payment hop saturates under burst → 503s (OPEN).** Same burst: 1807/2000
+requests returned 503 (192 got the correct 402, 1 timeout). **Not** a DB issue — PG
+stayed clean (94 conns, 0 errors). Mechanism: the burst used unfunded signers, so each
+upload makes **two** sequential payment-service calls (`checkBalanceForData` →
+`getX402PriceQuote`); `checkBalanceForData` (`payment.ts:336`) throws on any payment
+reply ≥500, which `dataItemPost.ts` maps to 503. At conc 400 that fans out to ~800
+concurrent calls against payment-service (8 instances), which 5xx'd. Amplifier: the
+shared axios client (`axiosClient.ts`) uses **`retries=8` (exp backoff) + 60s socket
+timeout** → retry storm worsens payment load and pins latency (observed upload
+p95 = 61.6s). Partly a test artifact (unfunded signers force the 2-call path; allow-
+listed/funded signers skip the payment hop). **Allow-listed retest NOT yet run** — it
+requires the $0 sink, which was down and `.env` was pointed at the real gateway (:4000)
+at audit time, so a retest would spend AR. Next: (a) re-run with an allow-listed signer
+on the sink to isolate true ingest capacity, (b) find why payment-service 5xx'd under
+load, (c) reconsider retries=8/60s on the payment hop (fail-fast / tighter breaker).
 
 ---
 

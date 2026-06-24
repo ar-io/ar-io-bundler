@@ -26,22 +26,31 @@ const { getUploadStats } = require('./queries/uploadStats');
 const { getPaymentStats } = require('../../payment-service/admin/queries/paymentStats');
 const { getX402Stats } = require('./queries/x402Stats');
 const { getBundleStats } = require('./queries/bundleStats');
-const { getSystemHealth } = require('./queries/systemHealth');
+const { getSystemHealth, getQueueHealth } = require('./queries/systemHealth');
+const { getPipelineStats } = require('./queries/pipelineStats');
+const { getWalletStats } = require('./queries/walletStats');
+const { getThroughputStats } = require('./queries/throughputStats');
+const { getHealthWindow, WINDOWS } = require('./queries/healthWindow');
+const { computeHealthRollup } = require('./healthRollup');
 const Redis = require('ioredis');
 const Knex = require('knex');
 
 const CACHE_TTL = 30; // seconds
 const CACHE_KEY = 'admin:stats';
+// Server-side cap on every admin query so the dashboard can never load the DB.
+const STATEMENT_TIMEOUT_MS = parseInt(process.env.ADMIN_DB_STATEMENT_TIMEOUT_MS || '15000');
 
 let cacheRedis = null;
 let uploadDb = null;
 let paymentDb = null;
 let queueRedis = null;
+let runtimeConfig = {};
 
 /**
  * Initialize stats collector with database and Redis connections
  */
 function initializeStatsCollector(config) {
+  runtimeConfig = config || {};
   // Redis for caching (ElastiCache - port 6379)
   try {
     if (!cacheRedis) {
@@ -86,7 +95,10 @@ function initializeStatsCollector(config) {
           port: parseInt(config.uploadDbPort || '5432'),
           database: config.uploadDbName || 'upload_service',
           user: config.uploadDbUser || 'postgres',
-          password: config.uploadDbPassword
+          password: config.uploadDbPassword,
+          // Hard cap so a dashboard query can never run away and load the DB.
+          statement_timeout: STATEMENT_TIMEOUT_MS,
+          application_name: 'ar-io-admin-dashboard'
         },
         pool: { min: 1, max: 3 }
       });
@@ -107,7 +119,10 @@ function initializeStatsCollector(config) {
           port: parseInt(config.paymentDbPort || '5432'),
           database: config.paymentDbName || 'payment_service',
           user: config.paymentDbUser || 'postgres',
-          password: config.paymentDbPassword
+          password: config.paymentDbPassword,
+          // Hard cap so a dashboard query can never run away and load the DB.
+          statement_timeout: STATEMENT_TIMEOUT_MS,
+          application_name: 'ar-io-admin-dashboard'
         },
         pool: { min: 1, max: 3 }
       });
@@ -126,6 +141,8 @@ function initializeStatsCollector(config) {
  * @param {array} queues - BullMQ queue adapters from Bull Board
  * @returns {Promise<object>} Dashboard statistics
  */
+let computeInFlight = null;
+
 async function getStats(queues = []) {
   // Try cache first
   if (cacheRedis) {
@@ -142,12 +159,21 @@ async function getStats(queues = []) {
     }
   }
 
+  // Single-flight: coalesce concurrent cache-miss requests onto ONE compute so a
+  // burst of refreshes (or multiple tabs) can't fan out into N full query sets
+  // and exhaust the small connection pool.
+  if (computeInFlight) return computeInFlight;
+  computeInFlight = computeStats(queues).finally(() => { computeInFlight = null; });
+  return computeInFlight;
+}
+
+async function computeStats(queues = []) {
   // Compute stats from databases
   const startTime = Date.now();
   console.log('📊 Computing admin dashboard stats...');
 
   try {
-    const [uploadStats, paymentStats, x402Stats, bundleStats, systemHealth] = await Promise.all([
+    const [uploadStats, paymentStats, x402Stats, bundleStats, pipelineStats, throughputStats, walletStats, systemHealth] = await Promise.all([
       getUploadStats(uploadDb).catch(err => {
         console.error('Failed to get upload stats:', err);
         return getEmptyUploadStats();
@@ -164,12 +190,30 @@ async function getStats(queues = []) {
         console.error('Failed to get bundle stats:', err);
         return getEmptyBundleStats();
       }),
+      getPipelineStats(uploadDb, { stuckPostedAgeSec: runtimeConfig.stuckPostedAgeSec }).catch(err => {
+        console.error('Failed to get pipeline stats:', err);
+        return getEmptyPipelineStats();
+      }),
+      getThroughputStats(uploadDb).catch(err => {
+        console.error('Failed to get throughput stats:', err);
+        return getEmptyThroughputStats();
+      }),
+      getWalletStats({
+        gateway: runtimeConfig.arweaveGateway,
+        address: runtimeConfig.arweaveAddress,
+        jwkFile: runtimeConfig.jwkFile,
+        lowAr: runtimeConfig.walletLowAr
+      }).catch(err => {
+        console.error('Failed to get wallet stats:', err);
+        return { configured: false, status: 'unknown', error: err.message };
+      }),
       getSystemHealth({
         uploadDb,
         paymentDb,
         redis: cacheRedis,
         queueRedis,
-        minioClient: null, // MinIO health check can be added later
+        minioEndpoint: runtimeConfig.minioEndpoint,
+        diskPath: runtimeConfig.diskPath,
         queues
       }).catch(err => {
         console.error('Failed to get system health:', err);
@@ -185,8 +229,17 @@ async function getStats(queues = []) {
       payments: paymentStats,
       x402Payments: x402Stats,
       bundles: bundleStats,
+      pipeline: pipelineStats,
+      throughput: throughputStats,
+      wallet: walletStats,
       _cached: false
     };
+
+    // Server-side health rollup (status banner + thresholds in one place).
+    stats.health = computeHealthRollup(stats, runtimeConfig.thresholds || {});
+
+    // Record a compact history point for trend sparklines (rate-limited).
+    await recordHistoryPoint(stats);
 
     // Cache result
     if (cacheRedis) {
@@ -267,15 +320,55 @@ function getEmptyPaymentStats() {
       byMode: {}
     },
     topUps: {
-      totalCount: 0,
-      totalUSDC: '0.000000',
-      averageTopUp: '0.000000'
+      total: { count: 0, winc: '0', ar: '0.000000' },
+      byProvider: {},
+      fiatByCurrency: {}
     },
-    freeUploads: {
-      count: 0,
-      byAddress: []
+    cryptoTopUps: {
+      total: { count: 0, winc: '0', ar: '0.000000' },
+      byToken: {}
     },
+    balances: {
+      totalWinc: '0',
+      totalAr: '0.000000',
+      usersWithBalance: 0,
+      totalUsers: 0
+    },
+    integrity: {
+      pendingCrypto: { count: 0, winc: '0', ar: '0.000000', oldestAgeSec: null },
+      failedCrypto: { count: 0, recent: [] },
+      failedTopUpQuotes: { count: 0 },
+      chargebacks: { count: 0 }
+    },
+    recentTopUps: [],
     recentPayments: []
+  };
+}
+
+/**
+ * Get empty pipeline stats (fallback for errors)
+ */
+function getEmptyPipelineStats() {
+  const empty = { count: 0, oldestAgeSec: null, oldestDate: null };
+  return {
+    dataItems: { new: empty, planned: empty, failed: empty },
+    bundles: { newBundle: empty, planned: empty, posted: empty, seeded: empty, failed: empty },
+    atRisk: {
+      backlogItems: 0, backlogOldestAgeSec: null, inFlightBundles: 0,
+      stuckPostedBundles: 0, stuckPostedThresholdSec: 1800, failedBundles: 0, failedDataItems: 0
+    }
+  };
+}
+
+/**
+ * Get empty throughput stats (fallback for errors)
+ */
+function getEmptyThroughputStats() {
+  return {
+    arrivals: { lastHour: 0, last24h: 0, bytes24h: '0' },
+    itemsPermanent: { lastHour: 0, last24h: 0 },
+    bundlesPermanent: { lastHour: 0, last24h: 0, bytes24h: '0' },
+    permanenceLatency: { avgSec: null, p50Sec: null, maxSec: null, sampleCount: 0 }
   };
 }
 
@@ -291,7 +384,9 @@ function getEmptySystemHealth() {
       totalWaiting: 0,
       totalFailed: 0,
       byQueue: []
-    }
+    },
+    storage: {},
+    schedulers: {}
   };
 }
 
@@ -359,9 +454,203 @@ async function cleanup() {
   console.log('✅ Stats collector cleanup complete');
 }
 
+/**
+ * Look up where an id currently lives (data item state, bundle state, or wallet).
+ * @param {string} q - data item id, bundle id, or wallet address
+ */
+async function lookupEntity(q) {
+  const results = [];
+  if (!q || !uploadDb) return { found: false, results };
+
+  const itemTables = [
+    ['new_data_item', 'new — awaiting bundling'],
+    ['planned_data_item', 'planned'],
+    ['permanent_data_items', 'permanent'],
+    ['failed_data_item', 'failed'],
+  ];
+  for (const [table, state] of itemTables) {
+    try {
+      if (!(await uploadDb.schema.hasTable(table))) continue;
+      const row = await uploadDb(table).where('data_item_id', q).first();
+      if (row) {
+        const detail = row.failed_reason || (row.bundle_id ? `bundle ${row.bundle_id}` : '');
+        results.push({ kind: 'data item', state, detail });
+      }
+    } catch (e) { /* ignore per-table errors */ }
+  }
+
+  const bundleTables = [
+    ['new_bundle', 'new'],
+    ['posted_bundle', 'posted — awaiting seed/verify'],
+    ['seeded_bundle', 'seeded — awaiting verify'],
+    ['permanent_bundle', 'permanent'],
+    ['failed_bundle', 'failed'],
+  ];
+  for (const [table, state] of bundleTables) {
+    try {
+      if (!(await uploadDb.schema.hasTable(table))) continue;
+      const row = await uploadDb(table).where('bundle_id', q).first();
+      if (row) {
+        const detail = row.failed_reason || (row.block_height ? `block ${row.block_height}` : '');
+        results.push({ kind: 'bundle', state, detail });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  if (paymentDb) {
+    try {
+      if (await paymentDb.schema.hasTable('user')) {
+        const u = await paymentDb('user').where('user_address', q).first();
+        if (u) {
+          const ar = (Number(u.winston_credit_balance) / 1e12).toFixed(6);
+          results.push({ kind: 'wallet', state: 'account', detail: `balance ${ar} AR` });
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // No exact hit: fall back to a bounded prefix search on indexed id columns
+  // (only for reasonably specific prefixes, to keep it index-friendly).
+  if (results.length === 0 && q.length >= 6 && /^[A-Za-z0-9_-]+$/.test(q)) {
+    // Escape LIKE wildcards so '_' / '%' in an id are treated literally (data
+    // item ids are base64url and legitimately contain '_' and '-').
+    const prefix = q.replace(/[\\%_]/g, '\\$&') + '%';
+    const prefixTables = [
+      ['new_data_item', 'data_item_id', 'data item', 'new — awaiting bundling'],
+      ['planned_data_item', 'data_item_id', 'data item', 'planned'],
+      ['permanent_data_items', 'data_item_id', 'data item', 'permanent'],
+      ['permanent_bundle', 'bundle_id', 'bundle', 'permanent'],
+      ['posted_bundle', 'bundle_id', 'bundle', 'posted'],
+      ['failed_bundle', 'bundle_id', 'bundle', 'failed'],
+    ];
+    for (const [table, col, kind, state] of prefixTables) {
+      try {
+        if (!(await uploadDb.schema.hasTable(table))) continue;
+        const rows = await uploadDb(table).whereRaw(`${col} LIKE ? ESCAPE '\\'`, [prefix]).select(col).limit(5);
+        rows.forEach((r) => results.push({ kind, state, detail: `${col} ${r[col]} (prefix match)` }));
+        if (results.length >= 15) break;
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  return { found: results.length > 0, results };
+}
+
+const HISTORY_KEY = 'admin:history:v1';
+const HISTORY_MAX = 11000;        // ~7 days at ~1/min (worst case); ~each point is tiny
+const HISTORY_MIN_GAP_MS = 55000; // don't record denser than ~1/min
+
+/**
+ * Append a compact trend datapoint (rate-limited) for the sparklines.
+ */
+async function recordHistoryPoint(stats) {
+  if (!cacheRedis) return;
+  try {
+    const newestRaw = await cacheRedis.lindex(HISTORY_KEY, 0);
+    if (newestRaw) {
+      const newest = JSON.parse(newestRaw);
+      if (newest && Date.now() - newest.t < HISTORY_MIN_GAP_MS) return;
+    }
+    const risk = (stats.pipeline && stats.pipeline.atRisk) || {};
+    const tp = stats.throughput || {};
+    const point = {
+      t: Date.now(),
+      bk: risk.backlogItems || 0,
+      ba: risk.backlogOldestAgeSec || 0,
+      rf: (stats.system && stats.system.queues && stats.system.queues.totalRecentFailed) || 0,
+      ib: risk.inFlightBundles || 0,
+      ar: (tp.arrivals && tp.arrivals.lastHour) || 0,
+      bp: (tp.bundlesPermanent && tp.bundlesPermanent.lastHour) || 0,
+      w: stats.wallet && stats.wallet.balanceAr != null ? Number(stats.wallet.balanceAr) : null,
+      s: stats.health && stats.health.status,
+    };
+    await cacheRedis.lpush(HISTORY_KEY, JSON.stringify(point));
+    await cacheRedis.ltrim(HISTORY_KEY, 0, HISTORY_MAX - 1);
+  } catch (error) {
+    console.warn('Failed to record history point:', error.message);
+  }
+}
+
+/**
+ * LIGHT history sample for the background sampler — runs only the cheap queries
+ * the sparklines need (pipeline in-flight/failed counts, windowed throughput,
+ * wallet over HTTP, queue depths from Redis). Deliberately avoids the heavy
+ * full-table aggregates + recent-uploads UNION that the full dashboard computes,
+ * so the always-on 2-min cadence costs almost nothing on the DB.
+ */
+async function sampleHistory(queues) {
+  if (!uploadDb) return;
+  try {
+    const [pipeline, throughput, wallet, queueHealth] = await Promise.all([
+      getPipelineStats(uploadDb, { stuckPostedAgeSec: runtimeConfig.stuckPostedAgeSec }).catch(() => null),
+      getThroughputStats(uploadDb).catch(() => null),
+      getWalletStats({
+        gateway: runtimeConfig.arweaveGateway,
+        address: runtimeConfig.arweaveAddress,
+        jwkFile: runtimeConfig.jwkFile,
+        lowAr: runtimeConfig.walletLowAr,
+      }).catch(() => null),
+      getQueueHealth(queues).catch(() => null),
+    ]);
+    await recordHistoryPoint({
+      pipeline: pipeline || {},
+      throughput: throughput || {},
+      wallet: wallet || {},
+      system: { queues: queueHealth || {} },
+      health: {},
+    });
+  } catch (error) {
+    console.warn('Light history sample failed:', error.message);
+  }
+}
+
+/**
+ * Windowed pipeline health (1h/24h/7d), cached per window.
+ */
+async function getHealthWindowCached(windowKey = '24h') {
+  const key = WINDOWS[windowKey] ? windowKey : '24h';
+  const cacheKey = `admin:healthwindow:${key}`;
+  if (cacheRedis) {
+    try {
+      const cached = await cacheRedis.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch (e) { /* fall through to compute */ }
+  }
+  const result = await getHealthWindow(uploadDb, key);
+  if (cacheRedis) {
+    try {
+      await cacheRedis.setex(cacheKey, key === '7d' ? 120 : 30, JSON.stringify(result));
+    } catch (e) { /* best effort */ }
+  }
+  return result;
+}
+
+/**
+ * Return trend datapoints (oldest→newest) within the last `hours`.
+ */
+async function getHistory(hours = 24) {
+  if (!cacheRedis) return { points: [] };
+  try {
+    const raw = await cacheRedis.lrange(HISTORY_KEY, 0, HISTORY_MAX - 1);
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    const points = raw
+      .map((r) => { try { return JSON.parse(r); } catch { return null; } })
+      .filter((p) => p && p.t >= cutoff)
+      .reverse();
+    return { points };
+  } catch (error) {
+    return { points: [], error: error.message };
+  }
+}
+
 module.exports = {
   initializeStatsCollector,
   getStats,
   invalidateCache,
+  lookupEntity,
+  getHistory,
+  getHealthWindowCached,
+  recordHistoryPoint,
+  sampleHistory,
   cleanup
 };

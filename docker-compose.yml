@@ -10,7 +10,9 @@ services:
     # admin-dashboard. Default PG max_connections is 100, which is exceeded under
     # load (e.g. API_INSTANCES=8 → ~19 pools × DB_POOL_MAX). Re-check this number
     # whenever API_INSTANCES or DB_POOL_MAX changes.
-    command: ["postgres", "-c", "max_connections=500", "-c", "shared_buffers=256MB"]
+    # Env-driven so prod can tune per box without editing this file. Defaults match
+    # the dev box; on a big-RAM prod node set PG_SHARED_BUFFERS≈25% RAM (e.g. 32GB).
+    command: ["postgres", "-c", "max_connections=${PG_MAX_CONNECTIONS:-500}", "-c", "shared_buffers=${PG_SHARED_BUFFERS:-256MB}"]
     environment:
       POSTGRES_USER: ${DB_USER:-turbo_admin}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
@@ -79,7 +81,10 @@ services:
       MINIO_DOMAIN: ar-io-bundler-minio
     command: server /data --console-address ":9001"
     volumes:
-      - minio-data:/data
+      # Default: named volume. Prod with bulk storage should bind-mount a dedicated
+      # disk by setting MINIO_DATA_PATH (e.g. MINIO_DATA_PATH=/mnt/minio on an HDD) —
+      # a named volume otherwise lands on the OS disk.
+      - ${MINIO_DATA_PATH:-minio-data}:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -107,14 +112,16 @@ services:
       mc mb --ignore-existing minio/backup-data-items;
       mc anonymous set download minio/raw-data-items;
       mc anonymous set download minio/backup-data-items;
-      echo 'MinIO buckets created successfully';
+      mc admin user add minio ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} ${GATEWAY_S3_SECRET_ACCESS_KEY:-readonly-change-me} || true;
+      mc admin policy attach minio readonly --user ${GATEWAY_S3_ACCESS_KEY_ID:-gateway-readonly} || true;
+      echo 'MinIO buckets + read-only gateway user created successfully';
       "
 
 volumes:
   postgres-data:
   redis-cache-data:
   redis-queues-data:
-  minio-data:
+  minio-data:   # used only when MINIO_DATA_PATH is unset (dev/default)
 
 networks:
   ar-io-network:

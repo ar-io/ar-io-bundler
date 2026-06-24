@@ -31,13 +31,20 @@ import { PostgresDatabase } from "../arch/db/postgres";
 import { knex as knexFactory } from "knex";
 
 import { getWriterConfig } from "../arch/db/knexConfig";
+import { TurboPaymentService } from "../arch/payment";
 import {
+  ArchiveCopyMessage,
   EnqueuedNewDataItem,
   EnqueuedOffsetsBatch,
   EnqueueFinalizeUpload,
+  RefundBalanceMessage,
   upsertRepeatable,
 } from "../arch/queues";
 import { jobLabels } from "../constants";
+import { ChunkHeader } from "../types/types";
+import { W } from "../types/winston";
+import { archiveCopyHandler } from "../jobs/archive-copy";
+import { broadcastChunkHandler } from "../jobs/broadcast-chunks";
 import { handler as cleanupFsHandler } from "../jobs/cleanup-fs";
 import { finalizeMultipartUpload } from "../routes/multiPartUploads";
 import { UnbundleBDIMessageBody, unbundleBDIBatchHandler } from "../jobs/unbundle-bdi";
@@ -218,6 +225,68 @@ const redrivePostedWorker = createWorker(
   { concurrency: 1 }
 );
 
+// Refund Balance Worker - durable retry for balance refunds. When a refund
+// fails on the upload critical path it is enqueued here; this worker retries it
+// (BullMQ attempts/backoff) until it lands, so a wallet is always credited back
+// even through an extended payment-service outage. throwOnFailure surfaces a
+// failed attempt so BullMQ retries the job.
+const refundBalanceWorker = createWorker<RefundBalanceMessage>(
+  jobLabels.refundBalance,
+  async (job: Job<RefundBalanceMessage>) => {
+    const { nativeAddress, winstonCredits, dataItemId, signatureType } =
+      job.data;
+    await new TurboPaymentService().refundBalanceForData(
+      {
+        nativeAddress,
+        winston: W(winstonCredits),
+        dataItemId,
+        signatureType,
+      },
+      { throwOnFailure: true }
+    );
+  },
+  { concurrency: 3 }
+);
+
+// Broadcast Chunks Worker — posts one staged chunk to an AR.IO distributor node
+// (shuffle + failover). One job per chunk, so failures retry per-chunk. Higher
+// concurrency than the bundle workers: chunks are small, independent, I/O-bound.
+const broadcastChunksWorker = createWorker<ChunkHeader>(
+  jobLabels.broadcastChunks,
+  async (job: Job<ChunkHeader>) => {
+    await broadcastChunkHandler(job.data, {
+      objectStore: defaultArchitecture.objectStore,
+    });
+  },
+  {
+    concurrency: parseInt(
+      process.env.BROADCAST_CHUNKS_WORKER_CONCURRENCY || "10",
+      10
+    ),
+  }
+);
+
+// Archive Copy Worker — mirrors one served object (raw-data-item or
+// bundle-payload) from the primary (SSD) MinIO to the archive (HDD) MinIO.
+// Inert (handler no-ops) unless ARCHIVE_DATA_ITEM_BUCKET is set. Copies are
+// small/independent and I/O-bound, so a modest concurrency is fine.
+const archiveCopyWorker = createWorker<ArchiveCopyMessage>(
+  jobLabels.archiveCopy,
+  async (job: Job<ArchiveCopyMessage>) => {
+    await archiveCopyHandler(job.data, {
+      objectStore: defaultArchitecture.objectStore,
+      archiveObjectStore: defaultArchitecture.archiveObjectStore,
+    });
+  },
+  {
+    // `|| 3` (not `?? `) so a malformed env (NaN from parseInt) also falls back
+    // to the default instead of passing NaN through to the BullMQ worker.
+    concurrency:
+      Number.parseInt(process.env.ARCHIVE_COPY_WORKER_CONCURRENCY ?? "", 10) ||
+      3,
+  }
+);
+
 const allWorkers = [
   planWorker,
   prepareWorker,
@@ -231,6 +300,9 @@ const allWorkers = [
   finalizeWorker,
   cleanupWorker,
   redrivePostedWorker,
+  refundBalanceWorker,
+  broadcastChunksWorker,
+  archiveCopyWorker,
 ];
 
 setupGracefulShutdown(allWorkers, logger);

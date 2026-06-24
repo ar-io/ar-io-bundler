@@ -20,7 +20,7 @@ import MultiStream from "multistream";
 import { PassThrough, Readable, pipeline } from "stream";
 
 import { ObjectStore } from "../arch/objectStore";
-import { S3ObjectStore } from "../arch/s3ObjectStore";
+import { S3ObjectStore, archiveDataItemBucket } from "../arch/s3ObjectStore";
 import "../bundles/assembleBundleHeader";
 import {
   BundleHeaderInfo,
@@ -31,19 +31,57 @@ import { octetStreamContentType } from "../constants";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import {
+  Base64String,
   ByteCount,
+  ChunkHeader,
   PayloadInfo,
   TransactionId,
   UploadId,
 } from "../types/types";
+import { toB64Url } from "./base64";
 import { streamToBuffer } from "./streamToBuffer";
 
 export const dataItemPrefix =
   process.env.DATA_ITEM_S3_PREFIX ?? "raw-data-item";
 const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
-const bundlePayloadPrefix =
+export const bundlePayloadPrefix =
   process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
-const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+export const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+// Per-chunk bytes staged here for the broadcast-chunks queue, keyed by
+// `{data_root}/{offset}` (the broadcast job carries only the ChunkHeader).
+const chunksPrefix = process.env.CHUNKS_S3_PREFIX ?? "chunks";
+
+const chunkObjectStoreKey = (header: ChunkHeader): string =>
+  `${chunksPrefix}/${header.data_root}/${header.offset}`;
+
+/** Stage one chunk's raw bytes for the broadcast-chunks worker to pick up. */
+export function putChunkIntoObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader,
+  chunkStream: Readable
+): Promise<void> {
+  return objectStore.putObject(chunkObjectStoreKey(header), chunkStream, {
+    contentType: octetStreamContentType,
+    contentLength: +header.chunkByteLength,
+  });
+}
+
+/** Load a staged chunk's bytes (base64url) for posting to an AR.IO node. */
+export async function getChunkFromObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader
+): Promise<Base64String> {
+  const { readable } = await objectStore.getObject(chunkObjectStoreKey(header));
+  return toB64Url(await streamToBuffer(readable, +header.chunkByteLength));
+}
+
+/** Remove a staged chunk once it has been broadcast (best-effort cleanup). */
+export function deleteChunkFromObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader
+): Promise<void> {
+  return objectStore.deleteObject(chunkObjectStoreKey(header));
+}
 
 let s3ObjectStore: S3ObjectStore | undefined;
 
@@ -61,6 +99,79 @@ export function getS3ObjectStore(): ObjectStore {
     });
   }
   return s3ObjectStore;
+}
+
+/**
+ * True when the second (HDD-backed) archive MinIO is configured. Gates the
+ * archive-copy enqueue points and the post-permanence SSD cleanup branch so
+ * that, when unset, the pipeline behaves exactly as a single-MinIO deployment.
+ */
+export function isArchiveEnabled(): boolean {
+  return !!archiveDataItemBucket;
+}
+
+let archiveS3ObjectStore: S3ObjectStore | undefined;
+
+/**
+ * Singleton ObjectStore pointed at the archive (HDD) MinIO, or `undefined` when
+ * `ARCHIVE_DATA_ITEM_BUCKET` is unset. Routing to the archive endpoint is
+ * handled by the bucket→region→client registration in s3ObjectStore.ts, so this
+ * just needs the archive bucket name (no explicit s3Client arg).
+ */
+export function getArchiveS3ObjectStore(): ObjectStore | undefined {
+  if (!archiveDataItemBucket) return undefined;
+  if (!archiveS3ObjectStore) {
+    archiveS3ObjectStore = new S3ObjectStore({
+      bucketName: archiveDataItemBucket,
+    });
+  }
+  return archiveS3ObjectStore;
+}
+
+/**
+ * Stream a single object key from the primary (SSD) store to the archive (HDD)
+ * store. For `raw-data-item/{id}` keys the payload metadata (data-start offset +
+ * content type) is preserved so range/payload reads stay valid on the archive
+ * copy; everything else (`bundle-payload/{planId}`) copies as a plain octet
+ * stream. Overwrites are harmless, so the copy is idempotent.
+ *
+ * Integrity guard: the post-permanence SSD sweep deletes the SSD copy once a
+ * `headObject` confirms the archive key EXISTS — but HEAD is existence-only, so a
+ * silently truncated copy (e.g. a source GET that ends short without emitting an
+ * error) would pass that gate and the gateway would then serve short bytes as
+ * authoritative. So after the write we assert the archived byte count matches the
+ * source. On mismatch we delete the bad archive object before throwing, otherwise
+ * the archive-copy idempotency HEAD would treat the truncated object as "already
+ * archived" on the BullMQ retry and never re-copy it.
+ */
+export async function copyKeyToArchive(
+  primary: ObjectStore,
+  archive: ObjectStore,
+  key: string
+): Promise<void> {
+  const sourceByteCount = await primary.getObjectByteCount(key);
+
+  if (key.startsWith(`${dataItemPrefix}/`)) {
+    const payloadInfo = await primary.getObjectPayloadInfo(key);
+    const { readable } = await primary.getObject(key);
+    await archive.putObject(key, readable, { payloadInfo });
+  } else {
+    const { readable } = await primary.getObject(key);
+    await archive.putObject(key, readable, {
+      contentType: octetStreamContentType,
+    });
+  }
+
+  const archivedByteCount = await archive.getObjectByteCount(key);
+  if (archivedByteCount !== sourceByteCount) {
+    // Remove the partial/wrong-size object so the retry re-copies instead of the
+    // idempotency HEAD short-circuiting on it.
+    await archive.deleteObject(key).catch(() => undefined);
+    throw new Error(
+      `Archive copy size mismatch for ${key}: source=${sourceByteCount} bytes, ` +
+        `archived=${archivedByteCount} bytes`
+    );
+  }
 }
 
 /** strip CR/LF and the rest of the C0 control block (plus DEL 0x7F) */

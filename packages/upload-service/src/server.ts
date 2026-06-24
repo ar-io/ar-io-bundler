@@ -30,6 +30,7 @@ import {
 import router from "./router";
 import { getErrorCodeFromErrorObject } from "./utils/common";
 import { loadConfig } from "./utils/config";
+import { resolveServerTimeouts } from "./utils/serverTimeouts";
 
 type KoaState = DefaultState & Architecture;
 export type KoaContext = ParameterizedContext<KoaState>;
@@ -127,14 +128,20 @@ export async function createServer(
     })
   );
   app.use(router.routes());
-  // Bind to 0.0.0.0 to accept connections from nginx proxy on separate server
-  const server = app.listen(port, '0.0.0.0');
+  // Bind address is env-driven: BIND_ADDRESS=127.0.0.1 keeps the API loopback-only
+  // (co-located nginx proxies from localhost). Defaults to 0.0.0.0 for a separate-server nginx.
+  const server = app.listen(port, process.env.BIND_ADDRESS || '0.0.0.0');
 
-  // Timeout configuration for large file uploads (up to 10 GiB)
-  const requestTimeout = parseInt(process.env.REQUEST_TIMEOUT_MS || "600000", 10); // 10 minutes
-  const keepAliveTimeout = parseInt(process.env.KEEPALIVE_TIMEOUT_MS || "620000", 10); // 10m 20s
-  const headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS || "630000", 10); // 10m 30s
+  // Timeout configuration for large file uploads (up to 10 GiB). NOTE:
+  // headersTimeout is kept SHORT — headers are tiny and a long header timeout is
+  // a slowloris vector; only the request BODY needs the long requestTimeout.
+  const { requestTimeout, keepAliveTimeout, headersTimeout } =
+    resolveServerTimeouts();
 
+  // requestTimeout (not the legacy server.timeout) is the total request timeout
+  // covering headers + body; server.timeout is retained as a socket-inactivity
+  // guard so stalled connections are reaped.
+  server.requestTimeout = requestTimeout;
   server.timeout = requestTimeout;
   server.keepAliveTimeout = keepAliveTimeout;
   server.headersTimeout = headersTimeout;

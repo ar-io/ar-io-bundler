@@ -57,7 +57,7 @@ cd ar-io-bundler
 # Run comprehensive setup wizard
 ./scripts/setup-bundler.sh
 
-# For advanced users (configures all 137 environment variables)
+# For advanced users (configures all environment variables (see `.env.sample`))
 ./scripts/setup-bundler.sh --advanced
 
 # For quick development setup (uses defaults)
@@ -66,13 +66,13 @@ cd ar-io-bundler
 
 The setup wizard handles:
 - ✅ Prerequisites verification
-- ✅ Environment configuration (97-137 variables)
+- ✅ Environment configuration (see `.env.sample`)
 - ✅ Dependency installation
 - ✅ Package building
 - ✅ Infrastructure startup (Docker)
 - ✅ Database migrations
 - ✅ Service deployment (PM2)
-- ✅ Cron job configuration
+- ✅ In-process BullMQ schedulers (plan/cleanup/redrive — no crontab)
 - ✅ Health verification
 
 **After completion**, the bundler is ready to use. Skip to [Service Management](#service-management).
@@ -106,11 +106,10 @@ nano .env
 **Critical variables to configure** (see [Configuration Reference](#configuration-reference)):
 - `PRIVATE_ROUTE_SECRET` - Inter-service authentication (MUST match in both services)
 - `JWT_SECRET` - Token signing
-- `UPLOAD_SERVICE_TURBO_JWK_FILE` - Path to bundle signing wallet (absolute path)
-- `PAYMENT_SERVICE_DB_DATABASE=payment_service`
-- `UPLOAD_SERVICE_DB_DATABASE=upload_service`
-- `UPLOAD_SERVICE_X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments
-- `PAYMENT_SERVICE_X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments
+- `TURBO_JWK_FILE` - Path to bundle signing wallet (absolute path)
+- `PAYMENT_DB_DATABASE=payment_service`
+- `UPLOAD_DB_DATABASE=upload_service`
+- `X402_PAYMENT_ADDRESS` - Your EVM wallet for USDC payments (set in both service env scopes)
 
 #### 3. Add Arweave Wallet
 
@@ -122,7 +121,7 @@ cp /path/to/your/arweave-wallet.json ./wallet.json
 chmod 600 wallet.json
 
 # Configure path in .env (MUST be absolute)
-# UPLOAD_SERVICE_TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
+# TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
 ```
 
 #### 4. Build All Packages
@@ -222,14 +221,19 @@ pm2 logs
 
 ## Configuration Reference
 
-The bundler uses a single root `.env` file with service-prefixed variables. Each service reads its own prefixed variables.
+The bundler uses a single root `.env` file. Environment variable names are
+**unprefixed** — the code reads e.g. `TURBO_JWK_FILE`, `X402_PAYMENT_ADDRESS`,
+`UPLOAD_DB_DATABASE` directly. There is no `UPLOAD_SERVICE_` / `PAYMENT_SERVICE_`
+prefix scheme (the only exceptions are `UPLOAD_SERVICE_PORT`,
+`UPLOAD_SERVICE_PUBLIC_URL`, and `PAYMENT_SERVICE_PORT`, which are genuinely
+prefixed). When both services need the same value (e.g. `X402_PAYMENT_ADDRESS`),
+set the same unprefixed variable in each service's environment. See `.env.sample`
+for the authoritative variable list.
 
 ### Configuration File Locations
 
 - **Root**: `.env` (all service configs in one file)
-- **Payment Service Prefix**: `PAYMENT_SERVICE_`
-- **Upload Service Prefix**: `UPLOAD_SERVICE_`
-- **Shared Variables**: No prefix (used by both services)
+- Variable names are unprefixed; the same name is shared by whichever service reads it.
 
 ### Required Configuration
 
@@ -245,14 +249,13 @@ JWT_SECRET=<generate with: openssl rand -hex 32>
 
 ```bash
 # UPLOAD SERVICE: Bundle signing wallet (MUST be absolute path)
-UPLOAD_SERVICE_TURBO_JWK_FILE=/full/path/to/wallet.json
+TURBO_JWK_FILE=/full/path/to/wallet.json
 
-# Optional: Raw data item signing wallet
-UPLOAD_SERVICE_RAW_DATA_ITEM_JWK_FILE=/full/path/to/wallet.json
+# Optional: Raw data item signing wallet (for unsigned x402 uploads)
+RAW_DATA_ITEM_JWK_FILE=/full/path/to/wallet.json
 
-# Wallet addresses (must match wallet.json)
-UPLOAD_SERVICE_ARWEAVE_ADDRESS=your-arweave-address
-PAYMENT_SERVICE_ARIO_ADDRESS=your-arweave-address
+# Payment service: AR.IO/Arweave address (must match wallet.json)
+ARIO_ADDRESS=your-arweave-address
 ```
 
 #### Database Configuration
@@ -265,12 +268,12 @@ DB_USER=turbo_admin
 DB_PASSWORD=postgres
 
 # Database names (CRITICAL: Must match service)
-PAYMENT_SERVICE_DB_DATABASE=payment_service
-UPLOAD_SERVICE_DB_DATABASE=upload_service
+PAYMENT_DB_DATABASE=payment_service
+UPLOAD_DB_DATABASE=upload_service
 
 # Connection pooling
-DB_POOL_MIN=2
-DB_POOL_MAX=10
+DB_POOL_MIN=5
+DB_POOL_MAX=50
 ```
 
 #### Redis Configuration
@@ -292,16 +295,14 @@ REDIS_QUEUE_PORT=6381
 #### Object Storage (MinIO/S3)
 
 ```bash
-# MinIO (local development)
+# MinIO — used in BOTH dev and production. This is a de-AWS fork: object storage
+# is MinIO via the S3 abstraction, NOT AWS S3. Set S3_FORCE_PATH_STYLE=true.
 S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY_ID=minioadmin
-S3_SECRET_ACCESS_KEY=minioadmin123
-
-# Production S3 (AWS)
-# S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
-# S3_REGION=us-east-1
-# S3_ACCESS_KEY_ID=your-aws-access-key
-# S3_SECRET_ACCESS_KEY=your-aws-secret-key
+S3_ACCESS_KEY_ID=minioadmin            # rotate for production
+S3_SECRET_ACCESS_KEY=minioadmin123     # rotate for production
+S3_FORCE_PATH_STYLE=true
+# In production, point S3_ENDPOINT at your MinIO (e.g. the bundler's private IP)
+# with rotated credentials. AWS S3 is not part of this architecture.
 ```
 
 ### Important Configuration
@@ -313,40 +314,37 @@ S3_SECRET_ACCESS_KEY=minioadmin123
 UPLOAD_SERVICE_PUBLIC_URL=https://upload.yourdomain.com
 
 # Payment service URL (NO protocol prefix!)
-UPLOAD_SERVICE_PAYMENT_SERVICE_BASE_URL=localhost:4001
+PAYMENT_SERVICE_BASE_URL=localhost:4001
 
 # Or for external payment service
-# UPLOAD_SERVICE_PAYMENT_SERVICE_BASE_URL=payment.yourdomain.com:4001
+# PAYMENT_SERVICE_BASE_URL=payment.yourdomain.com:4001
 ```
 
 #### x402 Payment Protocol
 
 ```bash
-# Payment address (EVM wallet for receiving USDC)
-PAYMENT_SERVICE_X402_PAYMENT_ADDRESS=0xYourEthereumAddress
-UPLOAD_SERVICE_X402_PAYMENT_ADDRESS=0xYourEthereumAddress
+# Payment address (EVM wallet for receiving USDC) — set in both service scopes
+X402_PAYMENT_ADDRESS=0xYourEthereumAddress
 
 # Coinbase CDP credentials (REQUIRED for mainnet)
-PAYMENT_SERVICE_CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=your-secret
+CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
+CDP_API_KEY_SECRET=your-secret
 
 # Network configuration
-PAYMENT_SERVICE_X402_BASE_ENABLED=true
-PAYMENT_SERVICE_X402_BASE_RPC_URL=https://mainnet.base.org
+X402_BASE_ENABLED=true
 
 # Facilitator URL (Coinbase mainnet)
-PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://facilitator.base.coinbasecloud.net
+X402_FACILITATOR_URLS_BASE=https://facilitator.base.coinbasecloud.net
 
 # For testnet (no CDP credentials needed)
-# PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
-# PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://x402.org/facilitator
+# X402_BASE_TESTNET_ENABLED=true
+# X402_FACILITATOR_URLS_BASE_TESTNET=https://x402.org/facilitator
 
-# Fee percentage (your profit margin)
-UPLOAD_SERVICE_X402_FEE_PERCENT=15
-PAYMENT_SERVICE_X402_FEE_PERCENT=15
+# Fee percentage (your profit margin) — set in both service scopes
+X402_FEE_PERCENT=15
 
-# Minimum payment (USDC atomic units, 6 decimals)
-PAYMENT_SERVICE_X402_MINIMUM_PAYMENT_USDC=0.001
+# Minimum payment (USDC, decimal dollars)
+X402_MINIMUM_PAYMENT_USDC=0.001
 ```
 
 #### AR.IO Gateway Integration
@@ -363,32 +361,62 @@ AR_IO_ADMIN_KEY=your-ar-io-admin-key
 
 # Optional: Additional optical bridges
 OPTIONAL_OPTICAL_BRIDGE_URLS=http://other-gateway:4000/ar-io/admin/queue-data-item
+
+# Gateway redundancy (#41): comma-separated; reads + the bundle-tx POST fail over.
+# Unset = the single ARWEAVE_GATEWAY above.
+# ARWEAVE_GATEWAYS=http://localhost:3000,https://arweave.net
+# PERMANENCE_CONFIRMATION_SOURCES=1   # require N independent gateways to confirm permanence (opt-in)
+```
+
+#### Chunk Seeding (broadcast-chunks)
+
+```bash
+# Dedicated AR.IO chunk-distributor nodes the broadcast-chunks worker POSTs each
+# chunk to (shuffle + per-node retry + failover). Use PRIVATE IPs; /chunk is on
+# the gateway/envoy port (:3000). Unset → single ARWEAVE_UPLOAD_NODE fallback.
+# AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000
+ARWEAVE_UPLOAD_NODE=http://localhost:4000   # single-node fallback (gateway core)
+BROADCAST_CHUNKS_WORKER_CONCURRENCY=10
+CHUNK_POST_MAX_TRIES=3
+CHUNK_POST_RETRY_DELAY_MS=2000
+CHUNK_POST_TIMEOUT_MS=60000
+```
+
+#### In-process schedulers & posted-bundle recovery
+
+```bash
+# BullMQ job schedulers (NOT crontab). "" disables a schedule.
+PLAN_SCHEDULE_CRON="*/5 * * * *"
+CLEANUP_SCHEDULE_CRON="0 2 * * *"
+POSTED_REDRIVE_SCHEDULE_CRON="*/10 * * * *"
+# redrive-posted re-seeds stale posted_bundle rows, then demotes to failed_bundle:
+POSTED_STALE_THRESHOLD_MS=1800000   # 30 min
+MAX_SEED_REDRIVES=5
 ```
 
 #### Stripe Payments
 
 ```bash
-PAYMENT_SERVICE_STRIPE_SECRET_KEY=sk_live_xxx
-PAYMENT_SERVICE_STRIPE_WEBHOOK_SECRET=whsec_xxx
+STRIPE_SECRET_KEY=sk_live_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
 
 # Optional: Automatic tax calculation
-# PAYMENT_SERVICE_STRIPE_AUTOMATIC_TAX_ENABLED=true
+# ENABLE_AUTO_STRIPE_TAX=true
 ```
 
 #### Cryptocurrency Monitoring
 
 ```bash
 # Ethereum
-PAYMENT_SERVICE_ETHEREUM_RPC_ENDPOINT=https://eth-mainnet.g.alchemy.com/v2/your-key
-PAYMENT_SERVICE_ETHEREUM_ADDRESS=0xYourEthAddress
-PAYMENT_SERVICE_ETHEREUM_CONFIRMATIONS=12
+ETHEREUM_MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/your-key
+ETHEREUM_ADDRESS=0xYourEthAddress
+ETHEREUM_MIN_CONFIRMATIONS=12
 
 # Solana
-PAYMENT_SERVICE_SOLANA_RPC_ENDPOINT=https://api.mainnet-beta.solana.com
-PAYMENT_SERVICE_SOLANA_ADDRESS=YourSolanaAddress
-PAYMENT_SERVICE_SOLANA_CONFIRMATIONS=32
+SOLANA_GATEWAY=https://api.mainnet-beta.solana.com
+SOLANA_ADDRESS=YourSolanaAddress
 
-# Similar for: MATIC, KYVE, BASE_ETH
+# Similar address / RPC / *_MIN_CONFIRMATIONS vars exist for: MATIC, KYVE, BASE_ETH
 ```
 
 ### Optional Configuration
@@ -397,23 +425,24 @@ PAYMENT_SERVICE_SOLANA_CONFIRMATIONS=32
 
 ```bash
 # Allow-listed addresses (comma-separated)
-UPLOAD_SERVICE_ALLOW_LISTED_ADDRESSES=addr1,addr2,addr3
+ALLOW_LISTED_ADDRESSES=addr1,addr2,addr3
 
 # Skip balance checks (DANGEROUS - for development only)
-UPLOAD_SERVICE_SKIP_BALANCE_CHECKS=false
+SKIP_BALANCE_CHECKS=false
 
-# Free upload limit (bytes)
-UPLOAD_SERVICE_FREE_UPLOAD_LIMIT=517120  # 505 KB
+# Free upload limit (bytes) — default 505 KiB
+FREE_UPLOAD_LIMIT=517120  # 505 KiB
 ```
 
 #### Size Limits
 
 ```bash
-# Single data item max size
-UPLOAD_SERVICE_MAX_DATA_ITEM_SIZE=10737418240  # 10 GB
+# Single data item max size (default 4 GiB). Larger payloads must use the
+# multipart upload flow, which supports up to 10 GiB.
+MAX_DATA_ITEM_SIZE=4294967296  # 4 GiB (default)
 
-# Bundle max size
-UPLOAD_SERVICE_MAX_BUNDLE_SIZE=262144000  # 250 MB
+# Target max bundle size for packing (default 2 GiB)
+MAX_BUNDLE_SIZE=2147483648  # 2 GiB (default)
 ```
 
 #### Logging & Monitoring
@@ -433,22 +462,26 @@ PROMETHEUS_ENABLED=true
 #### Worker Concurrency
 
 ```bash
-# BullMQ worker concurrency
-WORKER_CONCURRENCY_PLAN=5
-WORKER_CONCURRENCY_PREPARE=10
-WORKER_CONCURRENCY_POST=5
-WORKER_CONCURRENCY_VERIFY=10
+# BullMQ worker concurrency (defaults shown). Only these five are env-tunable;
+# the rest are hardcoded in allWorkers.ts (seed=2, optical=5, new-data-item=5, …).
+PLAN_WORKER_CONCURRENCY=1          # KEEP AT 1 — overlap guard for the wall-clock
+                                  # scheduler tick (raising it overlaps plan drains)
+PREPARE_WORKER_CONCURRENCY=3
+POST_WORKER_CONCURRENCY=2
+VERIFY_WORKER_CONCURRENCY=3
+BROADCAST_CHUNKS_WORKER_CONCURRENCY=10   # per-chunk broadcast to AR_IO_NODE_URLS
 ```
 
 ### Complete Environment Variable Reference
 
-For all 137 environment variables, see `./scripts/setup-bundler.sh --advanced` or `.env.sample`.
+For the full env reference, see `./scripts/setup-bundler.sh --advanced` or `.env.sample`.
 
 ---
 
 ## Service Management
 
-The bundler runs 7 PM2 processes across two microservices.
+The bundler runs 5 PM2 processes across the services (canonical config:
+`infrastructure/pm2/ecosystem.config.js`).
 
 ### Service Overview
 
@@ -457,8 +490,8 @@ The bundler runs 7 PM2 processes across two microservices.
 | `payment-service` | 2 | cluster | Payment API |
 | `payment-workers` | 1 | fork | Background jobs (pending tx, credits) |
 | `upload-api` | 2 | cluster | Upload API |
-| `upload-workers` | 1 | fork | Bundling pipeline (11 queues) |
-| `bull-board` | 1 | fork | Queue monitoring dashboard |
+| `upload-workers` | 1 | fork | Bundling pipeline (15 queues) |
+| `admin-dashboard` | 1 | fork | Admin stats + embedded Bull Board (:3002) |
 
 ### Quick Commands
 
@@ -497,10 +530,11 @@ pm2 logs --err              # Errors only
 # Real-time monitoring
 pm2 monit
 
-# Restart services
-pm2 restart all
-pm2 restart payment-service
-pm2 restart upload-workers
+# Restart services — ALWAYS via the wrapper scripts, never `pm2 restart` directly
+# (they reload .env, verify infra is up, and check the build first; see the
+# CRITICAL note below). Restarting one service still goes through the script.
+./scripts/restart.sh                 # restart all PM2 services
+./scripts/restart.sh --with-docker   # also restart infra + re-run minio-init
 
 # Graceful reload (zero-downtime)
 pm2 reload all
@@ -654,7 +688,7 @@ yarn db:migrate:latest
 **With explicit environment:**
 ```bash
 cd packages/upload-service
-DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres DB_DATABASE=upload_service yarn db:migrate:latest
+DB_HOST=localhost DB_USER=turbo_admin DB_PASSWORD=postgres UPLOAD_DB_DATABASE=upload_service yarn db:migrate:latest
 ```
 
 ### Creating Migrations
@@ -761,8 +795,8 @@ LIMIT 10;"
 **"relation does not exist":**
 ```bash
 # Verify database name matches service
-# Payment service: DB_DATABASE=payment_service
-# Upload service: DB_DATABASE=upload_service
+# Payment service: PAYMENT_DB_DATABASE=payment_service
+# Upload service: UPLOAD_DB_DATABASE=upload_service
 
 # Run migrations
 yarn db:migrate:latest
@@ -783,8 +817,8 @@ psql -U turbo_admin -h localhost -d payment_service -c "SELECT version();"
 psql -U turbo_admin -h localhost -c "SELECT count(*) FROM pg_stat_activity;"
 
 # Adjust pool settings in .env
-DB_POOL_MIN=2
-DB_POOL_MAX=10
+DB_POOL_MIN=5
+DB_POOL_MAX=50
 ```
 
 ---
@@ -831,22 +865,30 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 - Job delays
 - Worker health
 
-**11 Upload Service Queues:**
+**15 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
 1. `new-data-item` - New uploads
 2. `plan-bundle` - Bundle planning
 3. `prepare-bundle` - Bundle preparation
 4. `post-bundle` - Arweave posting
-5. `verify-bundle` - Post verification
-6. `optical-post` - AR.IO Gateway caching
-7. `unbundle-bdi` - Nested bundle processing
-8. `put-offsets` - Offset storage
-9. `cleanup-fs` - Filesystem cleanup
-10. `cleanup-bdi` - BDI cleanup
-11. `multipart-cleanup` - Multipart upload cleanup
+5. `seed-bundle` - Stage chunks + enqueue per-chunk broadcast (AR_IO_NODE_URLS)
+6. `verify-bundle` - Post/permanence verification
+7. `optical-post` - AR.IO Gateway optimistic caching
+8. `unbundle-bdi` - Nested (BDI) bundle processing
+9. `put-offsets` - Offset storage
+10. `finalize-upload` - Multipart upload finalization
+11. `cleanup-fs` - Tiered filesystem/object cleanup
+12. `redrive-posted` - Redrive posted-but-unverified bundles
+13. `refund-balance` - Durable balance-refund retry
+14. `broadcast-chunks` - Broadcast each chunk to an AR.IO distributor (AR_IO_NODE_URLS, shuffle + failover)
+15. `archive-copy` - Two-tier MinIO: mirror a served object (raw-data-item/bundle-payload) SSD→HDD (inert unless `ARCHIVE_*` set)
 
 **Payment Service Queues:**
-1. `pending-tx` - Cryptocurrency payment monitoring
-2. `admin-credits` - Admin credit operations
+1. `payment-pending-tx` - Cryptocurrency payment monitoring
+2. `payment-admin-credit` - Admin credit operations
+
+> Queue names in Bull Board / Redis are prefixed: upload queues are `upload-<label>`
+> (e.g. `upload-broadcast-chunks`) and payment queues are `payment-<label>`. The
+> short labels above are the `jobLabels`; prefix them when grepping Redis (`bull:upload-…`).
 
 ### Log Management
 
@@ -909,9 +951,10 @@ docker compose logs -f
 
 ### Metrics
 
-**Prometheus metrics endpoint:**
+**Prometheus metrics endpoints:**
 ```
-http://localhost:3001/bundler_metrics
+http://localhost:3001/bundler_metrics   # upload service
+http://localhost:4001/metrics           # payment service (path differs!)
 ```
 
 **Key metrics:**
@@ -949,7 +992,52 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 
 ### Alerting
 
-**Recommended alerts:**
+#### Built-in Slack health alerter (admin-dashboard)
+
+The `admin-dashboard` process ships an **opt-in Slack alerter** that mirrors the
+dashboard's health rollup — so Slack alerts match exactly what the dashboard
+shows (pipeline/wallet/payments/storage/schedulers/recent queue failures), plus
+raw Postgres/Redis/process-down liveness. It is **high-signal/low-noise**: each
+issue alerts once, reminds at most every `ALERT_REMINDER_MS` while it persists,
+and sends a single ✅ resolved message when it clears.
+
+It uses a Slack **bot token** (`chat.postMessage`), not an incoming webhook, so
+one credential routes both ops alerts and payment notifications to different
+channels by ID. **The bot must be invited to each channel** (`/invite @YourBot`)
+or posts fail with `not_in_channel`.
+
+**Setup:**
+1. Create a Slack app with the `chat:write` (and `chat:write.customize`) bot
+   scopes, install it, and copy the **Bot User OAuth Token** (`xoxb-…`).
+2. Invite the bot to your alert + top-up channels; copy each **Channel ID**
+   (`C0…`, via channel → *View details*).
+3. Set in `.env` and restart the admin-dashboard:
+
+```bash
+SLACK_OAUTH_TOKEN=xoxb-...            # shared by alerter + payment notifications
+SLACK_ALERT_CHANNEL_ID=C0...          # ops/health alerts
+ALERTS_ENABLED=true                   # master switch (default off)
+# Optional tuning:
+ALERT_CHECK_INTERVAL_MS=60000         # how often to evaluate (default 60s)
+ALERT_REMINDER_MS=1800000             # re-alert cadence while still bad (default 30m)
+```
+
+Alert **thresholds** are the dashboard rollup's — tuned via the same
+`ADMIN_*` / `POSTED_*` vars the dashboard uses, not separate alert knobs.
+
+**Verify delivery** before relying on it:
+```bash
+node packages/admin-service/admin/notifier/test-slack.js both
+```
+Posts a test message to the alert and top-up channels and prints the exact Slack
+result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
+
+> **Payment top-up notifications** reuse the same bot token. Set
+> `SLACK_TURBO_TOP_UP_CHANNEL_ID` and both crypto and x402 (USDC) top-ups post to
+> that channel automatically (skipped only when `NODE_ENV=dev`). Stripe payments
+> notify via Stripe directly. See the **Payments & Credits** section.
+
+**Recommended alerts (what the built-in alerter already covers):**
 1. **Service down** - Health check failure
 2. **Queue backlog** - >1000 jobs pending
 3. **Failed uploads** - Error rate >5%
@@ -958,7 +1046,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 6. **Worker failures** - Worker restarts >5/hour
 7. **Bundle posting failures** - >10% failure rate
 
-**Example: Uptime monitoring**
+**Example: external uptime monitoring (complements the Slack alerter)**
 ```bash
 # Add to cron (check every 5 minutes)
 */5 * * * * curl -fsS --retry 3 http://localhost:3001/health || echo "Upload service down!" | mail -s "Alert: Upload Service Down" admin@example.com
@@ -1026,8 +1114,8 @@ kill <PID>
 UPLOAD_SERVICE_PORT=3011
 PAYMENT_SERVICE_PORT=4011
 
-# Restart with new port
-PORT=3011 pm2 restart upload-api
+# Change the port in .env (UPLOAD_SERVICE_PORT) then restart via the wrapper:
+./scripts/restart.sh
 ```
 
 #### Database Connection Errors
@@ -1050,8 +1138,8 @@ yarn db:migrate:status
 **Solution:**
 ```bash
 # 1. Verify correct database name in .env
-# Payment: DB_DATABASE=payment_service
-# Upload: DB_DATABASE=upload_service
+# Payment: PAYMENT_DB_DATABASE=payment_service
+# Upload: UPLOAD_DB_DATABASE=upload_service
 
 # 2. Run migrations
 yarn db:migrate:latest
@@ -1067,7 +1155,7 @@ docker compose logs postgres --tail 50
 **Solution:**
 ```bash
 # Use ABSOLUTE path in .env
-UPLOAD_SERVICE_TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
+TURBO_JWK_FILE=/home/user/ar-io-bundler/wallet.json
 
 # Verify file exists and is readable
 ls -la /home/user/ar-io-bundler/wallet.json
@@ -1097,7 +1185,7 @@ grep PRIVATE_ROUTE_SECRET .env
 ```bash
 # 1. Ensure PRIVATE_ROUTE_SECRET matches in both services
 # 2. Verify PAYMENT_SERVICE_BASE_URL has NO protocol
-UPLOAD_SERVICE_PAYMENT_SERVICE_BASE_URL=localhost:4001  # ✅
+PAYMENT_SERVICE_BASE_URL=localhost:4001  # ✅
 # NOT: http://localhost:4001  # ❌
 
 # 3. Restart both services
@@ -1150,18 +1238,18 @@ curl https://facilitator.base.coinbasecloud.net/health
 **Solution:**
 ```bash
 # 1. For mainnet, get CDP credentials from https://portal.cdp.coinbase.com/
-PAYMENT_SERVICE_CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=your-secret
+CDP_API_KEY_ID=organizations/xxx/apiKeys/xxx
+CDP_API_KEY_SECRET=your-secret
 
 # 2. For testnet, use public facilitator (no CDP needed)
-PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
-PAYMENT_SERVICE_X402_FACILITATOR_URL_BASE=https://x402.org/facilitator
+X402_BASE_TESTNET_ENABLED=true
+X402_FACILITATOR_URLS_BASE_TESTNET=https://x402.org/facilitator
 
 # 3. Verify payment address is valid EVM address
 # Must start with 0x and be 42 characters
 
-# 4. Restart payment service
-pm2 restart payment-service
+# 4. Restart payment service (via the wrapper, never `pm2 restart` directly)
+./scripts/restart.sh
 ```
 
 #### Bundles Not Posting to Arweave
@@ -1170,8 +1258,10 @@ pm2 restart payment-service
 
 **Diagnosis:**
 ```bash
-# Check wallet balance
-curl https://arweave.net/wallet/$(grep ARWEAVE_ADDRESS .env | cut -d= -f2)/balance
+# Check the bundle-signing wallet's AR balance. The posting wallet is TURBO_JWK_FILE
+# (a JWK file) — NOT ARWEAVE_ADDRESS (that's the payment service's configured address).
+# Derive the address from the JWK, then query YOUR gateway (not arweave.net):
+#   curl http://localhost:3000/wallet/<addr-from-TURBO_JWK_FILE>/balance
 
 # Check post-bundle queue
 curl http://localhost:3002/admin/queues
@@ -1185,8 +1275,8 @@ curl http://localhost:3000/info  # Or your gateway URL
 
 **Solution:**
 ```bash
-# 1. Fund wallet with AR
-# Send AR to: $(grep ARWEAVE_ADDRESS .env | cut -d= -f2)
+# 1. Fund the bundle-signing wallet with AR (the address derived from TURBO_JWK_FILE,
+#    NOT ARWEAVE_ADDRESS).
 
 # 2. Verify gateway URL correct
 ARWEAVE_GATEWAY=http://localhost:3000  # For local AR.IO Gateway
@@ -1198,6 +1288,32 @@ pm2 list | grep upload-workers
 
 # 4. Manually retry failed jobs in Bull Board
 # http://localhost:3002/admin/queues -> post-bundle -> Failed -> Retry All
+```
+
+#### Bundle Posted But Chunks Not Broadcasting
+
+**Symptom:** `post-bundle` succeeds (tx header on chain) but data never becomes retrievable; the bundle lingers in `posted_bundle` and `verify-bundle` never promotes it.
+
+**Cause:** chunk delivery is a separate stage. After `seed-bundle` stages the chunks, the **`broadcast-chunks`** queue POSTs each chunk to a node in `AR_IO_NODE_URLS`. If those nodes are unreachable / mis-set / in `ARWEAVE_POST_DRY_RUN=true`, chunks never land.
+
+**Diagnosis:**
+```bash
+# Backlog/failures on the per-chunk broadcast queue:
+redis-cli -p 6381 -n 2 zcard bull:upload-broadcast-chunks:failed
+redis-cli -p 6381 -n 2 zcard bull:upload-broadcast-chunks:wait
+pm2 logs upload-workers | grep -iE "broadcast chunk|failing over|chunk-distributor"
+# Per-node success/failure metric:
+curl -s http://localhost:3001/bundler_metrics | grep chunk_seed_post_total
+```
+
+**Solution:**
+```bash
+# 1. Confirm AR_IO_NODE_URLS is set to reachable distributors (private IPs, :3000),
+#    and each is NOT in ARWEAVE_POST_DRY_RUN=true. If unset, seeding falls back to
+#    the single ARWEAVE_UPLOAD_NODE.
+# 2. Retry failed jobs: Bull Board -> upload-broadcast-chunks -> Failed -> Retry All.
+# 3. The redrive-posted scheduler also re-seeds stale posted_bundle rows
+#    (POSTED_REDRIVE_SCHEDULE_CRON, default */10) and demotes after MAX_SEED_REDRIVES.
 ```
 
 #### MinIO Connection Errors
@@ -1292,14 +1408,14 @@ docker network connect ar-io-bundler_default <gateway-core-container>
 If on different servers (same LAN):
 ```bash
 # On gateway server, add to /etc/hosts:
-192.168.2.253 ar-io-bundler-minio
-192.168.2.253 raw-data-items.ar-io-bundler-minio
-192.168.2.253 backup-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> raw-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> backup-data-items.ar-io-bundler-minio
 
 # Configure gateway .env
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
-AWS_ENDPOINT=http://192.168.2.253:9000  # Bundler server IP
+AWS_ENDPOINT=http://<BUNDLER_PRIVATE_IP>:9000  # Bundler server IP
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin123
 AWS_REGION=us-east-1
@@ -1364,17 +1480,13 @@ For production deployments requiring HA/DR:
 
 ### Fee Configuration
 
-The bundler's default fee configuration subsidizes uploads at a 23.4% loss. Adjust for profitability:
+Fees are **not** configured via an env var (there is no `FEE_MULTIPLIER`). They
+are stored as database-driven adjustment rules in the payment service's
+`payment_adjustment_catalog` table, applied as markups/discounts on top of the
+base Arweave network cost. This allows changing fees without code or restarts.
 
-**See:** `docs/operations/FEE_CONFIGURATION_GUIDE.md`
-
-**Quick adjustment:**
-```bash
-# .env - Adjust fee multiplier
-FEE_MULTIPLIER=1.0  # No markup (break-even)
-FEE_MULTIPLIER=1.2  # 20% markup
-FEE_MULTIPLIER=0.766  # Default (23.4% loss)
-```
+**See:** `docs/operations/FEE_CONFIGURATION_GUIDE.md` for the full procedure
+(inspecting current adjustments and inserting a new markup rule).
 
 ### Custom Domain Setup
 
@@ -1422,7 +1534,8 @@ server {
 **2. Update `.env`:**
 ```bash
 UPLOAD_SERVICE_PUBLIC_URL=https://upload.yourdomain.com
-PAYMENT_SERVICE_PUBLIC_URL=https://payment.yourdomain.com
+# (There is no PAYMENT_SERVICE_PUBLIC_URL env var — the payment service's public
+#  URL is set in your nginx/reverse-proxy, not the bundler .env.)
 ```
 
 **3. Restart nginx and bundler:**
@@ -1446,7 +1559,7 @@ SKIP_BALANCE_CHECKS=false  # Never true in production!
 NODE_ENV=staging
 LOG_LEVEL=info
 # Use testnet for x402
-PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
+X402_BASE_TESTNET_ENABLED=true
 ```
 
 **Production:**
@@ -1454,9 +1567,9 @@ PAYMENT_SERVICE_X402_BASE_TESTNET_ENABLED=true
 NODE_ENV=production
 LOG_LEVEL=info
 # Use mainnet
-PAYMENT_SERVICE_X402_BASE_ENABLED=true
-PAYMENT_SERVICE_CDP_API_KEY_ID=xxx
-PAYMENT_SERVICE_CDP_API_KEY_SECRET=xxx
+X402_BASE_ENABLED=true
+CDP_API_KEY_ID=xxx
+CDP_API_KEY_SECRET=xxx
 ```
 
 ---
@@ -1544,15 +1657,15 @@ LIMIT 10;"
 
 ```bash
 # Full vacuum (requires downtime)
-# 1. Stop workers to prevent new writes
-pm2 stop upload-workers payment-workers
+# 1. Stop PM2 (keep Docker infra up) to prevent new writes
+./scripts/stop.sh --services-only
 
 # 2. Vacuum full
 psql -U turbo_admin -h localhost -d upload_service -c "VACUUM FULL;"
 psql -U turbo_admin -h localhost -d payment_service -c "VACUUM FULL;"
 
-# 3. Restart workers
-pm2 restart upload-workers payment-workers
+# 3. Restart everything via the wrapper
+./scripts/start.sh
 ```
 
 ### Log Rotation
@@ -1873,12 +1986,12 @@ pm2 describe upload-workers  # Should show mode: fork, instances: 1
 
 **Adjust worker concurrency in `.env`:**
 ```bash
-# Increase for more parallel processing
-WORKER_CONCURRENCY_PLAN=10        # Bundle planning
-WORKER_CONCURRENCY_PREPARE=20     # Bundle preparation
-WORKER_CONCURRENCY_POST=10        # Arweave posting
-WORKER_CONCURRENCY_VERIFY=20      # Post verification
-WORKER_CONCURRENCY_OPTICAL=15     # Optical posting
+# Increase for more parallel processing (leave PLAN at 1 — it's an overlap guard).
+# Optical/seed/etc. concurrency is hardcoded in allWorkers.ts and has NO env knob.
+PREPARE_WORKER_CONCURRENCY=6      # Bundle preparation (default 3)
+POST_WORKER_CONCURRENCY=4         # Arweave posting (default 2)
+VERIFY_WORKER_CONCURRENCY=6      # Post verification (default 3)
+BROADCAST_CHUNKS_WORKER_CONCURRENCY=20   # Per-chunk broadcast (default 10)
 ```
 
 **Balance concurrency with resources:**
@@ -1892,7 +2005,7 @@ WORKER_CONCURRENCY_OPTICAL=15     # Optical posting
 ```bash
 # .env configuration
 DB_POOL_MIN=5     # Minimum connections
-DB_POOL_MAX=20    # Maximum connections
+DB_POOL_MAX=50    # Maximum connections
 
 # For high-traffic deployments
 DB_POOL_MAX=50
@@ -1968,21 +2081,20 @@ NODE_OPTIONS="--max-old-space-size=4096" pm2 start lib/workers/allWorkers.js --n
 **Configure bundle sizes in `.env`:**
 ```bash
 # Maximum bundle size (balance between frequency and cost)
-MAX_BUNDLE_SIZE=262144000  # 250 MB (default)
+MAX_BUNDLE_SIZE=2147483648  # 2 GiB (default)
 
 # Smaller bundles = more frequent posting = higher fees
-MAX_BUNDLE_SIZE=104857600  # 100 MB
+MAX_BUNDLE_SIZE=536870912   # 512 MiB
 
 # Larger bundles = less frequent posting = lower fees
-MAX_BUNDLE_SIZE=524288000  # 500 MB
+MAX_BUNDLE_SIZE=4294967296  # 4 GiB
 ```
 
 **Bundle planning strategy:**
 ```bash
-# Plan more frequently during high traffic
-# Adjust cron job:
-*/2 * * * *  # Every 2 minutes (high traffic)
-*/10 * * * * # Every 10 minutes (low traffic)
+# Plan more/less frequently via the in-process scheduler env var (NOT crontab):
+PLAN_SCHEDULE_CRON="*/2 * * * *"   # Every 2 minutes (high traffic)
+PLAN_SCHEDULE_CRON="*/10 * * * *"  # Every 10 minutes (low traffic)
 ```
 
 ### Network Optimization
@@ -2038,7 +2150,7 @@ gzip_types text/plain text/css text/xml text/javascript application/json applica
 
 ```
 ar-io-bundler/
-├── .env                       # Root environment config (service-prefixed)
+├── .env                       # Root environment config (UNPREFIXED — both services read this one file)
 ├── wallet.json                # Arweave JWK wallet (DO NOT COMMIT)
 ├── packages/
 │   ├── payment-service/       # Payment microservice
@@ -2142,8 +2254,8 @@ pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"  # Verify
 
 ---
 
-**Last Updated:** November 2025
+**Last Updated:** June 2026
 
-**Version:** 1.0.0
+**Version:** 1.2.0
 
 **Maintained by:** AR.IO Bundler Team

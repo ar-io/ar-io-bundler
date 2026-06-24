@@ -34,38 +34,19 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
-import { parseRawDataRequest, validateRawData } from "../utils/rawDataUtils";
+import {
+  RawBodyTooLargeError,
+  bufferRequestBodyWithLimit,
+  parseRawDataRequest,
+  validateRawData,
+} from "../utils/rawDataUtils";
 import { signReceipt } from "../utils/signReceipt";
-import { MINIMUM_USDC_PRICE } from "./x402Pricing";
+// Single source of truth for unsigned/raw x402 pricing (surcharge + fee + floor)
+// lives in utils/x402Pricing so the quote route and this charge path can't drift.
+import { applyX402FeeAndFloor } from "../utils/x402Pricing";
 
 const rawDataUploadsEnabled = process.env.RAW_DATA_UPLOADS_ENABLED === "true";
 const opticalBridgingEnabled = process.env.OPTICAL_BRIDGING_ENABLED !== "false";
-
-/**
- * Apply the x402 fee markup and minimum-price floor to an exact USDC amount.
- *
- * IMPORTANT: This MUST stay identical to the quote route (x402Pricing.ts) so the
- * amount a client is quoted matches the amount actually charged on upload.
- * - Fee: X402_FEE_PERCENT is primary; X402_PRICING_BUFFER_PERCENT is the
- *   deprecated fallback (kept for back-compat with existing deployments).
- * - Floor: the shared MINIMUM_USDC_PRICE (0.001 USDC) the quote route enforces.
- *
- * @param exactUsdcAmount exact USDC atomic units (no markup) from the oracle
- * @returns final USDC atomic units (string) including fee + floor
- */
-export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
-  // Use || (not ??) so an empty-string env var (common with compose
-  // `${VAR:-}` passthrough) falls through instead of yielding NaN. "0" is a
-  // non-empty string so a 0% fee is still honored.
-  const x402FeePercent = parseInt(
-    process.env.X402_FEE_PERCENT ||
-      process.env.X402_PRICING_BUFFER_PERCENT ||
-      "15",
-    10
-  );
-  const withFee = Math.ceil(Number(exactUsdcAmount) * (1 + x402FeePercent / 100));
-  return Math.max(withFee, MINIMUM_USDC_PRICE).toString();
-}
 
 /**
  * Koa route handler wrapper for raw data uploads
@@ -74,12 +55,26 @@ export function applyX402FeeAndFloor(exactUsdcAmount: string): string {
  * Used by: POST /x402/upload/unsigned
  */
 export async function rawDataUploadRoute(ctx: KoaContext): Promise<void> {
-  // Buffer the entire request body
-  const chunks: Buffer[] = [];
-  for await (const chunk of ctx.req) {
-    chunks.push(chunk);
+  // Buffer the body bounded by the max data-item size. This rejects oversized
+  // requests by declared Content-Length BEFORE reading, AND tracks the running
+  // size while reading (covering chunked / Content-Length-lying requests) — so
+  // an unauthenticated client can't force unbounded memory allocation before the
+  // size/payment checks in handleRawDataUpload.
+  let rawBody: Buffer;
+  try {
+    rawBody = await bufferRequestBodyWithLimit(
+      ctx.req,
+      maxSingleDataItemByteCount
+    );
+  } catch (error) {
+    if (error instanceof RawBodyTooLargeError) {
+      return errorResponse(ctx, {
+        errorMessage: `Data is too large. Maximum allowed is ${maxSingleDataItemByteCount} bytes.`,
+        status: 413,
+      });
+    }
+    throw error;
   }
-  const rawBody = Buffer.concat(chunks);
 
   return handleRawDataUpload(ctx, rawBody);
 }
@@ -107,9 +102,13 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
   const contentType = ctx.req.headers?.["content-type"];
   const parsedRequest = parseRawDataRequest(rawBody, contentType, ctx.req.headers);
 
-  // Validate raw data
-  const maxSize = 10 * 1024 * 1024 * 1024; // 10 GB
-  const validation = validateRawData(parsedRequest.data, maxSize);
+  // Validate raw data against the configured single-item ceiling (defense in
+  // depth; the body is already bounded to this size before buffering). Was a
+  // hardcoded 10 GB, larger than the actual accepted item size.
+  const validation = validateRawData(
+    parsedRequest.data,
+    maxSingleDataItemByteCount
+  );
   if (!validation.valid) {
     return errorResponse(ctx, {
       errorMessage: validation.error || "Invalid data",
@@ -236,10 +235,20 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     description: `Upload ${estimatedDataItemSize} bytes to Arweave via AR.IO Bundler`,
     mimeType: parsedRequest.contentType || "application/octet-stream",
     asset: networkConfig.usdcAddress,
-    payTo: paymentPayload.payload.authorization.to,
+    // SECURITY: bind the required recipient to the operator's configured address
+    // — NOT the attacker-controlled authorization.to. x402Service's recipient
+    // check compares authorization.to against requirements.payTo, so using
+    // authorization.to here would make it a client-controlled tautology (settle
+    // a self-transfer and still get a signed receipt). Resolution must match the
+    // 402 quote's payTo below and the boot-time validateX402Config().
+    payTo:
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "",
     maxTimeoutSeconds: 3600,
     extra: {
-      name: "USD Coin",
+      name: networkConfig.usdcName,
       version: "2",
     },
   };
@@ -602,11 +611,17 @@ async function send402PaymentRequired(
     resource: resourceUrl,
     description: `Upload ${estimatedDataItemSize} bytes to Arweave via AR.IO Bundler`,
     mimeType: mimeType || "application/octet-stream",
-    payTo: process.env.ETHEREUM_ADDRESS || process.env.BASE_ETH_ADDRESS || "",
+    // Must match the verification payTo above and boot-time validateX402Config()
+    // so a client that pays the advertised recipient verifies successfully.
+    payTo:
+      process.env.X402_PAYMENT_ADDRESS ||
+      process.env.ETHEREUM_ADDRESS ||
+      process.env.BASE_ETH_ADDRESS ||
+      "",
     maxTimeoutSeconds: 3600,
     asset: usdcAddress,
     extra: {
-      name: "USD Coin",
+      name: networkConfig?.usdcName || "USD Coin",
       version: "2",
     },
   };

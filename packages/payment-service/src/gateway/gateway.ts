@@ -55,6 +55,28 @@ export const turboCreditDestinationAddressRegex =
 export const turboCreditDestinationAddressGqlTagName =
   "Turbo-Credit-Destination-Address";
 
+// Hard ceiling on a single exponential-backoff wait between poll attempts. The
+// backoff doubles each attempt (base * 2^i), which compounds fast: e.g. 1200ms
+// base over 10 attempts is ~613s of total waiting. This cap keeps any
+// (mis)configuration from turning a missing-tx lookup — reachable unauthenticated
+// via POST /account/balance/:token — into a minutes-long socket hold. Tune via
+// MAX_PAYMENT_TX_POLLING_DELAY_MS (default 8s; under the 60s server timeout).
+export const maxPaymentTxPollingDelayMs = +(
+  process.env.MAX_PAYMENT_TX_POLLING_DELAY_MS || 8000
+);
+
+/**
+ * Per-attempt exponential-backoff delay, capped so total polling time stays
+ * bounded regardless of the configured attempt count / base wait.
+ */
+export function computePollingDelayMs(
+  baseWaitMs: number,
+  attempt: number,
+  capMs: number = maxPaymentTxPollingDelayMs
+): number {
+  return Math.min(baseWaitMs * Math.pow(2, attempt), capMs);
+}
+
 export abstract class Gateway {
   public abstract endpoint: URL;
   public abstract getTransaction(
@@ -122,7 +144,10 @@ export abstract class Gateway {
         break;
       }
 
-      const exponentialDelay = this.paymentTxPollingWaitTimeMs * Math.pow(2, i);
+      const exponentialDelay = computePollingDelayMs(
+        this.paymentTxPollingWaitTimeMs,
+        i
+      );
       logger.debug("Waiting for next attempt...", {
         attempt: i,
         delay: exponentialDelay,

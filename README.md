@@ -231,17 +231,20 @@ pm2 startup
 ### Step 8: Bundle Planning & Cleanup Schedules (no cron setup required)
 
 The bundling pipeline is triggered **automatically** by the always-running
-`upload-workers` process: at startup it registers two BullMQ job schedulers — one
-that plans bundles (default every 5 minutes) and one that runs tiered-retention
-cleanup (default daily at 02:00). **There is no crontab to set up.** This replaced
-the old external cron jobs, whose silent-failure modes (a cron never registered,
-or cron's minimal `PATH` lacking `node`) could quietly stop all bundling.
+`upload-workers` process: at startup it registers three BullMQ job schedulers —
+one that plans bundles (default every 5 minutes), one that runs tiered-retention
+cleanup (default daily at 02:00), and one that re-drives stale `posted_bundle`
+rows whose seeding stalled (default every 10 minutes). **There is no crontab to
+set up.** This replaced the old external cron jobs, whose silent-failure modes (a
+cron never registered, or cron's minimal `PATH` lacking `node`) could quietly
+stop all bundling.
 
 Tune or disable the schedules via env vars in `.env` (cron syntax):
 
 ```bash
-PLAN_SCHEDULE_CRON="*/5 * * * *"   # bundle planning (default); set "" to disable
-CLEANUP_SCHEDULE_CRON="0 2 * * *"  # tiered cleanup (default);   set "" to disable
+PLAN_SCHEDULE_CRON="*/5 * * * *"           # bundle planning (default); set "" to disable
+CLEANUP_SCHEDULE_CRON="0 2 * * *"          # tiered cleanup (default);  set "" to disable
+POSTED_REDRIVE_SCHEDULE_CRON="*/10 * * * *" # posted_bundle redrive (default); set "" to disable
 ```
 
 **What the plan schedule does**: every interval, the plan worker:
@@ -426,6 +429,14 @@ The bundler stores uploaded data items in MinIO (S3-compatible storage). To enab
 - ✅ **Reduced Latency**: Fast local/LAN access vs waiting for Arweave confirmation
 - ✅ **Better UX**: Users can access their uploads instantly
 
+> **Optional: dedicated HDD read tier (two-tier MinIO).** On an SSD+HDD box you can run a
+> second, HDD-backed MinIO that mirrors served content (raw data items + bundle payloads)
+> and takes **all** gateway reads, keeping the fast SSD MinIO reserved for the bundling
+> pipeline. Point the gateway's `AWS_ENDPOINT` at the HDD MinIO (port **9002**) instead of
+> the SSD MinIO. This is opt-in and gated on `ARCHIVE_*` env (default off = single-MinIO
+> behavior, unchanged). See `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md` and the
+> deployment runbook (§5/§13) for the rollout.
+
 #### Scenario 1: Gateway and Bundler on Same Server
 
 When the AR.IO Gateway runs on the same server as the bundler, Docker networking provides automatic DNS resolution.
@@ -453,8 +464,12 @@ services:
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
 AWS_ENDPOINT=http://ar-io-bundler-minio:9000
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin123
+# Use the dedicated READ-ONLY MinIO user — NOT the root/admin credentials. The
+# gateway only needs to READ objects; root creds in the gateway's .env would let
+# anything that reaches MinIO (or reads that file) overwrite/delete uploads.
+# minio-init creates this user from GATEWAY_S3_ACCESS_KEY_ID/SECRET.
+AWS_ACCESS_KEY_ID=gateway-readonly
+AWS_SECRET_ACCESS_KEY=readonly-change-me   # CHANGE THIS; must equal the bundler's GATEWAY_S3_SECRET_ACCESS_KEY
 AWS_REGION=us-east-1
 
 # Prioritize S3 for data retrieval
@@ -484,7 +499,7 @@ When the AR.IO Gateway runs on a different server but same local network, use LA
 ```bash
 # On bundler server
 hostname -I | awk '{print $1}'
-# Example output: 192.168.2.253
+# Example output: <BUNDLER_PRIVATE_IP>
 ```
 
 **2. Configure DNS on Gateway Server**:
@@ -493,9 +508,9 @@ Add these entries to `/etc/hosts` on the **gateway server**:
 
 ```bash
 # MinIO on bundler server (replace with your actual IP)
-192.168.2.253 ar-io-bundler-minio
-192.168.2.253 raw-data-items.ar-io-bundler-minio
-192.168.2.253 backup-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> raw-data-items.ar-io-bundler-minio
+<BUNDLER_PRIVATE_IP> backup-data-items.ar-io-bundler-minio
 ```
 
 **3. Gateway Configuration** (on gateway server `.env`):
@@ -504,9 +519,10 @@ Add these entries to `/etc/hosts` on the **gateway server**:
 # S3/MinIO Configuration (use LAN IP)
 AWS_S3_CONTIGUOUS_DATA_BUCKET=raw-data-items
 AWS_S3_CONTIGUOUS_DATA_PREFIX=raw-data-item
-AWS_ENDPOINT=http://192.168.2.253:9000  # Use your bundler server LAN IP
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin123
+AWS_ENDPOINT=http://<BUNDLER_PRIVATE_IP>:9000  # Use your bundler server LAN IP
+# Dedicated READ-ONLY MinIO user (NOT root). See the same-server note above.
+AWS_ACCESS_KEY_ID=gateway-readonly
+AWS_SECRET_ACCESS_KEY=readonly-change-me   # CHANGE THIS; must equal the bundler's GATEWAY_S3_SECRET_ACCESS_KEY
 AWS_REGION=us-east-1
 
 # Prioritize S3 for data retrieval
@@ -525,7 +541,7 @@ docker compose restart core
 ```bash
 # On gateway server, verify DNS resolves
 ping -c 1 raw-data-items.ar-io-bundler-minio
-# Should resolve to bundler server IP (e.g., 192.168.2.253)
+# Should resolve to bundler server IP (e.g., <BUNDLER_PRIVATE_IP>)
 ```
 
 #### Technical Details
@@ -543,10 +559,20 @@ ping -c 1 raw-data-items.ar-io-bundler-minio
 - Virtual-hosted: `http://bucket.endpoint/key`
 - Path-style: `http://endpoint/bucket/key`
 
-**Security Note**:
-- MinIO port 9000 must be accessible from gateway server
-- Default credentials are `minioadmin:minioadmin123` (change in production!)
-- Consider using firewall rules to restrict access to trusted IPs
+**Security Note** (MinIO holds every user's uploaded data — treat it as a trust boundary):
+- **Give the gateway a READ-ONLY user, never root.** `minio-init` creates a
+  `readonly`-policy user (`GATEWAY_S3_ACCESS_KEY_ID`/`GATEWAY_S3_SECRET_ACCESS_KEY`);
+  point the gateway at that. Root/admin creds (`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY`)
+  can overwrite or delete raw data items — corrupting/losing uploads — and must
+  stay only on the bundler.
+- **Change ALL default credentials** (root *and* the read-only user) before any
+  non-localhost exposure. The compose defaults (`minioadmin:minioadmin123`,
+  `gateway-readonly:readonly-change-me`) are for local dev only.
+- **Do not put MinIO on a public interface.** Reach it over a private network
+  (e.g. a Hetzner vSwitch — see `MINIO_S3_BIND_IP` and the deployment runbook),
+  and firewall port 9000 to the gateway host(s) only.
+- **Prefer TLS** for the gateway↔MinIO link when it leaves a single host; the
+  `http://` examples above assume a trusted private network.
 
 ### Verify Local Gateway Integration
 
@@ -633,7 +659,7 @@ Accepts data item uploads and manages asynchronous fulfillment of data delivery 
 
 **Features:**
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (11 queues)
+- Asynchronous job processing via BullMQ (15 queues)
 - ANS-104 bundle creation and posting
 - MinIO object storage integration
 - PostgreSQL offset storage for data retrieval
@@ -782,7 +808,7 @@ pm2 list | grep upload-workers
 2. **Check the plan/cleanup schedulers registered** (they run inside `upload-workers`, not crontab):
 ```bash
 pm2 logs upload-workers --nostream --lines 200 | grep "job schedulers"
-# Should show: Registered BullMQ job schedulers { planBundle: '*/5 * * * *', cleanupFs: '0 2 * * *' }
+# Should show: Registered BullMQ job schedulers { planBundle: '*/5 * * * *', cleanupFs: '0 2 * * *', redrivePosted: '*/10 * * * *' }
 # If planBundle shows "(disabled)", PLAN_SCHEDULE_CRON is set to "" — unset it.
 ```
 
@@ -821,8 +847,8 @@ ss -tlnp | grep -E ":3000|:3001|:4000|:4001"
 **Problem**: `relation does not exist` or `Cloud Database Unavailable`
 
 **Solution**: Verify correct database configuration:
-- Payment service: `DB_DATABASE=payment_service`
-- Upload service: `DB_DATABASE=upload_service`
+- Payment service: `PAYMENT_DB_DATABASE=payment_service`
+- Upload service: `UPLOAD_DB_DATABASE=upload_service`
 - Run migrations: `yarn db:migrate:latest`
 
 ### Wallet Not Found

@@ -241,6 +241,14 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
 
   it("does NOT await postBundleTxToAdminQueue (correction 4: detached best-effort) — a hung admin push must not block the on-chain post", async () => {
     stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
+    // Stub the on-chain post: this test is about admin-queue detachment, not the
+    // real Arweave post. Without this, postBundleTx re-posts the SAME bundleId
+    // that the previous test already posted AND mined on the shared arlocal
+    // instance, which rejects the duplicate (400) — the handler then marks the
+    // job failed and never promotes the bundle, so this assertion saw 0 rows.
+    // Stubbing keeps the test hermetic (no arlocal dependency / cross-test
+    // state) while still exercising promotion + the detached admin push.
+    stub(gateway, "postBundleTx").resolves();
     // Admin-queue push that never settles. If the handler awaited it (the old
     // Promise.all behavior), this test would time out. Detached, the handler
     // promotes the bundle and returns regardless.

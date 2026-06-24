@@ -17,7 +17,7 @@
 import { jobLabels } from "../constants";
 import { UnbundleBDIMessageBody } from "../jobs/unbundle-bdi";
 import { PlanId, PostedNewDataItem } from "../types/dbTypes";
-import { DataItemOffsetsInfo, UploadId } from "../types/types";
+import { ChunkHeader, DataItemOffsetsInfo, UploadId } from "../types/types";
 import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 import { getQueue } from "./queues/config";
 
@@ -30,9 +30,19 @@ export type EnqueueFinalizeUpload = {
   uploadId: UploadId;
   token: string;
   paidBy?: string[];
+  // Client IP captured at the HTTP finalize request, carried through to the
+  // worker so per-IP free-upload metering (PE-9011) is enforced on the async
+  // validation path too — not skipped because the queued message lost the IP.
+  ipAddress?: string;
 };
 export type EnqueuedOffsetsBatch = {
   offsets: DataItemOffsetsInfo[];
+};
+// Copy one object-store key (raw-data-item/{id} or bundle-payload/{planId}) from
+// the primary (SSD) store to the archive (HDD) store. The handler no-ops when
+// the archive store is not configured.
+export type ArchiveCopyMessage = {
+  key: string;
 };
 type QueueTypeToMessageType = {
   [jobLabels.planBundle]: PlanMessage;
@@ -47,6 +57,18 @@ type QueueTypeToMessageType = {
   [jobLabels.putOffsets]: EnqueuedOffsetsBatch;
   [jobLabels.cleanupFs]: Record<string, never>;
   [jobLabels.redrivePosted]: Record<string, never>;
+  [jobLabels.refundBalance]: RefundBalanceMessage;
+  [jobLabels.broadcastChunks]: ChunkHeader;
+  [jobLabels.archiveCopy]: ArchiveCopyMessage;
+};
+
+// Durable refund retry payload. winstonCredits is the Winston value serialized
+// to a string (BullMQ messages are JSON), reconstructed in the worker.
+export type RefundBalanceMessage = {
+  nativeAddress: string;
+  winstonCredits: string;
+  dataItemId: string;
+  signatureType: number;
 };
 
 export type QueueType = keyof QueueTypeToMessageType;
@@ -54,7 +76,7 @@ export type QueueType = keyof QueueTypeToMessageType;
 export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T],
-  options?: { delay?: number; timeout?: number }
+  options?: { delay?: number; timeout?: number },
 ) => {
   const queue = getQueue(queueType);
 
@@ -62,6 +84,12 @@ export const enqueue = async <T extends QueueType>(
   const jobOptions: Record<string, unknown> = {};
   if (queueType === jobLabels.seedBundle) {
     jobOptions.timeout = 300000; // 5 minutes for seed jobs
+  }
+  if (queueType === jobLabels.refundBalance) {
+    // Durable refund: retry persistently (≈ many hours) so a wallet is always
+    // credited back, even through an extended payment-service outage.
+    jobOptions.attempts = 50;
+    jobOptions.backoff = { type: "exponential", delay: 30000 };
   }
 
   // Apply custom options if provided
@@ -77,7 +105,7 @@ export const enqueue = async <T extends QueueType>(
 
 export const enqueueBatch = async <T extends QueueType>(
   queueType: T,
-  messages: QueueTypeToMessageType[T][]
+  messages: QueueTypeToMessageType[T][],
 ) => {
   if (messages.length === 0) return;
 
@@ -86,7 +114,7 @@ export const enqueueBatch = async <T extends QueueType>(
     messages.map((message) => ({
       name: queueType,
       data: message,
-    }))
+    })),
   );
 };
 
@@ -115,7 +143,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   queueType: T,
   schedulerId: string,
   pattern: string,
-  data: QueueTypeToMessageType[T]
+  data: QueueTypeToMessageType[T],
 ): Promise<void> => {
   const queue = getQueue(queueType);
   const trimmed = pattern.trim();
@@ -129,7 +157,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   await queue.upsertJobScheduler(
     schedulerId,
     { pattern: trimmed },
-    { name: queueType, data }
+    { name: queueType, data },
   );
 };
 

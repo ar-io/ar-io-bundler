@@ -20,15 +20,18 @@ import { KoaContext } from "../server";
 import { errorResponse } from "../utils/common";
 import { estimateDataItemSize } from "../utils/createDataItem";
 import { getValidTokens, parseToken } from "../utils/parseToken";
-import { x402PricingOracle } from "../utils/x402Pricing";
+import {
+  MINIMUM_USDC_PRICE,
+  applyX402FeeAndFloor,
+  x402PricingOracle,
+} from "../utils/x402Pricing";
 
 // Arweave minimum chunk size for pricing calculation
 const ARWEAVE_MIN_CHUNK_BYTES = 262144; // 256 KB
 
-// Minimum x402 price (0.001 USDC in atomic units with 6 decimals)
-// Exported so the unsigned-upload handler (rawDataPost.ts) applies the SAME
-// floor it quotes here — otherwise quote and actual charge can diverge.
-export const MINIMUM_USDC_PRICE = 1000;
+// Re-exported for back-compat with existing importers; the canonical definition
+// now lives in utils/x402Pricing alongside applyX402FeeAndFloor.
+export { MINIMUM_USDC_PRICE };
 
 /**
  * x402 Pricing for Signed Data Items
@@ -213,7 +216,7 @@ export async function x402DataItemPricing(
       maxTimeoutSeconds: 3600,
       asset: usdcAddress,
       extra: {
-        name: "USD Coin",
+        name: networkConfig.usdcName,
         version: "2",
       },
     };
@@ -367,19 +370,10 @@ export async function x402RawDataPricing(
       winstonCost
     );
 
-    // Apply configured x402 fee (your profit margin)
-    const x402FeePercent = parseInt(
-      process.env.X402_FEE_PERCENT || "15",
-      10
-    );
-    let usdcAmountRequired = Math.ceil(
-      Number(exactUsdcAmount) * (1 + x402FeePercent / 100)
-    );
-
-    // Enforce minimum price of 0.001 USDC
-    usdcAmountRequired = Math.max(usdcAmountRequired, MINIMUM_USDC_PRICE);
-
-    const usdcAmountRequiredStr = usdcAmountRequired.toString();
+    // Apply the per-item surcharge + x402 fee + floor via the shared helper so
+    // this QUOTE matches what rawDataPost CHARGES (same function, no drift).
+    const usdcAmountRequiredStr = applyX402FeeAndFloor(exactUsdcAmount);
+    const usdcAmountRequired = Number(usdcAmountRequiredStr);
 
     logger.info("Calculated x402 price quote for raw data", {
       token,
@@ -393,7 +387,6 @@ export async function x402RawDataPricing(
       baseWinstonCost: baseWinstonCost.toString(),
       winstonCost: winstonCost.toString(),
       exactUsdcAmount,
-      x402FeePercent,
       usdcAmountRequired: usdcAmountRequiredStr,
       minimumEnforced: usdcAmountRequired === MINIMUM_USDC_PRICE,
     });
@@ -485,7 +478,7 @@ export async function x402RawDataPricing(
       maxTimeoutSeconds: 3600,
       asset: usdcAddress,
       extra: {
-        name: "USD Coin",
+        name: networkConfig.usdcName,
         version: "2",
       },
     };

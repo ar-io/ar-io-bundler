@@ -103,9 +103,15 @@ For complete x402 implementation details, examples, and troubleshooting:
 
 ## Detailed Documentation
 
-For complete API documentation including request/response examples, authentication methods, and error handling, see:
+This document is the authoritative REST API reference. For request/response
+schemas beyond what is captured here, the source of truth is:
 
-**[Architecture Documentation - API Reference Section](../architecture/ARCHITECTURE.md#api-reference)**
+- the live Swagger UI / OpenAPI spec (see below), and
+- the per-route handlers under `packages/upload-service/src/routes/` and
+  `packages/payment-service/src/routes/`.
+
+(The API section of `ARCHITECTURE.md` is an older snapshot and may lag this
+reference and the code — prefer this document and the OpenAPI spec.)
 
 ## Interactive API Documentation
 

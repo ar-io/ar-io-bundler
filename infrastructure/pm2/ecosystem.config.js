@@ -59,8 +59,20 @@ const pick = (...keys) =>
 const gatewayEnv = pick(
   "PRICE_ORACLE_GATEWAY_URL",
   "ARWEAVE_GATEWAY",
+  "ARWEAVE_GATEWAYS",
   "ARWEAVE_UPLOAD_NODE",
-  "PUBLIC_ACCESS_GATEWAY"
+  // AR.IO chunk-distributor nodes (broadcast-chunks worker). Pin like the other
+  // gateway endpoints so a bare restart can't drop it back to single-node seeding.
+  "AR_IO_NODE_URLS",
+  "PUBLIC_ACCESS_GATEWAY",
+  // Optical bridge config — pin from .env too. Previously OPTICAL_BRIDGE_URL was
+  // HARDCODED to http://localhost:4000 in the upload-workers env block, which
+  // (since dotenv can't override a PM2 env: value) made the worker post optical
+  // to a dead localhost endpoint regardless of .env -> AggregateError ECONNREFUSED.
+  "OPTICAL_BRIDGING_ENABLED",
+  "OPTICAL_BRIDGE_URL",
+  "OPTIONAL_OPTICAL_BRIDGE_URLS",
+  "AR_IO_ADMIN_KEY"
 );
 
 module.exports = {
@@ -144,10 +156,8 @@ module.exports = {
         REDIS_PORT_QUEUES: "6381",
         DB_HOST: "localhost",
         DB_PORT: "5432",
-        // Optical bridge: enable + primary URL. Any additional bridge URLs
-        // (e.g. a LAN gateway) come from OPTIONAL_OPTICAL_BRIDGE_URLS in .env.
-        OPTICAL_BRIDGING_ENABLED: "true",
-        OPTICAL_BRIDGE_URL: "http://localhost:4000/ar-io/admin/queue-data-item",
+        // Optical bridge config (enable flag, primary URL, optional URLs, admin
+        // key) is pinned from .env via gatewayEnv below — NOT hardcoded here.
         ...gatewayEnv,
       },
       error_file: log("upload-workers-error.log"),

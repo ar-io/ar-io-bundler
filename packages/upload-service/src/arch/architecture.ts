@@ -22,7 +22,10 @@ import winston from "winston";
 import { migrateOnStartup } from "../constants";
 import globalLogger from "../logger";
 import { getArweaveWallet, getRawDataItemWallet } from "../utils/getArweaveWallet";
-import { getS3ObjectStore } from "../utils/objectStoreUtils";
+import {
+  getArchiveS3ObjectStore,
+  getS3ObjectStore,
+} from "../utils/objectStoreUtils";
 import { ArweaveGateway, MultiGatewayArweaveGateway } from "./arweaveGateway";
 import { CacheService } from "./cacheServiceTypes";
 import { Database } from "./db/database";
@@ -36,6 +39,9 @@ import { X402Service, x402Networks } from "./x402Service";
 
 export interface Architecture {
   objectStore: ObjectStore;
+  // Second, HDD-backed object store mirroring served content. `undefined` unless
+  // ARCHIVE_DATA_ITEM_BUCKET is set (single-MinIO deployments leave it off).
+  archiveObjectStore?: ObjectStore;
   database: Database;
   dataItemOffsetsDB: DataItemOffsetsDB;
   cacheService: CacheService;
@@ -58,6 +64,7 @@ export const defaultArchitecture: Architecture = {
   }),
   dataItemOffsetsDB: new DataItemOffsetsDB(writerKnex, globalLogger),
   objectStore: getS3ObjectStore(),
+  archiveObjectStore: getArchiveS3ObjectStore(),
   cacheService: getElasticacheService(),
   paymentService: new TurboPaymentService(),
   x402Service: new X402Service(x402Networks),

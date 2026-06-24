@@ -135,7 +135,7 @@ The fulfillment pipeline runs as BullMQ workers (Redis), defined in
 mode, single instance). Queue names are the `jobLabels` in `src/constants.ts`.
 Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 
-**11 queues** (the `allWorkers` array is the source of truth):
+**15 queues** (the `allWorkers` array is the source of truth):
 
 | Queue (`jobLabel`) | Handler (`src/jobs/`) | Concurrency |
 |--------------------|-----------------------|-------------|
@@ -150,14 +150,24 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 | `unbundle-bdi`     | `unbundle-bdi.ts`     | 2 |
 | `finalize-upload`  | `multiPartUploads.ts` (`finalizeMultipartUpload`) | 3 |
 | `cleanup-fs`       | `cleanup-fs.ts`       | 1 |
+| `redrive-posted`   | `redrive-posted.ts`   | 1 |
+| `refund-balance`   | `allWorkers.ts` (`TurboPaymentService.refundBalanceForData`) | 3 |
+| `broadcast-chunks` | `broadcast-chunks.ts` | `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10) |
+| `archive-copy`     | `archive-copy.ts`     | `ARCHIVE_COPY_WORKER_CONCURRENCY` (3) — inert unless `ARCHIVE_DATA_ITEM_BUCKET` set |
 
 **Core bundle flow:** `new-data-item → plan-bundle → prepare-bundle → post-bundle
 → seed-bundle → verify-bundle`. `optical-post`, `put-offsets`, `finalize-upload`,
-`unbundle-bdi`, and `cleanup-fs` run alongside.
+`unbundle-bdi`, `cleanup-fs`, `redrive-posted`, `refund-balance`, and
+`broadcast-chunks` run alongside.
 
 - `plan.ts` groups pending data items into bundle plans by size/feature type.
 - `prepare.ts` assembles the ANS-104 bundle from object storage.
-- `post.ts` posts the bundle to Arweave; `seed.ts` seeds it; `verify.ts` confirms.
+- `post.ts` posts the bundle to Arweave; `seed.ts` prepares + stages the bundle's
+  chunks and enqueues a `broadcast-chunks` job per chunk; `verify.ts` confirms.
+- `broadcast-chunks.ts` POSTs one staged chunk to one of `AR_IO_NODE_URLS`
+  (shuffled, per-node retry + failover via `broadcastChunkToArioNode`), then
+  best-effort deletes the staged bytes. Unset `AR_IO_NODE_URLS` → single
+  `ARWEAVE_UPLOAD_NODE`. Metric `chunk_seed_post_total{endpoint,result}`.
 - `optical-post.ts` posts data-item headers to the AR.IO Gateway optical bridge
   for optimistic caching (`OPTICAL_BRIDGE_URL`).
 - `putOffsets.ts` writes data-item offsets to PostgreSQL (for retrieval).
@@ -181,10 +191,11 @@ and the default-off ones leave behavior unchanged until flipped on.
 | 3 | Bundle chunks (cache) | `ArweaveInterface.pushChunksToGatewayCache` (fired from `seed.ts`) | `CHUNK_CACHE_BRIDGE_ENABLED` == "true" (**OFF**) | `void`, swallows errors | `chunk_cache_bridge_total{result=cached\|error\|disabled}` |
 
 Design decisions:
-- **Seeding is separate from surface 3.** Seeding always targets a real Arweave
-  node (`ARWEAVE_UPLOAD_NODE`) so on-chain landing never depends on the gateway
-  supporting `/chunk` or being healthy. Surface 3 is an *additional* push to the
-  read gateway's `/chunk` cache (`ARWEAVE_GATEWAY`); it never affects seeding.
+- **Seeding is separate from surface 3.** Seeding (the `broadcast-chunks` queue →
+  `AR_IO_NODE_URLS`, see the pipeline bullets above) is what actually lands chunks
+  on-chain, so it must never depend on the read gateway. Surface 3 is an
+  *additional* best-effort push of the same chunks to the read gateway's `/chunk`
+  cache (`ARWEAVE_GATEWAY`) to warm reads before mining; it never affects seeding.
 - **Surface 2 URL hardening.** The endpoint is read from explicit
   `OPTIMISTIC_TX_BRIDGE_URL` first, falling back to deriving it from
   `OPTICAL_BRIDGE_URL` (`…/queue-data-item` → `…/queue-optimistic-tx`). If neither
@@ -198,7 +209,7 @@ Design decisions:
   latency to the on-chain post.
 
 **Internal job schedulers (no cron needed):** at startup the worker process
-(`src/workers/allWorkers.ts`) registers two BullMQ job schedulers via
+(`src/workers/allWorkers.ts`) registers three BullMQ job schedulers via
 `upsertRepeatable()` (`src/arch/queues.ts`):
 - `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
 - `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
@@ -247,6 +258,61 @@ beyond MINIO_CLEANUP_DAYS (90)            DELETE        DELETE
 Configure with `FILESYSTEM_CLEANUP_DAYS` and `MINIO_CLEANUP_DAYS`. The `cleanup-fs`
 job performs the deletions and is enqueued by the internal `CLEANUP_SCHEDULE_CRON`
 scheduler (default daily 02:00); `cron-trigger-cleanup.sh` triggers it manually.
+
+### Two-tier MinIO (SSD hot + HDD archive) — optional, opt-in
+
+Gated entirely on `ARCHIVE_DATA_ITEM_BUCKET` (and the rest of `ARCHIVE_*`). Unset
+→ everything below is inert and behavior is byte-for-byte the single-MinIO path
+above. Full design: `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
+
+When enabled, a second **HDD-backed MinIO** mirrors served content (raw data
+items + bundle payloads) and takes all AR.IO gateway reads, keeping gateway read
+I/O off the SSD MinIO that the bundling pipeline uses. Wiring:
+- `s3ObjectStore.ts` registers an archive bucket→region→client triple under a
+  **distinct region label** (`ARCHIVE_BUCKET_REGION`, default `archive-hdd`) so
+  the archive client never clobbers the SSD client in `regionsToClients`. The
+  archive bucket name (`ARCHIVE_DATA_ITEM_BUCKET`, e.g. `archive-data-items`)
+  must ALSO be distinct from `DATA_ITEM_BUCKET`/`BACKUP_DATA_ITEM_BUCKET` —
+  `bucketNameToRegionMap` is keyed by bucket name, so a shared name would route
+  SSD traffic to the HDD endpoint. Both collisions are hard-guarded: on either,
+  the archive is left UNWIRED (`archiveDataItemBucket` stays `undefined`, so
+  `isArchiveEnabled()` is false) rather than half-wired.
+- `objectStoreUtils.ts`: `getArchiveS3ObjectStore()` (singleton, `undefined` when
+  disabled), `isArchiveEnabled()`, `copyKeyToArchive()`. `architecture.ts` exposes
+  `archiveObjectStore?`.
+- The `archive-copy` queue streams one object SSD→HDD per job, enqueued from the
+  `new-data-item` handler (single uploads), the multipart-finalize path, and
+  `prepare.ts` (bundle payloads). Idempotent (HEAD-skips if already on HDD).
+  Metric `archive_copy_total{kind,result}`.
+- `cleanup-fs.ts` gains a **post-permanence SSD sweep** (`cleanupSsdAfterArchive`):
+  for permanent bundles whose HDD copies are **confirmed present** (HEAD-gated),
+  it deletes the SSD `raw-data-item/{id}`, `bundle-payload/{planId}`, and
+  `bundle/{txid}` to free the small SSD quickly. The HEAD-gate is the critical
+  guard — never delete the SSD copy until the HDD copy is confirmed. In archive
+  mode this replaces the 90-day MinIO rule (the FS 7-day tier is unchanged);
+  `SSD_CLEANUP_GRACE_DAYS` (default 0) adds an optional margin. HDD retention is
+  native via a MinIO ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90).
+  - The sweep's cursor/deferral/reconciliation control flow is the pure,
+    fully-injected `runSsdReclaimSweep` (exported, unit-tested with fakes);
+    `cleanupSsdAfterArchive` is just the knex+store binding. It scans
+    `permanent_bundle` forward, persisting a resume cursor in the `config` row
+    `archive-ssd-cleanup-cursor`; a bundle whose HDD copy isn't confirmed is
+    deferred without stalling the tail (the persist cursor parks at the first
+    unresolved hole while the scan keeps reclaiming newer bundles).
+  - **Reconciliation backstop (PR #90):** the ingest/prepare `archive-copy`
+    enqueues are best-effort, so the sweep **re-enqueues** the missing keys for any
+    deferred bundle (`reclaimBundleFromSsd` returns `missingArchiveKeys`) — a
+    dropped enqueue self-heals instead of wedging the cursor forever. ⚠️ A copy that
+    can *never* succeed (e.g. enabling on an existing DB where old bundles' SSD
+    source was already cleaned) still wedges the persisted cursor; see the
+    enable-on-existing-DB cursor-seeding note in the design doc / runbook §13.
+  - **Copy integrity (PR #90):** `copyKeyToArchive` asserts archived byte count ==
+    source before the HEAD-gate can pass, deleting the bad object + throwing on a
+    mismatch (so the existence-only HEAD can't pass a truncated copy that the
+    gateway would then serve as authoritative).
+- Infra: `docker-compose.hdd.yml` (override, not started by default) adds
+  `minio-hdd` (:9002/:9003) + `minio-init-hdd`. Point the gateway's S3
+  `AWS_ENDPOINT` at the HDD MinIO.
 
 ### Payment service integration
 
@@ -305,8 +371,12 @@ See the repo-root `.env.sample` for the full list. Commonly relevant here:
 - `TURBO_JWK_FILE` (bundle-signing wallet, absolute path),
   `RAW_DATA_ITEM_JWK_FILE` (unsigned-upload signing wallet)
 - `PAYMENT_SERVICE_BASE_URL` (no protocol prefix), `PRIVATE_ROUTE_SECRET`
-- `ARWEAVE_GATEWAY`, `OPTICAL_BRIDGING_ENABLED`, `OPTICAL_BRIDGE_URL`,
-  `AR_IO_ADMIN_KEY`
+- `ARWEAVE_GATEWAY` (reads + bundle-tx POST), `ARWEAVE_GATEWAYS` (failover),
+  `OPTICAL_BRIDGING_ENABLED`, `OPTICAL_BRIDGE_URL`, `AR_IO_ADMIN_KEY`
+- Chunk seeding: `AR_IO_NODE_URLS` (comma-separated distributor list; unset →
+  single `ARWEAVE_UPLOAD_NODE`), `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10),
+  `CHUNK_POST_MAX_TRIES` (3), `CHUNK_POST_RETRY_DELAY_MS` (2000),
+  `CHUNK_POST_TIMEOUT_MS` (60000), `CHUNKS_S3_PREFIX` (staging key prefix, default `chunks`)
 - `X402_FEE_PERCENT`, `MAX_DATA_ITEM_SIZE` (default 10 GiB),
   `FILESYSTEM_CLEANUP_DAYS`, `MINIO_CLEANUP_DAYS`
 

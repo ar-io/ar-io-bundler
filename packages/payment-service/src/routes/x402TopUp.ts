@@ -28,6 +28,7 @@ import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
+import { sendX402TopUpSlackMessage } from "../utils/slack";
 import { X402PaymentRequiredResponse } from "../x402/x402Service";
 
 /**
@@ -222,7 +223,12 @@ export async function x402TopUpRoute(ctx: KoaContext, next: Next) {
       description: `Top up storage credits for ${byteCount} bytes`,
       mimeType: "application/json",
       asset: networkConfig.usdcAddress,
-      payTo: authorization.to,
+      // SECURITY: bind the required recipient to the operator's configured
+      // address — NOT the attacker-controlled authorization.to. The recipient
+      // check in x402Service compares authorization.to against this value, so
+      // using authorization.to here would make it a client-controlled tautology
+      // (settle a self-transfer and still get credited).
+      payTo: x402PaymentAddress!,
       maxTimeoutSeconds: Math.floor(x402PaymentTimeoutMs / 1000),
       extra: {
         name: "USD Coin",
@@ -310,6 +316,17 @@ export async function x402TopUpRoute(ctx: KoaContext, next: Next) {
       wincPaid,
       newBalance,
       paymentId: payment.id,
+    });
+
+    // Best-effort Slack notification (never delay/break the payment response).
+    void sendX402TopUpSlackMessage({
+      address,
+      payerAddress: authorization.from,
+      usdcAmount: authorization.value,
+      winstonCreditAmount: wincPaid,
+      network,
+      txHash: settlement.transactionHash!,
+      mode: "topup",
     });
 
     ctx.status = 200;

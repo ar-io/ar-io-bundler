@@ -23,7 +23,6 @@ import { Logger } from "winston";
 
 import { Architecture } from "./architecture";
 import {
-  TEST_PRIVATE_ROUTE_SECRET,
   defaultPort,
   isGiftingEnabled,
   migrateOnStartup,
@@ -45,10 +44,17 @@ import { BaseEthGateway } from "./gateway/base-eth";
 import logger from "./logger";
 import { MetricRegistry } from "./metricRegistry";
 import { architectureMiddleware, loggerMiddleware } from "./middleware";
+import {
+  stripeWebhookRawBodyGuard,
+  turboSdkJsonBodyFix,
+} from "./middleware/bodyParsing";
 import { TurboPricingService } from "./pricing/pricing";
 import router from "./router";
 import { JWKInterface } from "./types/jwkTypes";
+import { resolveBodyParserLimits } from "./utils/bodyLimits";
 import { loadSecretsToEnv } from "./utils/loadSecretsToEnv";
+import { resolvePrivateRouteSecret } from "./utils/privateRouteSecret";
+import { resolveServerTimeouts } from "./utils/serverTimeouts";
 import { X402Service } from "./x402/x402Service";
 
 type KoaState = DefaultState & Architecture & { logger: Logger };
@@ -80,12 +86,10 @@ export async function createServer(
   await loadSecretsToEnv();
   const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
   const MANDRILL_API_KEY = process.env.MANDRILL_API_KEY;
-  const sharedSecret =
-    process.env.PRIVATE_ROUTE_SECRET ?? TEST_PRIVATE_ROUTE_SECRET;
+  // SECURITY: fail closed if PRIVATE_ROUTE_SECRET is unset outside tests — never
+  // authenticate protected routes with the public hard-coded test secret.
+  const sharedSecret = resolvePrivateRouteSecret();
 
-  if (!sharedSecret) {
-    throw new Error("Shared secret not set");
-  }
   if (!STRIPE_SECRET_KEY) {
     throw new Error("Stripe secret key or webhook secret not set");
   }
@@ -100,9 +104,25 @@ export async function createServer(
     try {
       await next();
     } catch (error) {
+      const httpStatus = (error as { status?: number; statusCode?: number })
+        ?.status ?? (error as { statusCode?: number })?.statusCode;
       if (error instanceof BadRequest) {
         ctx.status = 400;
         ctx.body = { error: error.message };
+      } else if (
+        typeof httpStatus === "number" &&
+        httpStatus >= 400 &&
+        httpStatus < 500
+      ) {
+        // http-errors thrown by middleware carry a client-error status — e.g.
+        // koa-bodyparser's 413 "request entity too large" when a body exceeds
+        // the configured limit. Surface the real 4xx instead of masking it as a
+        // generic 500 (which misreports a client mistake as a server fault and
+        // pollutes the error log).
+        ctx.status = httpStatus;
+        ctx.body = {
+          error: error instanceof Error ? error.message : "Request error",
+        };
       } else {
         logger.error("Unhandled route error", {
           method: ctx.method,
@@ -117,61 +137,31 @@ export async function createServer(
 
   app.use(loggerMiddleware);
 
+  // Bug 3: reserve the Stripe webhook's raw body for signature verification.
+  app.use(stripeWebhookRawBodyGuard());
+
   // CORS handled by nginx reverse proxy
   // app.use(cors({ allowMethods: ["GET", "POST"] }));
 
-  // Middleware to fix Content-Type mismatch from turbo-sdk
-  // SDK sometimes sends JSON body with form-urlencoded Content-Type
-  // This must run BEFORE bodyParser
-  app.use(async (ctx, next) => {
-    const contentType = ctx.request.header['content-type'] || '';
+  // Request-body size limits — kept small to bound how much an unauthenticated
+  // client can make the process buffer before JWT/route validation (see
+  // resolveBodyParserLimits). Used by both the Content-Type fix middleware below
+  // and the global body parser.
+  const bodyLimits = resolveBodyParserLimits();
 
-    // Only intercept form-urlencoded requests
-    if (contentType.includes('application/x-www-form-urlencoded') && ctx.method === 'POST') {
-      try {
-        const getRawBody = (await import('raw-body')).default;
-        const rawBody = await getRawBody(ctx.req, {
-          length: ctx.request.length,
-          limit: '10mb',
-          encoding: 'utf8',
-        });
+  // Bug 4: turbo-sdk posts JSON with a form-urlencoded or absent Content-Type;
+  // sniff and populate ctx.request.body before bodyParser. (Skips the webhook.)
+  app.use(turboSdkJsonBodyFix(bodyLimits));
 
-        // Check if body looks like JSON
-        const trimmed = rawBody.trim();
-        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-          // Parse as JSON manually and set it on ctx.request
-          try {
-            (ctx.request as any).body = JSON.parse(trimmed);
-            logger.debug('Fixed Content-Type mismatch: parsed JSON from form-urlencoded', {
-              bodyPreview: trimmed.substring(0, 100)
-            });
-            // Skip bodyParser by setting body
-            return await next();
-          } catch (e) {
-            // Not valid JSON, let bodyParser handle it
-            logger.warn('Body looks like JSON but failed to parse', { error: e });
-          }
-        }
-
-        // Not JSON, parse as form data using qs
-        const qs = await import('qs');
-        (ctx.request as any).body = qs.default.parse(trimmed);
-        return await next();
-      } catch (error) {
-        logger.error('Error in Content-Type fix middleware', { error });
-        // Fall through to bodyParser
-      }
-    }
-
-    await next();
-  });
-
-  // Support both JSON and form-urlencoded request bodies
+  // Support both JSON and form-urlencoded request bodies. Limits intentionally
+  // small (resolveBodyParserLimits) — bodyParser buffers the whole body in
+  // memory before auth, so a large limit on these public, tiny-payload endpoints
+  // is a pre-auth memory-amplification DoS vector.
   app.use(bodyParser({
     enableTypes: ['json', 'form', 'text'],
-    formLimit: '10mb',
-    jsonLimit: '10mb',
-    textLimit: '10mb',
+    formLimit: bodyLimits.formLimit,
+    jsonLimit: bodyLimits.jsonLimit,
+    textLimit: bodyLimits.textLimit,
   }));
 
   // NOTE: Middleware that use the JWT must handle ctx.state.user being undefined and throw
@@ -185,7 +175,7 @@ export async function createServer(
     arch.stripe ?? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 
   const jwk: JWKInterface =
-    process.env.ARIO_SIGNING_JWK !== undefined
+    process.env.ARIO_SIGNING_JWK
       ? JSON.parse(process.env.ARIO_SIGNING_JWK)
       : undefined;
 
@@ -231,14 +221,20 @@ export async function createServer(
 
   app.use(router.routes());
 
-  // Bind to 0.0.0.0 to accept connections from nginx proxy on separate server
-  const server = app.listen(port, '0.0.0.0');
+  // Bind address is env-driven: BIND_ADDRESS=127.0.0.1 keeps the API loopback-only
+  // (co-located nginx proxies from localhost). Defaults to 0.0.0.0 for a separate-server nginx.
+  const server = app.listen(port, process.env.BIND_ADDRESS || '0.0.0.0');
 
-  // Timeout configuration for payment operations (faster than uploads)
-  const requestTimeout = parseInt(process.env.REQUEST_TIMEOUT_MS || "60000", 10); // 1 minute
-  const keepAliveTimeout = parseInt(process.env.KEEPALIVE_TIMEOUT_MS || "65000", 10); // 1m 5s
-  const headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS || "70000", 10); // 1m 10s
+  // Timeout configuration for payment operations (faster than uploads). Uses
+  // PAYMENT_-prefixed env vars so the payment service never inherits the upload
+  // service's large generic timeout values from a shared .env file. All stay
+  // short — headersTimeout in particular is a slowloris guard.
+  const { requestTimeout, keepAliveTimeout, headersTimeout } =
+    resolveServerTimeouts();
 
+  // requestTimeout (not the legacy server.timeout) is the total request timeout;
+  // server.timeout is retained as a socket-inactivity guard.
+  server.requestTimeout = requestTimeout;
   server.timeout = requestTimeout;
   server.keepAliveTimeout = keepAliveTimeout;
   server.headersTimeout = headersTimeout;

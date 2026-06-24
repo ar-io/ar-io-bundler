@@ -20,11 +20,7 @@ import { IncomingMessage } from "http";
 import { describe, it } from "mocha";
 
 import { CacheService } from "../arch/cacheServiceTypes";
-import {
-  extractClientIp,
-  getIpUsage,
-  updateIpUsage,
-} from "./ipRateLimitCache";
+import { extractClientIp, getIpUsage, updateIpUsage } from "./ipRateLimitCache";
 
 /**
  * Minimal in-memory CacheService double that records the values written by the
@@ -58,7 +54,7 @@ function randomIp(): string {
 
 function fakeRequest(
   headers: Record<string, string | string[] | undefined>,
-  remoteAddress?: string
+  remoteAddress?: string,
 ): IncomingMessage {
   return {
     headers,
@@ -116,8 +112,10 @@ describe("ipRateLimitCache - IP byte counter", () => {
 
     const key = `rl_ip_${ipAddress}`;
     const raw = cacheService.store.get(key);
-    expect(raw, "expected the counter to be written to the backing cache").to.be
-      .a("string");
+    expect(
+      raw,
+      "expected the counter to be written to the backing cache",
+    ).to.be.a("string");
     expect(JSON.parse(raw as string).bytesUsed).to.equal(777);
   });
 
@@ -129,30 +127,50 @@ describe("ipRateLimitCache - IP byte counter", () => {
     await updateIpUsage({ ipAddress: ipA, bytesToAdd: 100, cacheService });
     await updateIpUsage({ ipAddress: ipB, bytesToAdd: 999, cacheService });
 
-    expect((await getIpUsage({ ipAddress: ipA, cacheService }))?.bytesUsed).to.equal(
-      100
-    );
-    expect((await getIpUsage({ ipAddress: ipB, cacheService }))?.bytesUsed).to.equal(
-      999
-    );
+    expect(
+      (await getIpUsage({ ipAddress: ipA, cacheService }))?.bytesUsed,
+    ).to.equal(100);
+    expect(
+      (await getIpUsage({ ipAddress: ipB, cacheService }))?.bytesUsed,
+    ).to.equal(999);
   });
 });
 
-describe("ipRateLimitCache - extractClientIp", () => {
-  it("uses the first hop of x-forwarded-for when present", () => {
+// These exercise the default TRUSTED_PROXY_COUNT=1 (single trusted reverse
+// proxy, the standard prod topology). The header grows left-to-right as each
+// proxy appends; with one trusted hop the client IP is the RIGHTMOST entry, and
+// anything a remote client prepends is ignored — that is the anti-spoof property.
+describe("ipRateLimitCache - extractClientIp (TRUSTED_PROXY_COUNT=1 default)", () => {
+  it("takes the trusted proxy's appended (rightmost) hop, NOT the client-supplied left value", () => {
+    // Attacker prepends two fake hops; the trusted proxy appended the real one.
     const req = fakeRequest(
-      { "x-forwarded-for": "203.0.113.5, 70.41.3.18, 150.172.238.178" },
-      "10.0.0.1"
+      { "x-forwarded-for": "1.1.1.1, 2.2.2.2, 150.172.238.178" },
+      "10.0.0.1",
     );
-    expect(extractClientIp(req)).to.equal("203.0.113.5");
+    expect(extractClientIp(req)).to.equal("150.172.238.178");
   });
 
-  it("handles an array-valued x-forwarded-for header", () => {
+  it("is not spoofable: a forged X-Forwarded-For cannot change the metered identity", () => {
+    // Real client 198.51.100.7 hits nginx, which appends it; the client also
+    // forged a victim IP on the left. We must meter the real (appended) IP.
+    const forged = fakeRequest(
+      { "x-forwarded-for": "9.9.9.9, 198.51.100.7" },
+      "127.0.0.1",
+    );
+    const honest = fakeRequest(
+      { "x-forwarded-for": "198.51.100.7" },
+      "127.0.0.1",
+    );
+    expect(extractClientIp(forged)).to.equal("198.51.100.7");
+    expect(extractClientIp(honest)).to.equal("198.51.100.7");
+  });
+
+  it("handles an array-valued x-forwarded-for header (joins, then rightmost hop)", () => {
     const req = fakeRequest(
       { "x-forwarded-for": ["198.51.100.7", "203.0.113.5"] },
-      "10.0.0.1"
+      "10.0.0.1",
     );
-    expect(extractClientIp(req)).to.equal("198.51.100.7");
+    expect(extractClientIp(req)).to.equal("203.0.113.5");
   });
 
   it("falls back to the socket remote address when no proxy header", () => {
@@ -160,9 +178,15 @@ describe("ipRateLimitCache - extractClientIp", () => {
     expect(extractClientIp(req)).to.equal("192.0.2.44");
   });
 
-  it("normalizes IPv4-mapped IPv6 remote addresses", () => {
-    const req = fakeRequest({}, "::ffff:208.123.24.44");
-    expect(extractClientIp(req)).to.equal("208.123.24.44");
+  it("normalizes IPv4-mapped IPv6 addresses (socket and forwarded)", () => {
+    expect(extractClientIp(fakeRequest({}, "::ffff:208.123.24.44"))).to.equal(
+      "208.123.24.44",
+    );
+    expect(
+      extractClientIp(
+        fakeRequest({ "x-forwarded-for": "::ffff:5.6.7.8" }, "10.0.0.1"),
+      ),
+    ).to.equal("5.6.7.8");
   });
 
   it("returns 'unknown' when no IP information is available", () => {

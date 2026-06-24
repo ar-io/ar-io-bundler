@@ -356,6 +356,27 @@ export class MetricRegistry {
     },
   });
 
+  // Per-node result of broadcasting a single chunk to an AR.IO distributor node
+  // (AR_IO_NODE_URLS failover, broadcast-chunks queue). result="success" = node
+  // accepted the chunk; result="failure" = errored, failed over to the next.
+  public static chunkSeedPost = MetricRegistry.createCounter({
+    name: "chunk_seed_post_total",
+    help: "Count of single-chunk broadcasts to AR.IO distributor nodes by result",
+    labelNames: ["endpoint", "result"],
+  });
+
+  // Result of copying one object (raw-data-item or bundle-payload) from the
+  // primary (SSD) MinIO to the archive (HDD) MinIO, by kind and result.
+  public static archiveCopy = MetricRegistry.createCounter({
+    name: "archive_copy_total",
+    help: "Count of SSD→HDD archive object copies by kind and result",
+    labelNames: ["kind", "result"],
+    expectedLabelNames: {
+      kind: ["raw-data-item", "bundle-payload"],
+      result: ["success", "error", "skipped"],
+    },
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
   }

@@ -36,6 +36,94 @@ const ERC1271_ABI = [
   "function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4)",
 ];
 
+/**
+ * Parse a positive-integer env var, failing CLOSED on invalid input. These
+ * values are security limits; silently coercing a bad value to NaN (as `+x`
+ * would) could disable a bound at runtime (e.g. `length > NaN` is always false),
+ * so reject misconfiguration loudly at startup instead.
+ */
+function readPositiveIntegerEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return value;
+}
+
+function readPositiveBigIntEnv(name: string, defaultValue: bigint): bigint {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  }
+  return BigInt(raw);
+}
+
+/**
+ * SECURITY: bounds on the attacker-influenced ERC-1271 on-chain verification
+ * path. A remote, unauthenticated client controls both authorization.from (the
+ * contract address) and the signature bytes, and any local ECDSA failure falls
+ * through to this on-chain path. Without bounds, a crafted payload could force
+ * the service into oversized-calldata, expensive, or hanging eth_calls — a DoS
+ * that also burns RPC quota. All limits are env-tunable (validated, fail-closed).
+ */
+const MAX_ERC1271_SIGNATURE_BYTES = readPositiveIntegerEnv(
+  "X402_MAX_ERC1271_SIGNATURE_BYTES",
+  8192
+);
+const ERC1271_RPC_TIMEOUT_MS = readPositiveIntegerEnv(
+  "X402_ERC1271_RPC_TIMEOUT_MS",
+  3000
+);
+const ERC1271_CALL_GAS_LIMIT = readPositiveBigIntEnv(
+  "X402_ERC1271_CALL_GAS_LIMIT",
+  BigInt(1_000_000)
+);
+
+/**
+ * Build a JsonRpcProvider whose HTTP transport aborts after
+ * ERC1271_RPC_TIMEOUT_MS. This cancels the underlying request at the socket
+ * level (not just the awaiting promise), so a slow/hanging RPC endpoint can't
+ * leak background connections or burn quota under sustained traffic. These
+ * providers are used solely for ERC-1271 verification.
+ */
+function makeBoundedProvider(rpcUrl: string): ethers.JsonRpcProvider {
+  const fetchRequest = new ethers.FetchRequest(rpcUrl);
+  fetchRequest.timeout = ERC1271_RPC_TIMEOUT_MS;
+  return new ethers.JsonRpcProvider(fetchRequest);
+}
+
+/**
+ * Reject a promise if it does not settle within `ms`. A last-resort guard on top
+ * of the transport-level timeout above (e.g. covers a pre-fetch hang).
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 // Convert payment payload to Coinbase-compatible format
 function toCoinbaseFormat(data: any): any {
   if (typeof data !== "object" || data === null) {
@@ -86,6 +174,11 @@ export interface X402NetworkConfig {
   facilitatorUrl?: string;
   enabled: boolean;
   minConfirmations: number;
+  // EIP-712 domain `name` for this network's USDC contract. MUST equal the token
+  // contract's on-chain name() or the facilitator rejects the payment with
+  // "invalid_exact_evm_token_name_mismatch". Base MAINNET USDC = "USD Coin";
+  // Base SEPOLIA USDC (0x036C…) = "USDC". (EIP-712 version stays "2".)
+  usdcName: string;
 }
 
 // x402 Protocol Types
@@ -148,7 +241,7 @@ export class X402Service {
       if (config.enabled) {
         this.providers.set(
           networkName,
-          new ethers.JsonRpcProvider(config.rpcUrl)
+          makeBoundedProvider(config.rpcUrl)
         );
       }
     }
@@ -281,7 +374,8 @@ export class X402Service {
     requirements: X402PaymentRequirements
   ): Promise<X402SettlementResult> {
     try {
-      // Parse payload to get network config, but send original header to facilitator
+      // Decode the payment header to get the network config AND the decoded
+      // paymentPayload that standard facilitators require in the /settle body.
       const paymentPayload: X402PaymentPayload = JSON.parse(
         Buffer.from(paymentHeader, "base64").toString("utf-8")
       );
@@ -304,13 +398,11 @@ export class X402Service {
 
         try {
           const isCoinbaseFacilitator = networkConfig.facilitatorUrl.includes("api.cdp.coinbase.com");
-          const isCommunityFacilitator = networkConfig.facilitatorUrl.includes("x402.rs");
 
           logger.info("Settling x402 payment via facilitator", {
             facilitator: networkConfig.facilitatorUrl,
             network: paymentPayload.network,
             isCoinbaseFacilitator,
-            isCommunityFacilitator,
           });
 
           // Use SDK for Coinbase facilitator
@@ -344,8 +436,11 @@ export class X402Service {
             }
           }
 
-          // Community facilitator: manual request with string timestamps
-          if (isCommunityFacilitator && paymentPayload.payload?.authorization) {
+          // Standard x402 facilitator protocol (/settle) requires the DECODED
+          // paymentPayload (NOT the base64 paymentHeader) for ALL non-Coinbase
+          // facilitators — not just x402.rs. Normalize EIP-3009 authorization
+          // timestamps to strings (some facilitators reject numeric values).
+          if (paymentPayload.payload?.authorization) {
             const auth = paymentPayload.payload.authorization as any;
             if (typeof auth.validAfter === "number") {
               auth.validAfter = auth.validAfter.toString();
@@ -355,17 +450,11 @@ export class X402Service {
             }
           }
 
-          const requestPayload = isCommunityFacilitator
-            ? {
-                x402Version: 1,
-                paymentPayload,
-                paymentRequirements: requirements,
-              }
-            : {
-                x402Version: 1,
-                paymentHeader,
-                paymentRequirements: requirements,
-              };
+          const requestPayload = {
+            x402Version: 1,
+            paymentPayload,
+            paymentRequirements: requirements,
+          };
 
           const response = await axios.post(
             `${networkConfig.facilitatorUrl}/settle`,
@@ -470,7 +559,7 @@ export class X402Service {
 
       // EIP-712 domain for EIP-3009 transferWithAuthorization
       const domain = {
-        name: requirements.extra?.name || "USD Coin",
+        name: requirements.extra?.name || networkConfig.usdcName,
         version: requirements.extra?.version || "2",
         chainId: networkConfig.chainId,
         verifyingContract: requirements.asset,
@@ -574,7 +663,7 @@ export class X402Service {
           network: networkName,
           rpcUrl: networkConfig.rpcUrl,
         });
-        provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
+        provider = makeBoundedProvider(networkConfig.rpcUrl);
       }
 
       return await this.callERC1271IsValidSignature(
@@ -606,8 +695,31 @@ export class X402Service {
   ): Promise<boolean> {
     const walletAddress = authorization.from;
 
-    // Check if the address is a contract
-    const code = await provider.getCode(walletAddress);
+    // SECURITY: reject malformed or oversized signatures BEFORE any RPC work.
+    // `signature` is attacker-controlled; bounding its size prevents
+    // megabyte-scale calldata from being ABI-encoded into an eth_call.
+    if (!ethers.isHexString(signature)) {
+      logger.debug("ERC-1271 signature is not a valid hex string; rejecting", {
+        walletAddress,
+      });
+      return false;
+    }
+    const signatureByteLength = ethers.dataLength(signature);
+    if (signatureByteLength > MAX_ERC1271_SIGNATURE_BYTES) {
+      logger.warn("ERC-1271 signature exceeds maximum size; rejecting", {
+        walletAddress,
+        signatureByteLength,
+        maxBytes: MAX_ERC1271_SIGNATURE_BYTES,
+      });
+      return false;
+    }
+
+    // Check if the address is a contract (bounded by a per-call timeout).
+    const code = await withTimeout(
+      provider.getCode(walletAddress),
+      ERC1271_RPC_TIMEOUT_MS,
+      "ERC-1271 getCode"
+    );
     if (code === "0x" || code === "0x0") {
       logger.debug("Address is not a contract, cannot use ERC-1271", {
         walletAddress,
@@ -627,8 +739,16 @@ export class X402Service {
     const walletContract = new ethers.Contract(walletAddress, ERC1271_ABI, provider);
 
     try {
-      // Call isValidSignature(bytes32 hash, bytes signature) -> bytes4
-      const result = await walletContract.isValidSignature(typedDataHash, signature);
+      // Call isValidSignature(bytes32 hash, bytes signature) -> bytes4, bounded
+      // by an explicit gas limit and a per-call timeout so a malicious contract
+      // cannot make the eth_call expensive or hang the request handler.
+      const result = await withTimeout(
+        walletContract.isValidSignature(typedDataHash, signature, {
+          gasLimit: ERC1271_CALL_GAS_LIMIT,
+        }),
+        ERC1271_RPC_TIMEOUT_MS,
+        "ERC-1271 isValidSignature"
+      );
 
       // Check if result matches the ERC-1271 magic value
       const isValid = result.toLowerCase() === ERC1271_MAGIC_VALUE.toLowerCase();
@@ -663,7 +783,6 @@ export class X402Service {
   ): Promise<X402VerificationResult> {
     try {
       const isCoinbaseFacilitator = facilitatorUrl.includes("api.cdp.coinbase.com");
-      const isCommunityFacilitator = facilitatorUrl.includes("x402.rs");
 
       // Decode payment header
       const paymentPayload = JSON.parse(
@@ -746,8 +865,13 @@ export class X402Service {
         }
       }
 
-      // Community facilitator: manual request with string timestamps
-      if (isCommunityFacilitator && paymentPayload.payload?.authorization) {
+      // The standard x402 facilitator protocol (/verify, /settle) requires the
+      // DECODED paymentPayload (NOT the base64 paymentHeader) for ALL non-Coinbase
+      // facilitators — e.g. the canonical https://x402.org/facilitator, not just
+      // x402.rs. Sending paymentHeader yields HTTP 400 "missing_parameters
+      // (Missing paymentPayload or paymentRequirements)". Normalize the EIP-3009
+      // authorization timestamps to strings (some facilitators reject numerics).
+      if (paymentPayload.payload?.authorization) {
         const auth = paymentPayload.payload.authorization as any;
         if (typeof auth.validAfter === "number") {
           auth.validAfter = auth.validAfter.toString();
@@ -757,17 +881,11 @@ export class X402Service {
         }
       }
 
-      const requestPayload = isCommunityFacilitator
-        ? {
-            x402Version: 1,
-            paymentPayload,
-            paymentRequirements: requirements,
-          }
-        : {
-            x402Version: 1,
-            paymentHeader, // x402.org testnet uses base64 string
-            paymentRequirements: requirements,
-          };
+      const requestPayload = {
+        x402Version: 1,
+        paymentPayload,
+        paymentRequirements: requirements,
+      };
 
       const response = await axios.post(
         `${facilitatorUrl}/verify`,
@@ -836,14 +954,32 @@ export class X402Service {
   }
 }
 
+/**
+ * Resolve a facilitator URL accepting BOTH naming conventions:
+ *  - the upload-service's historical SINGULAR `X402_FACILITATOR_URL_*`, and
+ *  - the payment-service's PLURAL, comma-separated `X402_FACILITATOR_URLS_*`.
+ * The upload service uses a single facilitator per network, so when only the
+ * plural list is set we take its first entry. Singular wins for back-compat.
+ * (See .env.sample: the PLURAL name is the canonical, cross-service convention.)
+ */
+export function resolveFacilitatorUrl(
+  singular: string | undefined,
+  plural: string | undefined
+): string | undefined {
+  if (singular) return singular;
+  const first = plural?.split(",")[0]?.trim();
+  return first || undefined;
+}
+
 // Network configurations (read from environment)
 export const x402Networks: Record<string, X402NetworkConfig> = {
   // Base mainnet (primary name used by AR.IO Gateway)
   base: {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    usdcName: "USD Coin",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
     minConfirmations: +(process.env.X402_BASE_MIN_CONFIRMATIONS || 1),
   },
@@ -851,33 +987,40 @@ export const x402Networks: Record<string, X402NetworkConfig> = {
   "base-mainnet": {
     chainId: 8453,
     usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    usdcName: "USD Coin",
     rpcUrl: process.env.BASE_MAINNET_RPC_URL || "https://mainnet.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE, process.env.X402_FACILITATOR_URLS_BASE),
     enabled: process.env.X402_BASE_ENABLED !== "false",
     minConfirmations: +(process.env.X402_BASE_MIN_CONFIRMATIONS || 1),
   },
   "ethereum-mainnet": {
     chainId: 1,
     usdcAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    usdcName: "USD Coin",
     rpcUrl:
       process.env.ETHEREUM_MAINNET_RPC_URL || "https://cloudflare-eth.com/",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_ETH,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_ETH, process.env.X402_FACILITATOR_URLS_ETH),
     enabled: process.env.X402_ETH_ENABLED === "true", // Default: false (enable Base first)
     minConfirmations: +(process.env.X402_ETH_MIN_CONFIRMATIONS || 3),
   },
   "polygon-mainnet": {
     chainId: 137,
     usdcAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    // Native Polygon USDC (0x3c49…) on-chain name() = "USD Coin". (The bridged
+    // USDC.e at 0x2791… is "USD Coin (PoS)" — change this if you target that one.)
+    usdcName: "USD Coin",
     rpcUrl: process.env.POLYGON_MAINNET_RPC_URL || "https://polygon-rpc.com/",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_POLYGON,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_POLYGON, process.env.X402_FACILITATOR_URLS_POLYGON),
     enabled: process.env.X402_POLYGON_ENABLED === "true", // Default: false
     minConfirmations: +(process.env.X402_POLYGON_MIN_CONFIRMATIONS || 10),
   },
   "base-sepolia": {
     chainId: 84532,
     usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    // Base SEPOLIA USDC on-chain name() = "USDC" (NOT "USD Coin") — verified.
+    usdcName: "USDC",
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL_BASE_TESTNET,
+    facilitatorUrl: resolveFacilitatorUrl(process.env.X402_FACILITATOR_URL_BASE_TESTNET, process.env.X402_FACILITATOR_URLS_BASE_TESTNET),
     enabled: process.env.X402_BASE_TESTNET_ENABLED === "true",
     minConfirmations: 1,
   },
