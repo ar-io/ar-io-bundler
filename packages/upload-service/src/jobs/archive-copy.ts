@@ -41,16 +41,16 @@ function kindForKey(key: string): "bundle-payload" | "raw-data-item" {
 
 /**
  * Process one `archive-copy` job: stream a single object key from the primary
- * (SSD) store to the archive (HDD) store.
+ * (bundler) store to the archive store.
  *
  * - No-ops (no error) when the archive store is not configured, so the queue is
  *   inert on single-MinIO deployments even if a job is ever enqueued.
  * - Idempotent: if the archive already has the key, the copy is skipped. A
  *   re-run after a successful copy (e.g. BullMQ retry on a transient post-copy
  *   error) therefore settles instead of re-streaming.
- * - Throws on copy failure so BullMQ retries with backoff. The SSD copy is only
+ * - Throws on copy failure so BullMQ retries with backoff. The bundler copy is only
  *   deleted by cleanup-fs once the archive HEAD confirms the copy landed, so a
- *   never-succeeding copy strands the object on the SSD (safe) rather than
+ *   never-succeeding copy strands the object on the bundler (safe) rather than
  *   losing it.
  */
 export async function archiveCopyHandler(

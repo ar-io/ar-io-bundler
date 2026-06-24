@@ -870,38 +870,38 @@ BACKUP_DATA_ITEM_BUCKET=backup-data-items
 - **Backup**: `backup-data-items` bucket (optional)
 - **Redundancy**: MinIO can be configured with erasure coding
 
-### Two-Tier MinIO (SSD hot + HDD archive) — optional, opt-in
+### Two-Tier MinIO (bundler hot + archive cold) — optional, opt-in
 
 Gated entirely on `ARCHIVE_*` env. **Unset (the default) = single-MinIO behavior is
-byte-for-byte unchanged.** When enabled, a **second, HDD-backed MinIO** mirrors served
-content and takes **all AR.IO gateway reads**, so the small/fast SSD MinIO is reserved
+byte-for-byte unchanged.** When enabled, a **second, archive MinIO** mirrors served
+content and takes **all AR.IO gateway reads**, so the bundler MinIO is reserved
 for the ingest → bundle → post → seed → verify pipeline and is never exposed to the
 gateway.
 
 - **Archive copy (async):** a BullMQ `archive-copy` job (one per object, concurrency
   `ARCHIVE_COPY_WORKER_CONCURRENCY`, default 3) streams each `raw-data-item/{id}` and
-  each `bundle-payload/{planId}` from SSD → HDD. It is enqueued from the `new-data-item`
+  each `bundle-payload/{planId}` from bundler → archive. It is enqueued from the `new-data-item`
   handler (single uploads), the multipart-finalize path, and `prepare.ts` (bundle
   payloads). This is the 15th BullMQ queue (was 14).
-- **Post-permanence SSD sweep:** once a bundle is permanent **and** its HDD copy is
-  HEAD-confirmed, `cleanup-fs` deletes the SSD copies (`raw-data-item/{id}`,
+- **Post-permanence bundler sweep:** once a bundle is permanent **and** its archive copy is
+  HEAD-confirmed, `cleanup-fs` deletes the bundler copies (`raw-data-item/{id}`,
   `bundle-payload/{planId}`, `bundle/{txid}`) to reclaim the small SSD quickly. When
   archive is enabled this replaces the 90-day MinIO retention rule; the filesystem
   7-day tier is unchanged. The HEAD-gate against the archive store is the critical
-  safety guard — the SSD copy is never deleted until the HDD copy is confirmed present.
-- **HDD retention:** 90 days (`ARCHIVE_RETENTION_DAYS`, default 90) via a native MinIO
-  ILM expiry rule installed by `minio-init-hdd`.
-- **Gateway reads:** the gateway's S3 `AWS_ENDPOINT` points at the HDD MinIO (port 9002)
-  with the SSD MinIO removed from its retrieval sources. A brief pre-replication window
+  safety guard — the bundler copy is never deleted until the archive copy is confirmed present.
+- **Archive retention:** 90 days (`ARCHIVE_RETENTION_DAYS`, default 90) via a native MinIO
+  ILM expiry rule installed by `minio-init-archive`.
+- **Gateway reads:** the gateway's S3 `AWS_ENDPOINT` points at the archive MinIO (port 9002)
+  with the bundler MinIO removed from its retrieval sources. A brief pre-replication window
   falls through to the gateway's other retrieval methods (acceptable for an optimistic
   cache).
 
-Key env (all distinct from the SSD `S3_*` vars; `ARCHIVE_BUCKET_REGION` **must** differ
-from `S3_REGION`/`DATA_ITEM_BUCKET_REGION` or the archive client clobbers the SSD
+Key env (all distinct from the bundler `S3_*` vars; `ARCHIVE_BUCKET_REGION` **must** differ
+from `S3_REGION`/`DATA_ITEM_BUCKET_REGION` or the archive client clobbers the bundler
 client): `ARCHIVE_DATA_ITEM_BUCKET`, `ARCHIVE_S3_ENDPOINT`, `ARCHIVE_S3_ACCESS_KEY_ID`,
 `ARCHIVE_S3_SECRET_ACCESS_KEY`, `ARCHIVE_S3_FORCE_PATH_STYLE`, `ARCHIVE_BUCKET_REGION`,
-`ARCHIVE_COPY_WORKER_CONCURRENCY`, `ARCHIVE_RETENTION_DAYS`, `SSD_CLEANUP_GRACE_DAYS`,
-`ARCHIVE_MINIO_DATA_PATH`. See `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
+`ARCHIVE_COPY_WORKER_CONCURRENCY`, `ARCHIVE_RETENTION_DAYS`, `BUNDLER_CLEANUP_GRACE_DAYS`,
+`ARCHIVE_MINIO_DATA_PATH`. See `docs/architecture/TWO_TIER_MINIO.md`.
 
 ### PostgreSQL Offset Storage
 

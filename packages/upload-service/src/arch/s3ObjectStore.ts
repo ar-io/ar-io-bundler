@@ -162,13 +162,13 @@ if (process.env.BACKUP_DATA_ITEM_BUCKET) {
 }
 
 // --- Second (archive) MinIO, opt-in via ARCHIVE_* env --------------------------
-// A separate HDD-backed MinIO that mirrors served content (raw data items +
+// A separate archive-backed MinIO that mirrors served content (raw data items +
 // bundle payloads) so gateway read traffic never competes with the
-// ingest→bundle→post→seed→verify pipeline on the fast SSD MinIO.
+// ingest→bundle→post→seed→verify pipeline on the fast bundler MinIO.
 //
 // We reach it by registering an archive bucket→region→client triple that
-// mirrors the SSD pattern above, but under a DISTINCT region label so the
-// archive client never clobbers the SSD client in `regionsToClients`
+// mirrors the bundler pattern above, but under a DISTINCT region label so the
+// archive client never clobbers the bundler client in `regionsToClients`
 // (`s3ClientForBucket()` resolves the archive bucket through the same maps).
 //
 // Leave ARCHIVE_DATA_ITEM_BUCKET unset → none of this runs and behavior is
@@ -179,9 +179,9 @@ if (process.env.BACKUP_DATA_ITEM_BUCKET) {
 export let archiveDataItemBucket: string | undefined;
 const envArchiveDataItemBucket = process.env.ARCHIVE_DATA_ITEM_BUCKET;
 const archiveEndpoint = process.env.ARCHIVE_S3_ENDPOINT;
-// Default to a distinct label so it can't collide with the SSD region (which
-// defaults to "us-east-1"); a collision would overwrite the SSD client.
-const archiveBucketRegion = process.env.ARCHIVE_BUCKET_REGION ?? "archive-hdd";
+// Default to a distinct label so it can't collide with the bundler region (which
+// defaults to "us-east-1"); a collision would overwrite the bundler client.
+const archiveBucketRegion = process.env.ARCHIVE_BUCKET_REGION ?? "archive";
 const archiveForcePathStyle =
   process.env.ARCHIVE_S3_FORCE_PATH_STYLE ?? forcePathStyle;
 const archiveAccessKeyId = process.env.ARCHIVE_S3_ACCESS_KEY_ID;
@@ -192,13 +192,13 @@ const archiveCredentials =
     : s3Credentials; // fall back to the primary creds if the archive shares them
 
 if (envArchiveDataItemBucket) {
-  // Two collisions would silently send SSD traffic to the HDD endpoint, so both
-  // are hard-guarded (wiring is refused, SSD routing left intact, feature stays
+  // Two collisions would silently send bundler traffic to the archive endpoint, so both
+  // are hard-guarded (wiring is refused, bundler routing left intact, feature stays
   // inert):
   //  1. Region label: `regionsToClients` is keyed by region — a shared label
-  //     overwrites the SSD client.
+  //     overwrites the bundler client.
   //  2. Bucket NAME: `bucketNameToRegionMap` is keyed by bucket name — if the
-  //     HDD bucket shares the SSD bucket's name, the SSD bucket would re-map to
+  //     archive bucket shares the bundler bucket's name, the bundler bucket would re-map to
   //     the archive region/client. The archive bucket MUST be a distinct name
   //     (e.g. "archive-data-items"), even though it lives on a separate endpoint.
   const bucketNameCollision =
@@ -206,8 +206,8 @@ if (envArchiveDataItemBucket) {
     envArchiveDataItemBucket === process.env.BACKUP_DATA_ITEM_BUCKET;
   if (regionsToClients[archiveBucketRegion]) {
     globalLogger.error(
-      "ARCHIVE_BUCKET_REGION collides with a primary (SSD) bucket region; " +
-        "archive object store NOT wired (would clobber the SSD client). " +
+      "ARCHIVE_BUCKET_REGION collides with a primary (bundler) bucket region; " +
+        "archive object store NOT wired (would clobber the bundler client). " +
         "Set a distinct ARCHIVE_BUCKET_REGION.",
       { archiveBucketRegion }
     );
@@ -215,7 +215,7 @@ if (envArchiveDataItemBucket) {
     globalLogger.error(
       "ARCHIVE_DATA_ITEM_BUCKET must NOT equal DATA_ITEM_BUCKET / " +
         "BACKUP_DATA_ITEM_BUCKET (bucket-name→client routing would clobber the " +
-        "SSD client and send SSD traffic to the HDD endpoint). Use a distinct " +
+        "bundler client and send bundler traffic to the archive endpoint). Use a distinct " +
         "archive bucket name, e.g. 'archive-data-items'. Archive NOT wired.",
       { archiveDataItemBucket: envArchiveDataItemBucket }
     );
@@ -232,7 +232,7 @@ if (envArchiveDataItemBucket) {
     });
     bucketNameToRegionMap[envArchiveDataItemBucket] = archiveBucketRegion;
     archiveDataItemBucket = envArchiveDataItemBucket; // mark archive as wired
-    globalLogger.info("Registered archive (HDD) object-store client", {
+    globalLogger.info("Registered archive object-store client", {
       archiveDataItemBucket,
       archiveBucketRegion,
       archiveEndpoint,

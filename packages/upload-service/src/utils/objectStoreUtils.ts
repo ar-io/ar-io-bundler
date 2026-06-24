@@ -102,8 +102,8 @@ export function getS3ObjectStore(): ObjectStore {
 }
 
 /**
- * True when the second (HDD-backed) archive MinIO is configured. Gates the
- * archive-copy enqueue points and the post-permanence SSD cleanup branch so
+ * True when the second (archive-backed) archive MinIO is configured. Gates the
+ * archive-copy enqueue points and the post-permanence bundler cleanup branch so
  * that, when unset, the pipeline behaves exactly as a single-MinIO deployment.
  */
 export function isArchiveEnabled(): boolean {
@@ -113,7 +113,7 @@ export function isArchiveEnabled(): boolean {
 let archiveS3ObjectStore: S3ObjectStore | undefined;
 
 /**
- * Singleton ObjectStore pointed at the archive (HDD) MinIO, or `undefined` when
+ * Singleton ObjectStore pointed at the archive MinIO, or `undefined` when
  * `ARCHIVE_DATA_ITEM_BUCKET` is unset. Routing to the archive endpoint is
  * handled by the bucket→region→client registration in s3ObjectStore.ts, so this
  * just needs the archive bucket name (no explicit s3Client arg).
@@ -129,13 +129,13 @@ export function getArchiveS3ObjectStore(): ObjectStore | undefined {
 }
 
 /**
- * Stream a single object key from the primary (SSD) store to the archive (HDD)
+ * Stream a single object key from the primary (bundler) store to the archive
  * store. For `raw-data-item/{id}` keys the payload metadata (data-start offset +
  * content type) is preserved so range/payload reads stay valid on the archive
  * copy; everything else (`bundle-payload/{planId}`) copies as a plain octet
  * stream. Overwrites are harmless, so the copy is idempotent.
  *
- * Integrity guard: the post-permanence SSD sweep deletes the SSD copy once a
+ * Integrity guard: the post-permanence bundler sweep deletes the bundler copy once a
  * `headObject` confirms the archive key EXISTS — but HEAD is existence-only, so a
  * silently truncated copy (e.g. a source GET that ends short without emitting an
  * error) would pass that gate and the gateway would then serve short bytes as

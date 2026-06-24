@@ -244,10 +244,10 @@ export async function prepareBundleHandler(
     planId,
   });
 
-  // Two-tier MinIO: mirror the assembled bundle payload to the archive (HDD)
-  // store now that it's written to the SSD. Best-effort — a failed enqueue must
-  // not fail bundle preparation; the post-permanence SSD cleanup HEAD-gates the
-  // bundle-payload delete on the archive copy, so a missed copy only delays SSD
+  // Two-tier MinIO: mirror the assembled bundle payload to the archive
+  // store now that it's written to the bundler. Best-effort — a failed enqueue must
+  // not fail bundle preparation; the post-permanence bundler cleanup HEAD-gates the
+  // bundle-payload delete on the archive copy, so a missed copy only delays bundler
   // reclamation.
   if (isArchiveEnabled()) {
     try {

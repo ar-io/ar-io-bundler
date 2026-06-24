@@ -52,11 +52,11 @@ export async function newDataItemBatchInsertHandler({
   });
 
   // Two-tier MinIO: mirror each freshly-ingested raw data item to the archive
-  // (HDD) store. This is the chokepoint every single-request upload passes
+  // (archive) store. This is the chokepoint every single-request upload passes
   // through (the multipart-finalize path enqueues its own archive-copy). The raw
   // object was written at ingest, so it exists by now. Best-effort: a failed
-  // enqueue must not fail the insert — the post-permanence SSD cleanup is gated
-  // on the archive HEAD, so a missed copy just delays SSD reclamation, never
+  // enqueue must not fail the insert — the post-permanence bundler cleanup is gated
+  // on the archive HEAD, so a missed copy just delays bundler reclamation, never
   // strands the gateway's only copy.
   if (isArchiveEnabled()) {
     try {

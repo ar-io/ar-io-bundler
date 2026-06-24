@@ -366,10 +366,10 @@ export class MetricRegistry {
   });
 
   // Result of copying one object (raw-data-item or bundle-payload) from the
-  // primary (SSD) MinIO to the archive (HDD) MinIO, by kind and result.
+  // primary (bundler) MinIO to the archive MinIO, by kind and result.
   public static archiveCopy = MetricRegistry.createCounter({
     name: "archive_copy_total",
-    help: "Count of SSD→HDD archive object copies by kind and result",
+    help: "Count of bundler→archive object copies by kind and result",
     labelNames: ["kind", "result"],
     expectedLabelNames: {
       kind: ["raw-data-item", "bundle-payload"],

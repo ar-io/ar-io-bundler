@@ -267,7 +267,7 @@ const broadcastChunksWorker = createWorker<ChunkHeader>(
 );
 
 // Archive Copy Worker — mirrors one served object (raw-data-item or
-// bundle-payload) from the primary (SSD) MinIO to the archive (HDD) MinIO.
+// bundle-payload) from the primary (bundler) MinIO to the archive MinIO.
 // Inert (handler no-ops) unless ARCHIVE_DATA_ITEM_BUCKET is set. Copies are
 // small/independent and I/O-bound, so a modest concurrency is fine.
 const archiveCopyWorker = createWorker<ArchiveCopyMessage>(

@@ -1503,7 +1503,7 @@ export async function finalizeMPUWithDataItemInfo({
   }
 
   // Two-tier MinIO: mirror this multipart-finalized raw data item to the archive
-  // (HDD) store. The multipart-finalize path does NOT funnel through the
+  // (archive) store. The multipart-finalize path does NOT funnel through the
   // `new-data-item` queue (it inserts directly below), so it needs its own
   // archive-copy enqueue. The raw object was moved into place above, so it
   // exists. Best-effort — a failed enqueue must not fail finalization.

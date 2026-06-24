@@ -259,60 +259,60 @@ Configure with `FILESYSTEM_CLEANUP_DAYS` and `MINIO_CLEANUP_DAYS`. The `cleanup-
 job performs the deletions and is enqueued by the internal `CLEANUP_SCHEDULE_CRON`
 scheduler (default daily 02:00); `cron-trigger-cleanup.sh` triggers it manually.
 
-### Two-tier MinIO (SSD hot + HDD archive) — optional, opt-in
+### Two-tier MinIO (bundler hot + archive cold) — optional, opt-in
 
 Gated entirely on `ARCHIVE_DATA_ITEM_BUCKET` (and the rest of `ARCHIVE_*`). Unset
 → everything below is inert and behavior is byte-for-byte the single-MinIO path
-above. Full design: `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
+above. Full design: `docs/architecture/TWO_TIER_MINIO.md`.
 
-When enabled, a second **HDD-backed MinIO** mirrors served content (raw data
+When enabled, a second **archive MinIO** mirrors served content (raw data
 items + bundle payloads) and takes all AR.IO gateway reads, keeping gateway read
-I/O off the SSD MinIO that the bundling pipeline uses. Wiring:
+I/O off the bundler MinIO that the bundling pipeline uses. Wiring:
 - `s3ObjectStore.ts` registers an archive bucket→region→client triple under a
-  **distinct region label** (`ARCHIVE_BUCKET_REGION`, default `archive-hdd`) so
-  the archive client never clobbers the SSD client in `regionsToClients`. The
+  **distinct region label** (`ARCHIVE_BUCKET_REGION`, default `archive`) so
+  the archive client never clobbers the bundler client in `regionsToClients`. The
   archive bucket name (`ARCHIVE_DATA_ITEM_BUCKET`, e.g. `archive-data-items`)
   must ALSO be distinct from `DATA_ITEM_BUCKET`/`BACKUP_DATA_ITEM_BUCKET` —
   `bucketNameToRegionMap` is keyed by bucket name, so a shared name would route
-  SSD traffic to the HDD endpoint. Both collisions are hard-guarded: on either,
+  bundler traffic to the archive endpoint. Both collisions are hard-guarded: on either,
   the archive is left UNWIRED (`archiveDataItemBucket` stays `undefined`, so
   `isArchiveEnabled()` is false) rather than half-wired.
 - `objectStoreUtils.ts`: `getArchiveS3ObjectStore()` (singleton, `undefined` when
   disabled), `isArchiveEnabled()`, `copyKeyToArchive()`. `architecture.ts` exposes
   `archiveObjectStore?`.
-- The `archive-copy` queue streams one object SSD→HDD per job, enqueued from the
+- The `archive-copy` queue streams one object bundler→archive per job, enqueued from the
   `new-data-item` handler (single uploads), the multipart-finalize path, and
-  `prepare.ts` (bundle payloads). Idempotent (HEAD-skips if already on HDD).
+  `prepare.ts` (bundle payloads). Idempotent (HEAD-skips if already on the archive).
   Metric `archive_copy_total{kind,result}`.
-- `cleanup-fs.ts` gains a **post-permanence SSD sweep** (`cleanupSsdAfterArchive`):
-  for permanent bundles whose HDD copies are **confirmed present** (HEAD-gated),
-  it deletes the SSD `raw-data-item/{id}`, `bundle-payload/{planId}`, and
+- `cleanup-fs.ts` gains a **post-permanence bundler sweep** (`cleanupBundlerAfterArchive`):
+  for permanent bundles whose archive copies are **confirmed present** (HEAD-gated),
+  it deletes the bundler `raw-data-item/{id}`, `bundle-payload/{planId}`, and
   `bundle/{txid}` to free the small SSD quickly. The HEAD-gate is the critical
-  guard — never delete the SSD copy until the HDD copy is confirmed. In archive
+  guard — never delete the bundler copy until the archive copy is confirmed. In archive
   mode this replaces the 90-day MinIO rule (the FS 7-day tier is unchanged);
-  `SSD_CLEANUP_GRACE_DAYS` (default 0) adds an optional margin. HDD retention is
+  `BUNDLER_CLEANUP_GRACE_DAYS` (default 0) adds an optional margin. Archive retention is
   native via a MinIO ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90).
   - The sweep's cursor/deferral/reconciliation control flow is the pure,
-    fully-injected `runSsdReclaimSweep` (exported, unit-tested with fakes);
-    `cleanupSsdAfterArchive` is just the knex+store binding. It scans
+    fully-injected `runBundlerReclaimSweep` (exported, unit-tested with fakes);
+    `cleanupBundlerAfterArchive` is just the knex+store binding. It scans
     `permanent_bundle` forward, persisting a resume cursor in the `config` row
-    `archive-ssd-cleanup-cursor`; a bundle whose HDD copy isn't confirmed is
+    `archive-ssd-cleanup-cursor`; a bundle whose archive copy isn't confirmed is
     deferred without stalling the tail (the persist cursor parks at the first
     unresolved hole while the scan keeps reclaiming newer bundles).
   - **Reconciliation backstop (PR #90):** the ingest/prepare `archive-copy`
     enqueues are best-effort, so the sweep **re-enqueues** the missing keys for any
-    deferred bundle (`reclaimBundleFromSsd` returns `missingArchiveKeys`) — a
+    deferred bundle (`reclaimBundleFromBundler` returns `missingArchiveKeys`) — a
     dropped enqueue self-heals instead of wedging the cursor forever. ⚠️ A copy that
-    can *never* succeed (e.g. enabling on an existing DB where old bundles' SSD
+    can *never* succeed (e.g. enabling on an existing DB where old bundles' bundler
     source was already cleaned) still wedges the persisted cursor; see the
     enable-on-existing-DB cursor-seeding note in the design doc / runbook §13.
   - **Copy integrity (PR #90):** `copyKeyToArchive` asserts archived byte count ==
     source before the HEAD-gate can pass, deleting the bad object + throwing on a
     mismatch (so the existence-only HEAD can't pass a truncated copy that the
     gateway would then serve as authoritative).
-- Infra: `docker-compose.hdd.yml` (override, not started by default) adds
-  `minio-hdd` (:9002/:9003) + `minio-init-hdd`. Point the gateway's S3
-  `AWS_ENDPOINT` at the HDD MinIO.
+- Infra: `docker-compose.archive.yml` (override, not started by default) adds
+  `minio-archive` (:9002/:9003) + `minio-init-archive`. Point the gateway's S3
+  `AWS_ENDPOINT` at the archive MinIO.
 
 ### Payment service integration
 
