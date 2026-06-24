@@ -170,6 +170,9 @@
 - [ ] Backups scheduled & a **restore tested**: `pg_dump` both DBs off-box; `mc mirror` MinIO buckets off-box; wallets+`.env` encrypted off-box.
 - [ ] Monitoring live: Prometheus scrape `:9090` + Grafana; alert on queue depth, worker liveness (esp.
       payment-workers/upload-workers), **DB pool saturation**, MinIO/PG disk growth, post/verify failure rates.
+- [ ] Slack health alerter live: `ALERTS_ENABLED=true` + `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID`; top-up
+      channel set (`SLACK_TURBO_TOP_UP_CHANNEL_ID`); bot invited to channels; test message delivered
+      (`node packages/admin-service/admin/notifier/test-slack.js both`).
 - [ ] `pm2-logrotate` + logrotate for cron logs.
 - [ ] Rollback path rehearsed: tagged release + `db:migrate:rollback` + pre-migration snapshot.
 
