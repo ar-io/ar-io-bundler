@@ -145,7 +145,11 @@ function computeHealthRollup(stats, overrides = {}) {
   t.criticalServices.forEach((name) => {
     const svc = services[name];
     if (svc && svc.status && svc.status !== 'healthy')
-      add('critical', 'service', `${name} is ${svc.status}`);
+      add(
+        'critical',
+        'service',
+        `${name} is ${svc.status} (pm2:${svc.pm2Status || '?'}, restarts:${svc.restarts ?? 0}, cpu:${svc.cpu || '?'}, mem:${svc.memory || '?'}, up:${svc.uptime || '?'})`
+      );
   });
 
   // --- Queue failures (RECENT rate, last hour — not lifetime totals) ---

@@ -198,6 +198,9 @@ async function getServiceHealth() {
 
           services[name] = {
             status,
+            // Raw PM2 state (online/stopped/errored/launching) so alerts can say
+            // WHY a service is unhealthy (stopped vs crash-looping), not just "unhealthy".
+            pm2Status: proc.pm2_env.status,
             uptime,
             instances,
             memory: formatBytes(proc.monit.memory),
