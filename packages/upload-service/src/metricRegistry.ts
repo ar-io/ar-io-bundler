@@ -356,6 +356,16 @@ export class MetricRegistry {
     },
   });
 
+  // Per-node result of seeding a bundle's chunks to a chunk-distributor node
+  // (CHUNK_POST_NODE_URLS failover). result="success" = that node accepted the
+  // chunks (it then broadcasts to tip nodes); result="failure" = errored, failed
+  // over to the next node. endpoint = the distributor host.
+  public static chunkSeedPost = MetricRegistry.createCounter({
+    name: "chunk_seed_post_total",
+    help: "Count of bundle chunk-seed attempts per distributor node by result",
+    labelNames: ["endpoint", "result"],
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
   }

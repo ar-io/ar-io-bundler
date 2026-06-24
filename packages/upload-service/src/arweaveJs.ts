@@ -29,6 +29,7 @@ import { ArweaveGateway } from "./arch/arweaveGateway";
 import {
   arweaveUploadNode,
   chunkCacheBridgeEnabled,
+  chunkPostNodeUrls,
   gatewayUrl,
 } from "./constants";
 import logger from "./logger";
@@ -37,9 +38,65 @@ import { JWKInterface } from "./types/jwkTypes";
 import { TxAttributes } from "./types/types";
 import { filterKeysFromObject } from "./utils/common";
 
+/** Fisher–Yates shuffle (non-mutating) — randomizes failover start for load spread. */
+export function shuffled<T>(arr: readonly T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Seed a bundle's chunks to ONE of several distributor nodes with failover: try
+ * `attempt` against each node in the given order; on the first success, record
+ * the metric and return that node's URL; on error, record the metric, log, and
+ * fail over to the next. Throws if ALL nodes fail (caller re-throws → BullMQ
+ * `seed-bundle` retries / `redrive-posted` recovers). Generic over the node type
+ * so it's unit-testable without real Arweave clients.
+ */
+export async function seedChunksWithFailover<N extends { url: URL }>(
+  nodes: N[],
+  attempt: (node: N) => Promise<void>,
+  log: winston.Logger
+): Promise<URL> {
+  if (nodes.length === 0) {
+    throw new Error("No chunk-distributor nodes configured (CHUNK_POST_NODE_URLS)");
+  }
+  let lastError: unknown;
+  for (const node of nodes) {
+    try {
+      await attempt(node);
+      MetricRegistry.chunkSeedPost.inc({
+        endpoint: node.url.host,
+        result: "success",
+      });
+      return node.url;
+    } catch (error) {
+      lastError = error;
+      MetricRegistry.chunkSeedPost.inc({
+        endpoint: node.url.host,
+        result: "failure",
+      });
+      log.warn("Chunk seed to distributor failed; failing over to next node", {
+        endpoint: node.url.host,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+  throw new Error(
+    `All ${nodes.length} chunk-distributor node(s) failed to seed chunks: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
+}
+
 export class ArweaveInterface {
   private log: winston.Logger;
   private readonly arweaveJsUpload: Arweave; // Separate Arweave instance for uploads
+  // One Arweave client per chunk-distributor in CHUNK_POST_NODE_URLS (failover).
+  private readonly chunkPostClients: { url: URL; arweave: Arweave }[];
   constructor(
     protected readonly gateway: ArweaveGateway = new ArweaveGateway({
       endpoint: gatewayUrl,
@@ -69,9 +126,25 @@ export class ArweaveInterface {
       logging: false,
     });
 
+    // One Arweave client per chunk-seed distributor (CHUNK_POST_NODE_URLS;
+    // defaults to [ARWEAVE_UPLOAD_NODE]). Seeding fails over across these.
+    this.chunkPostClients = chunkPostNodeUrls.map((url) => ({
+      url,
+      arweave: Arweave.init({
+        host: url.hostname,
+        port: url.port,
+        protocol: url.protocol.replace(":", ""),
+        timeout: process.env.ARWEAVE_NETWORK_REQUEST_TIMEOUT_MS
+          ? +process.env.ARWEAVE_NETWORK_REQUEST_TIMEOUT_MS
+          : 40_000,
+        logging: false,
+      }),
+    }));
+
     this.log.info("Initialized ArweaveInterface with separate upload node", {
       gatewayUrl: `${gatewayUrl.protocol}//${gatewayUrl.host}`,
       uploadNode: `${arweaveUploadNode.protocol}//${arweaveUploadNode.host}`,
+      chunkPostNodes: this.chunkPostClients.map((c) => c.url.host),
     });
   }
 
@@ -107,22 +180,34 @@ export class ArweaveInterface {
     durationsMs.chunkPreparation = Date.now() - chunkPreparationStartMs;
 
     const chunkUploadStartMs = Date.now();
+    // Failover across the configured chunk-distributor nodes (random start order
+    // for load spread). Each node performs its own multi-tip broadcast, so a
+    // single successful node lands the data; we re-stream the payload per attempt
+    // (getPayloadStream() yields a fresh Readable). All-fail throws → seed-bundle
+    // BullMQ retry / redrive-posted recovery.
+    const nodes = shuffled(this.chunkPostClients);
     this.log.debug("Seeding chunks for bundle..", {
       bundleId,
       durationsMs,
       chunkUploadStartMs,
-      uploadNode: `${arweaveUploadNode.protocol}//${arweaveUploadNode.host}`,
+      chunkPostNodes: nodes.map((n) => n.url.host),
     });
-    // Use arweaveJsUpload for chunk uploads (configured to use ARWEAVE_UPLOAD_NODE)
-    await pipeline(
-      await getPayloadStream(),
-      uploadTransactionAsync(bundleTx, this.arweaveJsUpload, false)
+    const seededVia = await seedChunksWithFailover(
+      nodes,
+      async (node) => {
+        await pipeline(
+          await getPayloadStream(),
+          uploadTransactionAsync(bundleTx, node.arweave, false)
+        );
+      },
+      this.log
     );
     durationsMs.chunkUpload = Date.now() - chunkUploadStartMs;
 
     this.log.debug("Chunks seeded!", {
       bundleId,
       durationsMs,
+      seededVia: seededVia.host,
     });
   }
 

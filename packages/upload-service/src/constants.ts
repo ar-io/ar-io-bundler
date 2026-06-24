@@ -147,6 +147,29 @@ export const arweaveUploadNode = new URL(
 );
 
 /**
+ * Chunk-seed broadcast targets (failover list). The bundler seeds each bundle's
+ * chunks to ONE of these nodes (tried in order, random start for load spread);
+ * the node — a dedicated AR.IO chunk-distributor / gateway — performs its own
+ * multi-tip-node broadcast, so reaching ONE healthy distributor lands the data.
+ *
+ * Comma-separated via `CHUNK_POST_NODE_URLS`. Unset → falls back to the single
+ * `ARWEAVE_UPLOAD_NODE` (today's behavior, unchanged). A node that errors (or
+ * times out) fails over to the next; if all fail, the seed job throws and BullMQ
+ * retries / `redrive-posted` recovers it.
+ */
+export const chunkPostNodeUrls: URL[] = (() => {
+  const raw = process.env.CHUNK_POST_NODE_URLS;
+  if (!raw || raw.trim() === "") {
+    return [arweaveUploadNode];
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => new URL(s));
+})();
+
+/**
  * Optimistic surfaces — three independent, strictly best-effort pushes that warm
  * the AR.IO gateway BEFORE a bundle mines. None of them may block or fail the
  * upload or the on-chain bundle post. Each is its own env gate (see
