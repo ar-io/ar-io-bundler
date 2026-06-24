@@ -345,6 +345,11 @@ describe("runSsdReclaimSweep (cursor / deferral / reconciliation)", () => {
       permanentDate: "2026-01-01",
       bundleId: "b1",
     });
+    // The cursor is persisted exactly once (when it advanced to b1), not
+    // re-written on every later page once the hole froze it.
+    expect(h.setCursorCalls).to.deep.equal([
+      { permanentDate: "2026-01-01", bundleId: "b1" },
+    ]);
   });
 
   it("never persists a cursor (and re-enqueues) when the very first bundle is a hole, so it is retried from the start next run", async () => {

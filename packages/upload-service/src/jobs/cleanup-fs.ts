@@ -682,7 +682,10 @@ export async function runSsdReclaimSweep(
   let scanCursor: ArchiveCleanupCursor = { ...startCursor };
   let persistCursor: ArchiveCleanupCursor = { ...startCursor };
   let holeSeen = false;
-  let persistAdvanced = false;
+  // Set whenever persistCursor actually advances; cleared after a write so we
+  // persist exactly once per real advance (never re-writing the same frozen
+  // value page after page once a hole has parked the cursor).
+  let persistDirty = false;
 
   let bundlesSwept = 0;
   let payloadsDeleted = 0;
@@ -749,12 +752,15 @@ export async function runSsdReclaimSweep(
           permanentDate: bundle.permanent_date,
           bundleId: bundle.bundle_id,
         };
-        persistAdvanced = true;
+        persistDirty = true;
       }
     }
 
-    if (persistAdvanced) {
+    // Persist only when the cursor actually advanced this page — once a hole
+    // freezes persistCursor, later pages re-write nothing.
+    if (persistDirty) {
       await setCursor(persistCursor);
+      persistDirty = false;
     }
 
     // Stop only when the page wasn't full (tail exhausted). Deferrals no longer
