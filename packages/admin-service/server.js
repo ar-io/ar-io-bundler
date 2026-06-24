@@ -105,9 +105,11 @@ const config = {
   paymentDbUser: process.env.DB_USER || 'postgres',
   paymentDbPassword: process.env.DB_PASSWORD,
 
-  // Storage health
+  // Storage health. Default the monitored disk to MinIO's data path (develop's
+  // MINIO_DATA_PATH, e.g. /mnt/minio) when set, so the disk that actually fills
+  // with object data is the one we watch; else the OS root.
   minioEndpoint: process.env.S3_ENDPOINT || 'http://localhost:9000',
-  diskPath: process.env.ADMIN_DISK_PATH || '/',
+  diskPath: process.env.ADMIN_DISK_PATH || process.env.MINIO_DATA_PATH || '/',
 
   // Bundle-signing wallet balance (posting capability)
   arweaveGateway: process.env.ARWEAVE_GATEWAY || 'https://arweave.net',
