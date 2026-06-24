@@ -65,6 +65,10 @@ wallet.json
 # Operational test wallets (private keys — never commit)
 ops-test-wallet*.json
 
+# Generated wallet/secret material from deploy-time key generation (never commit)
+.generated-wallet-secrets.txt
+*-wallet-secrets.txt
+
 # Backup output (contains wallets, .env, and user data — never commit)
 backups/
 

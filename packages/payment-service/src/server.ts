@@ -221,8 +221,9 @@ export async function createServer(
 
   app.use(router.routes());
 
-  // Bind to 0.0.0.0 to accept connections from nginx proxy on separate server
-  const server = app.listen(port, '0.0.0.0');
+  // Bind address is env-driven: BIND_ADDRESS=127.0.0.1 keeps the API loopback-only
+  // (co-located nginx proxies from localhost). Defaults to 0.0.0.0 for a separate-server nginx.
+  const server = app.listen(port, process.env.BIND_ADDRESS || '0.0.0.0');
 
   // Timeout configuration for payment operations (faster than uploads). Uses
   // PAYMENT_-prefixed env vars so the payment service never inherits the upload
