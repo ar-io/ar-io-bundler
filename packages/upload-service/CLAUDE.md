@@ -292,6 +292,24 @@ I/O off the SSD MinIO that the bundling pipeline uses. Wiring:
   mode this replaces the 90-day MinIO rule (the FS 7-day tier is unchanged);
   `SSD_CLEANUP_GRACE_DAYS` (default 0) adds an optional margin. HDD retention is
   native via a MinIO ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90).
+  - The sweep's cursor/deferral/reconciliation control flow is the pure,
+    fully-injected `runSsdReclaimSweep` (exported, unit-tested with fakes);
+    `cleanupSsdAfterArchive` is just the knex+store binding. It scans
+    `permanent_bundle` forward, persisting a resume cursor in the `config` row
+    `archive-ssd-cleanup-cursor`; a bundle whose HDD copy isn't confirmed is
+    deferred without stalling the tail (the persist cursor parks at the first
+    unresolved hole while the scan keeps reclaiming newer bundles).
+  - **Reconciliation backstop (PR #90):** the ingest/prepare `archive-copy`
+    enqueues are best-effort, so the sweep **re-enqueues** the missing keys for any
+    deferred bundle (`reclaimBundleFromSsd` returns `missingArchiveKeys`) — a
+    dropped enqueue self-heals instead of wedging the cursor forever. ⚠️ A copy that
+    can *never* succeed (e.g. enabling on an existing DB where old bundles' SSD
+    source was already cleaned) still wedges the persisted cursor; see the
+    enable-on-existing-DB cursor-seeding note in the design doc / runbook §13.
+  - **Copy integrity (PR #90):** `copyKeyToArchive` asserts archived byte count ==
+    source before the HEAD-gate can pass, deleting the bad object + throwing on a
+    mismatch (so the existence-only HEAD can't pass a truncated copy that the
+    gateway would then serve as authoritative).
 - Infra: `docker-compose.hdd.yml` (override, not started by default) adds
   `minio-hdd` (:9002/:9003) + `minio-init-hdd`. Point the gateway's S3
   `AWS_ENDPOINT` at the HDD MinIO.

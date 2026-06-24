@@ -97,7 +97,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 │  │                    Infrastructure Layer                               │  │
 │  │                                                                       │  │
 │  │  PostgreSQL (2 DBs)  •  Redis (Cache + Queues)  •  MinIO (S3)       │  │
-│  │  BullMQ (14 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
+│  │  BullMQ (15 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │                                      │                                       │

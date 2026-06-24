@@ -865,7 +865,7 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 - Job delays
 - Worker health
 
-**14 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
+**15 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
 1. `new-data-item` - New uploads
 2. `plan-bundle` - Bundle planning
 3. `prepare-bundle` - Bundle preparation
@@ -880,6 +880,7 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 12. `redrive-posted` - Redrive posted-but-unverified bundles
 13. `refund-balance` - Durable balance-refund retry
 14. `broadcast-chunks` - Broadcast each chunk to an AR.IO distributor (AR_IO_NODE_URLS, shuffle + failover)
+15. `archive-copy` - Two-tier MinIO: mirror a served object (raw-data-item/bundle-payload) SSD→HDD (inert unless `ARCHIVE_*` set)
 
 **Payment Service Queues:**
 1. `payment-pending-tx` - Cryptocurrency payment monitoring
