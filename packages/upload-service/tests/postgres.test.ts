@@ -93,7 +93,7 @@ describe("PostgresDatabase class", () => {
       });
 
       const newDataItems = await db["writer"]<NewDataItemDBResult>(
-        "new_data_item"
+        "new_data_item",
       )
         .where({ data_item_id: uniqueDataItemId })
         .del()
@@ -139,7 +139,7 @@ describe("PostgresDatabase class", () => {
       });
 
       const newDataItems = await db["writer"]<FailedDataItemDBResult>(
-        tableNames.newDataItem
+        tableNames.newDataItem,
       )
         .where({ data_item_id: uniqueDataItemId })
         .del()
@@ -147,7 +147,7 @@ describe("PostgresDatabase class", () => {
       expect(newDataItems.length).to.equal(1);
 
       const failedDataItems = await db["writer"]<FailedDataItemDBResult>(
-        tableNames.failedDataItem
+        tableNames.failedDataItem,
       )
         .where({ data_item_id: uniqueDataItemId })
         .del()
@@ -176,7 +176,7 @@ describe("PostgresDatabase class", () => {
     const newDataItems = await db.getNewDataItems();
 
     const [dataItem1, dataItem2, dataItem3] = newDataItems.filter((d) =>
-      txIds.includes(d.dataItemId)
+      txIds.includes(d.dataItemId),
     );
 
     // We expect these items returns in this order, earliest to latest
@@ -187,9 +187,87 @@ describe("PostgresDatabase class", () => {
     // Cleanup newDataItems
     await Promise.all(
       txIds.map((id) =>
-        dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, id)
-      )
+        dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, id),
+      ),
     );
+  });
+
+  describe("getExistingDataItemIds method (single round-trip dedup)", () => {
+    // Unique 43-char ids so this test never collides on the shared DB.
+    const mkId = (suffix: string) => suffix.padEnd(43, "0");
+    const recentNewId = mkId("dedupRecentNew");
+    const plannedId = mkId("dedupPlanned");
+    const permanentId = mkId("dedupPermanent");
+    const failedId = mkId("dedupFailed");
+    const oldNewId = mkId("dedupOldNew");
+    const unknownId = mkId("dedupUnknown");
+
+    before(async () => {
+      await dbTestHelper.insertStubNewDataItem({ dataItemId: recentNewId });
+      // 40 days old -> outside the 30-day dedup window.
+      await dbTestHelper.insertStubNewDataItem({
+        dataItemId: oldNewId,
+        uploadedDate: new Date(
+          Date.now() - 40 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      });
+      await dbTestHelper.insertStubPlannedDataItem({ dataItemId: plannedId });
+      await dbTestHelper.insertStubPermanentDataItem({
+        dataItemId: permanentId,
+        planId: "dedup-test-plan",
+        bundleId: mkId("dedupBundle"),
+      });
+      await dbTestHelper.insertStubFailedDataItem({ dataItemId: failedId });
+    });
+
+    after(async () => {
+      await dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, recentNewId);
+      await dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, oldNewId);
+      await dbTestHelper.cleanUpEntityInDb(
+        tableNames.plannedDataItem,
+        plannedId,
+      );
+      await dbTestHelper.cleanUpEntityInDb(
+        tableNames.permanentDataItems,
+        permanentId,
+      );
+      await dbTestHelper
+        .knex(tableNames.failedDataItem)
+        .where({ data_item_id: failedId })
+        .del();
+    });
+
+    it("detects ids present in new/planned/permanent within the 30-day window", async () => {
+      const result = await db.getExistingDataItemIds([
+        recentNewId,
+        plannedId,
+        permanentId,
+        unknownId,
+      ]);
+      expect(result.has(recentNewId)).to.equal(true);
+      expect(result.has(plannedId)).to.equal(true);
+      expect(result.has(permanentId)).to.equal(true);
+      expect(result.has(unknownId)).to.equal(false);
+    });
+
+    it("excludes ids older than the 30-day window", async () => {
+      const result = await db.getExistingDataItemIds([oldNewId]);
+      expect(result.has(oldNewId)).to.equal(false);
+    });
+
+    it("deletes failed ids and does not count them as existing", async () => {
+      const result = await db.getExistingDataItemIds([failedId]);
+      expect(result.has(failedId)).to.equal(false);
+      const remaining = await dbTestHelper
+        .knex(tableNames.failedDataItem)
+        .where({ data_item_id: failedId });
+      expect(remaining.length).to.equal(0);
+    });
+
+    it("returns an empty set for empty input", async () => {
+      const result = await db.getExistingDataItemIds([]);
+      expect(result.size).to.equal(0);
+    });
   });
 
   it("insertBundlePlan method adds a bundle_plan, deletes specified new_data_items, and inserts planned_data_items ", async () => {
@@ -212,32 +290,32 @@ describe("PostgresDatabase class", () => {
       (
         await db["writer"]<NewDataItemDBResult>(tableNames.newDataItem).whereIn(
           "data_item_id",
-          [stubTxId4, stubTxId5]
+          [stubTxId4, stubTxId5],
         )
-      ).length
+      ).length,
     ).to.equal(0);
 
     // We expect planned data items to have been inserted
     const plannedDataItems = await db["writer"]<PlannedDataItemDBResult>(
-      tableNames.plannedDataItem
+      tableNames.plannedDataItem,
     ).whereIn("data_item_id", [stubTxId4, stubTxId5]);
     expect(plannedDataItems.length).to.equal(2);
 
     // Items come back in any order when we batch insert
     const plannedDataItem4 = plannedDataItems.filter(
-      (p) => p.data_item_id === stubTxId4
+      (p) => p.data_item_id === stubTxId4,
     )[0];
     const plannedDataItem5 = plannedDataItems.filter(
-      (p) => p.data_item_id === stubTxId5
+      (p) => p.data_item_id === stubTxId5,
     )[0];
 
     plannedDataItemExpectations(
       plannedDataItemDbResultToPlannedDataItemMap(plannedDataItem4),
-      { expectedDataItemId: stubTxId4, expectedPlanId: stubPlanId }
+      { expectedDataItemId: stubTxId4, expectedPlanId: stubPlanId },
     );
     plannedDataItemExpectations(
       plannedDataItemDbResultToPlannedDataItemMap(plannedDataItem5),
-      { expectedDataItemId: stubTxId5, expectedPlanId: stubPlanId }
+      { expectedDataItemId: stubTxId5, expectedPlanId: stubPlanId },
     );
 
     await dbTestHelper.cleanUpBundlePlanInDb({
@@ -265,7 +343,7 @@ describe("PostgresDatabase class", () => {
     });
 
     const newBundleDbResult = await db["writer"]<NewBundleDBResult>(
-      tableNames.newBundle
+      tableNames.newBundle,
     ).where({ bundle_id: bundleId });
     expect(newBundleDbResult.length).to.equal(1);
     newBundleDbResultExpectations(newBundleDbResult[0], {
@@ -295,12 +373,12 @@ describe("PostgresDatabase class", () => {
     // New bundle is removed
     expect(
       (await db["writer"](tableNames.newBundle).where({ bundle_id: bundleId }))
-        .length
+        .length,
     ).to.equal(0);
 
     // Posted bundle exists as expected
     const postedBundleDbResult = await db["writer"]<PostedBundleDBResult>(
-      tableNames.postedBundle
+      tableNames.postedBundle,
     ).where({ bundle_id: bundleId });
     expect(postedBundleDbResult.length).to.equal(1);
     postedBundleDbResultExpectations(postedBundleDbResult[0], {
@@ -330,12 +408,12 @@ describe("PostgresDatabase class", () => {
         await db["writer"](tableNames.postedBundle).where({
           bundle_id: bundleId,
         })
-      ).length
+      ).length,
     ).to.equal(0);
 
     // Seeded bundle exists as expected
     const seededBundleDbResult = await db["writer"]<SeededBundleDBResult>(
-      tableNames.seededBundle
+      tableNames.seededBundle,
     ).where({ bundle_id: bundleId });
     expect(seededBundleDbResult.length).to.equal(1);
     postedBundleDbResultExpectations(seededBundleDbResult[0], {
@@ -363,14 +441,14 @@ describe("PostgresDatabase class", () => {
 
     await Promise.all(
       stubSeededBundles.map((seededBundle) =>
-        dbTestHelper.insertStubSeededBundle(seededBundle)
-      )
+        dbTestHelper.insertStubSeededBundle(seededBundle),
+      ),
     );
 
     const seededBundles = await db.getSeededBundles();
     expect(seededBundles.length).to.equal(3);
     seededBundles.forEach(({ bundleId }) =>
-      expect(stubSeededBundles.map((s) => s.bundleId)).to.include(bundleId)
+      expect(stubSeededBundles.map((s) => s.bundleId)).to.include(bundleId),
     );
 
     await Promise.all(
@@ -378,8 +456,8 @@ describe("PostgresDatabase class", () => {
         dbTestHelper.cleanUpSeededBundleInDb({
           bundleId,
           bundleTable: "seeded_bundle",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -403,12 +481,12 @@ describe("PostgresDatabase class", () => {
         await db["writer"](tableNames.seededBundle).where({
           bundle_id: bundleId,
         })
-      ).length
+      ).length,
     ).to.equal(0);
 
     // Permanent bundle exists as expected
     const permanentBundleDbResult = await db["writer"]<PermanentBundleDBResult>(
-      tableNames.permanentBundle
+      tableNames.permanentBundle,
     ).where({ bundle_id: bundleId });
     expect(permanentBundleDbResult.length).to.equal(1);
     permanentBundleExpectations(
@@ -416,10 +494,10 @@ describe("PostgresDatabase class", () => {
       {
         expectedBundleId: bundleId,
         expectedPlanId: planId,
-      }
+      },
     );
     expect(permanentBundleDbResult[0].block_height).to.equal(
-      blockHeight.toString()
+      blockHeight.toString(),
     );
   });
 
@@ -448,9 +526,8 @@ describe("PostgresDatabase class", () => {
       await db.updateSeededBundleToDropped(planId, bundleId);
 
       // New data items are inserted as expected
-      const results = await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(
-        dataItemIds
-      );
+      const results =
+        await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(dataItemIds);
       expect(results.length).to.equal(3);
       results.forEach((result) => {
         expect(result.failed_bundles).to.equal(`testOne,testTwo,${bundleId}`);
@@ -462,12 +539,12 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.seededBundle).where({
             bundle_id: bundleId,
           })
-        ).length
+        ).length,
       ).to.equal(0);
 
       // Failed bundle exists as expected
       const failedBundleDbResult = await db["writer"]<FailedBundleDBResult>(
-        tableNames.failedBundle
+        tableNames.failedBundle,
       ).where({ bundle_id: bundleId });
       expect(failedBundleDbResult.length).to.equal(1);
       failedBundleExpectations(
@@ -475,7 +552,7 @@ describe("PostgresDatabase class", () => {
         {
           expectedBundleId: bundleId,
           expectedPlanId: planId,
-        }
+        },
       );
 
       // Planned data items are removed
@@ -486,7 +563,7 @@ describe("PostgresDatabase class", () => {
               await db["writer"](tableNames.plannedDataItem).where({
                 data_item_id,
               })
-            ).length
+            ).length,
           ).to.equal(0);
         }),
       ]);
@@ -507,7 +584,7 @@ describe("PostgresDatabase class", () => {
 
       const failedBundles = Array.from(
         { length: retryLimitForFailedDataItems + 2 },
-        (_, i) => `failed ${i}`
+        (_, i) => `failed ${i}`,
       );
 
       await dbTestHelper.insertStubSeededBundle({
@@ -526,12 +603,12 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.newDataItem).where({
             data_item_id: dataItemId,
           })
-        ).length
+        ).length,
       ).to.equal(0);
 
       // Failed data item exists as expected
       const failedDataItemDbResult = await db["writer"]<FailedDataItemDBResult>(
-        tableNames.failedDataItem
+        tableNames.failedDataItem,
       )
         .where({ data_item_id: dataItemId })
         .del()
@@ -540,10 +617,10 @@ describe("PostgresDatabase class", () => {
       expect(failedDataItemDbResult.length).to.equal(1);
       expect(failedDataItemDbResult[0].data_item_id).to.equal(dataItemId);
       expect(failedDataItemDbResult[0].failed_reason).to.equal(
-        "too_many_failures"
+        "too_many_failures",
       );
       expect(failedDataItemDbResult[0].failed_bundles).to.equal(
-        [...failedBundles, bundleId].join(",")
+        [...failedBundles, bundleId].join(","),
       );
     });
   });
@@ -571,7 +648,7 @@ describe("PostgresDatabase class", () => {
 
       // Get and cleanup data items immediately from new data item table to avoid test race conditions
       const dataItems = await db["writer"]<NewDataItemDBResult>(
-        tableNames.newDataItem
+        tableNames.newDataItem,
       )
         .whereIn("data_item_id", dataItemIds)
         .del()
@@ -587,12 +664,12 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.newBundle).where({
             bundle_id: bundleId,
           })
-        ).length
+        ).length,
       ).to.equal(0);
 
       // Failed bundle exists as expected
       const failedBundleDbResult = await db["writer"]<FailedBundleDBResult>(
-        tableNames.failedBundle
+        tableNames.failedBundle,
       ).where({ bundle_id: bundleId });
       expect(failedBundleDbResult.length).to.equal(1);
       expect(failedBundleDbResult[0].bundle_id).to.equal(bundleId);
@@ -615,7 +692,7 @@ describe("PostgresDatabase class", () => {
 
       expect(status).to.equal("new");
       expect(assessedWinstonPrice.toString()).to.equal(
-        stubWinstonPrice.toString()
+        stubWinstonPrice.toString(),
       );
       expect(bundleId).to.be.undefined;
 
@@ -638,13 +715,13 @@ describe("PostgresDatabase class", () => {
 
       expect(status).to.equal("pending");
       expect(assessedWinstonPrice.toString()).to.equal(
-        stubWinstonPrice.toString()
+        stubWinstonPrice.toString(),
       );
       expect(bundleId).to.be.undefined;
 
       await dbTestHelper.cleanUpEntityInDb(
         tableNames.plannedDataItem,
-        dataItemId
+        dataItemId,
       );
     });
 
@@ -668,13 +745,13 @@ describe("PostgresDatabase class", () => {
 
       expect(status).to.equal("permanent");
       expect(assessedWinstonPrice.toString()).to.equal(
-        stubWinstonPrice.toString()
+        stubWinstonPrice.toString(),
       );
       expect(bundleIdInDb).to.equal(bundleId);
 
       await dbTestHelper.cleanUpEntityInDb(
         tableNames.permanentDataItems,
-        dataItemId
+        dataItemId,
       );
     });
 
@@ -698,8 +775,8 @@ describe("PostgresDatabase class", () => {
           dbTestHelper.insertStubPlannedDataItem({
             dataItemId,
             planId: "Unique plan ID",
-          })
-        )
+          }),
+        ),
       );
 
       await db.updateDataItemsAsPermanent({
@@ -710,13 +787,13 @@ describe("PostgresDatabase class", () => {
 
       // Planned data items are removed
       const plannedDbResult = await db["writer"](
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       ).whereIn("data_item_id", dataItemIds);
       expect(plannedDbResult.length).to.equal(0);
 
       // Permanent data items are inserted as expected
       const permanentDbResult = await db["writer"](
-        tableNames.permanentDataItems
+        tableNames.permanentDataItems,
       ).whereIn("data_item_id", dataItemIds);
       expect(permanentDbResult.length).to.equal(3);
 
@@ -724,9 +801,9 @@ describe("PostgresDatabase class", () => {
         dataItemIds.map((dataItemId) =>
           dbTestHelper.cleanUpEntityInDb(
             tableNames.permanentDataItems,
-            dataItemId
-          )
-        )
+            dataItemId,
+          ),
+        ),
       );
     });
   });
@@ -747,15 +824,15 @@ describe("PostgresDatabase class", () => {
             dataItemId,
             planId: "A great Unique plan ID",
             failedBundles: [previouslyFailedBundle],
-          })
-        )
+          }),
+        ),
       );
 
       await db.updateDataItemsToBeRePacked(dataItemIds, bundleId);
 
       // Planned data items are removed
       const plannedDbResult = await db["writer"](
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       ).whereIn("data_item_id", dataItemIds);
       expect(plannedDbResult.length).to.equal(0);
 
@@ -764,13 +841,13 @@ describe("PostgresDatabase class", () => {
         await dbTestHelper.getAndDeleteNewDataItemDbResultsByIds(dataItemIds);
       expect(newDbResult.length).to.equal(3);
       expect(newDbResult[0].failed_bundles).to.equal(
-        previouslyFailedBundle + "," + bundleId
+        previouslyFailedBundle + "," + bundleId,
       );
 
       await Promise.all(
         dataItemIds.map((dataItemId) =>
-          dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, dataItemId)
-        )
+          dbTestHelper.cleanUpEntityInDb(tableNames.newDataItem, dataItemId),
+        ),
       );
     });
 
@@ -784,7 +861,7 @@ describe("PostgresDatabase class", () => {
 
       const failedBundles = Array.from(
         { length: retryLimitForFailedDataItems + 1 },
-        (_, i) => i.toString()
+        (_, i) => i.toString(),
       );
       await Promise.all(
         dataItemIds.map((dataItemId) =>
@@ -792,15 +869,15 @@ describe("PostgresDatabase class", () => {
             dataItemId,
             planId: "A great Unique plan ID",
             failedBundles,
-          })
-        )
+          }),
+        ),
       );
 
       await db.updateDataItemsToBeRePacked(dataItemIds, bundleId);
 
       // Planned data items are removed
       const plannedDbResult = await db["writer"](
-        tableNames.plannedDataItem
+        tableNames.plannedDataItem,
       ).whereIn("data_item_id", dataItemIds);
       expect(plannedDbResult.length).to.equal(0);
 
@@ -811,7 +888,7 @@ describe("PostgresDatabase class", () => {
         .returning("*");
       expect(failedDbResult.length).to.equal(3);
       expect(failedDbResult[0].failed_bundles).to.equal(
-        failedBundles.join(",") + "," + bundleId
+        failedBundles.join(",") + "," + bundleId,
       );
     });
   });
@@ -820,7 +897,7 @@ describe("PostgresDatabase class", () => {
     it("inserts a batch of new data items", async () => {
       const testIds = ["unique id one", "unique id two", "unique id three"];
       const dataItemBatch = testIds.map((dataItemId) =>
-        stubNewDataItem(dataItemId)
+        stubNewDataItem(dataItemId),
       );
 
       await db.insertNewDataItemBatch(dataItemBatch);
@@ -840,7 +917,7 @@ describe("PostgresDatabase class", () => {
         "unique skip insert id two",
       ];
       const dataItemBatch = testIds.map((dataItemId) =>
-        stubNewDataItem(dataItemId)
+        stubNewDataItem(dataItemId),
       );
 
       // insert the first data item into the planned data item table
@@ -863,7 +940,7 @@ describe("PostgresDatabase class", () => {
     it("deletes failed data items if they exist in the database", async () => {
       const testIds = ["unique failed data item id one"];
       const dataItemBatch = testIds.map((dataItemId) =>
-        stubNewDataItem(dataItemId)
+        stubNewDataItem(dataItemId),
       );
 
       // insert the first data item into the failed data item table
@@ -884,7 +961,7 @@ describe("PostgresDatabase class", () => {
 
       // Expect the failed data item to have been removed
       const failedDataItems = await db["writer"]<FailedDataItemDBResult>(
-        tableNames.failedDataItem
+        tableNames.failedDataItem,
       ).where({
         data_item_id: testIds[0],
       });
@@ -897,7 +974,7 @@ describe("PostgresDatabase class", () => {
         "unique deduplication id two",
       ];
       const dataItemBatch = testIds.map((dataItemId) =>
-        stubNewDataItem(dataItemId)
+        stubNewDataItem(dataItemId),
       );
 
       // Run batch insert with the same data item twice
@@ -917,7 +994,7 @@ describe("PostgresDatabase class", () => {
         "0000000000000000000000000000000000000000322",
       ];
       const dataItemBatch = testIds.map((dataItemId) =>
-        stubNewDataItem(dataItemId)
+        stubNewDataItem(dataItemId),
       );
 
       // Run the batch insert with the first data item, with two data items, and with all three data items concurrently
@@ -950,7 +1027,7 @@ describe("PostgresDatabase class", () => {
       });
 
       const failedDataItemDbResult = await db["writer"]<FailedDataItemDBResult>(
-        tableNames.failedDataItem
+        tableNames.failedDataItem,
       ).where({ data_item_id: dataItemId });
       expect(failedDataItemDbResult.length).to.equal(1);
       expect(failedDataItemDbResult[0].plan_id).to.equal("Unique plan ID");

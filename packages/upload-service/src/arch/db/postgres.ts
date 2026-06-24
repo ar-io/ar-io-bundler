@@ -156,35 +156,59 @@ export class PostgresDatabase implements Database {
     return;
   }
 
-  private dataItemTables = [
-    tableNames.newDataItem,
-    tableNames.plannedDataItem,
-    tableNames.permanentDataItems,
-    tableNames.failedDataItem,
-  ] as const;
-
   public async getExistingDataItemIds(
     dataItemIds: TransactionId[],
   ): Promise<Set<TransactionId>> {
-    const [
-      existingNewIds,
-      existingPlannedIds,
-      existingPermanentIds,
-      existingFailedIds,
-    ] = await Promise.all(
-      this.dataItemTables.map((tableName) =>
-        this.reader<DataItemDbResults>(tableName)
-          .whereIn(columnNames.dataItemId, dataItemIds)
-          .andWhereRaw(
-            `${columnNames.uploadedDate} > NOW() - interval '30 days'`,
-          )
-          .select(columnNames.dataItemId)
-          .then((results) => results.map((r) => r.data_item_id)),
-      ),
-    );
+    if (dataItemIds.length === 0) {
+      return new Set();
+    }
 
-    // Delete any failed data items, as this read is checking before a re-insert
-    if (existingFailedIds.length > 0) {
+    // Single round-trip: ONE tagged UNION ALL across the four data-item tables
+    // instead of four concurrent reader queries. Each upload's synchronous dedup
+    // check (POST /tx, before the 200) now uses ONE pooled reader connection
+    // rather than four — ~4x less reader-pool pressure per request, which is the
+    // ingest bottleneck observed under load (pool pressure, not CPU).
+    //
+    // Correctness does NOT depend on this read: the PK on the new_data_item
+    // insert is the real dedup guard (insertNewDataItem catches the unique
+    // violation and throws DataItemExistsWarning). This SELECT is purely a
+    // fast-reject optimization, so collapsing its shape is safe. The `source`
+    // literal is a compile-time constant (not user input), so inlining it avoids
+    // bound-parameter ordering quirks inside UNION ALL.
+    const taggedQuery = (table: string, source: "existing" | "failed") =>
+      this.reader<DataItemDbResults>(table)
+        .whereIn(columnNames.dataItemId, dataItemIds)
+        .andWhereRaw(`${columnNames.uploadedDate} > NOW() - interval '30 days'`)
+        .select(columnNames.dataItemId)
+        .select(this.reader.raw(`'${source}' as source`));
+
+    const rows = (await taggedQuery(
+      tableNames.newDataItem,
+      "existing",
+    ).unionAll([
+      taggedQuery(tableNames.plannedDataItem, "existing"),
+      taggedQuery(tableNames.permanentDataItems, "existing"),
+      taggedQuery(tableNames.failedDataItem, "failed"),
+    ])) as unknown as Array<{
+      data_item_id: TransactionId;
+      source: "existing" | "failed";
+    }>;
+
+    const existingIds = new Set<TransactionId>();
+    const failedIds = new Set<TransactionId>();
+    for (const row of rows) {
+      if (row.source === "failed") {
+        failedIds.add(row.data_item_id);
+      } else {
+        existingIds.add(row.data_item_id);
+      }
+    }
+
+    // Delete any failed data items so they can be re-inserted/retried (rare path
+    // — only then do we touch the writer). Matches prior behavior: failed matches
+    // are removed and NOT counted as existing.
+    if (failedIds.size > 0) {
+      const existingFailedIds = Array.from(failedIds);
       this.log.warn(
         "Data items already exist in database as failed! Removing from database to retry...",
         { existingFailedIds },
@@ -194,11 +218,7 @@ export class PostgresDatabase implements Database {
         .del();
     }
 
-    return new Set([
-      ...existingNewIds,
-      ...existingPlannedIds,
-      ...existingPermanentIds,
-    ]);
+    return existingIds;
   }
 
   public async insertNewDataItemBatch(
