@@ -292,8 +292,8 @@ I/O off the bundler MinIO that the bundling pipeline uses. Wiring:
   mode this replaces the 90-day MinIO rule (the FS 7-day tier is unchanged);
   `BUNDLER_CLEANUP_GRACE_DAYS` (default 0) adds an optional margin. Archive retention is
   native via a MinIO ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90).
-- Infra: `docker-compose.hdd.yml` (override, not started by default) adds
-  `minio-hdd` (:9002/:9003) + `minio-init-hdd`. Point the gateway's S3
+- Infra: `docker-compose.archive.yml` (override, not started by default) adds
+  `minio-archive` (:9002/:9003) + `minio-init-archive`. Point the gateway's S3
   `AWS_ENDPOINT` at the archive MinIO.
 
 ### Payment service integration

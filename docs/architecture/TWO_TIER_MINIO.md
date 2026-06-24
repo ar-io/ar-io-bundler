@@ -6,7 +6,7 @@
 > `objectStoreUtils.ts` / `architecture.ts`; the `archive-copy` BullMQ job
 > (`src/jobs/archive-copy.ts`, `allWorkers.ts`); enqueue points in
 > `newDataItemBatchInsert.ts`, `multiPartUploads.ts`, `prepare.ts`; the
-> post-permanence bundler sweep in `cleanup-fs.ts`; infra in `docker-compose.hdd.yml`.
+> post-permanence bundler sweep in `cleanup-fs.ts`; infra in `docker-compose.archive.yml`.
 >
 > **Open items resolved during implementation:** (1) the multipart-finalize path
 > does NOT funnel through `new-data-item`, so it enqueues its own `archive-copy`
@@ -143,7 +143,7 @@ Extend `src/jobs/cleanup-fs.ts` so that **when archive is enabled**:
 ### 4. Archive retention — MinIO ILM (infra, recommended)
 
 Apply a lifecycle expiry rule on the archive bucket so age-based cleanup is native and
-DB-independent, run from `minio-init-hdd`:
+DB-independent, run from `minio-init-archive`:
 `mc ilm rule add hdd/raw-data-items --expire-days ${ARCHIVE_RETENTION_DAYS:-90}`
 (scope by prefix if `bundle-payload` shares the bucket). Fallback if ILM is
 undesirable: a scheduled `cleanup-archive` worker scanning
@@ -152,11 +152,11 @@ deleting from `archiveObjectStore` (same scheduler pattern as `cleanup-fs`).
 
 ### 5. Infrastructure / IAC
 
-- **`docker-compose.yml`**: add `minio-hdd` + `minio-init-hdd` behind a compose
-  `profiles: ["hdd"]` (or a `docker-compose.hdd.yml` override) so the all-SSD dev box
+- **`docker-compose.yml`**: add `minio-archive` + `minio-init-archive` behind a compose
+  `profiles: ["hdd"]` (or a `docker-compose.archive.yml` override) so the all-SSD dev box
   never starts it. The archive service binds its volume to the 16 TiB mount, exposes a distinct
   port (e.g. 9002/9003), honors `MINIO_S3_BIND_IP` for the gateway network.
-  `minio-init-hdd` creates `raw-data-items`, sets anonymous download, creates the
+  `minio-init-archive` creates `raw-data-items`, sets anonymous download, creates the
   `gateway-readonly` user, and adds the ILM expiry rule.
 - **`.env.sample`**: document `ARCHIVE_S3_ENDPOINT`, `ARCHIVE_S3_ACCESS_KEY_ID`,
   `ARCHIVE_S3_SECRET_ACCESS_KEY`, `ARCHIVE_S3_FORCE_PATH_STYLE`,
@@ -217,15 +217,15 @@ collision it logs an error and leaves the archive **unwired** (feature stays
 inert) rather than half-wiring it.
 
 1. **Bring up the second MinIO** (ports 9002/9003; with `ARCHIVE_MINIO_DATA_PATH`
-   unset it uses a named Docker volume on the same SSD). `minio-init-hdd` creates
+   unset it uses a named Docker volume on the same SSD). `minio-init-archive` creates
    the `archive-data-items` bucket and the ILM expiry rule:
 
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d
    ```
 
 2. **Set `ARCHIVE_*` in `.env`** (distinct bucket name + region label). Match
-   `ARCHIVE_S3_ACCESS_KEY_ID`/`SECRET` to the `minio-hdd` root creds — if your
+   `ARCHIVE_S3_ACCESS_KEY_ID`/`SECRET` to the `minio-archive` root creds — if your
    `.env` already overrides `S3_ACCESS_KEY_ID`/`SECRET` away from the
    `minioadmin` defaults, set the archive ones (and the compose env) to whatever
    you want the second MinIO's root user to be, and keep them consistent:
@@ -259,7 +259,7 @@ inert) rather than half-wiring it.
    ```bash
    # archive-copy jobs run (Bull Board :3002 → queue 'upload-archive-copy')
    # objects land on the second MinIO:
-   docker exec ar-io-bundler-minio-hdd sh -c \
+   docker exec ar-io-bundler-minio-archive sh -c \
      'mc alias set hdd http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc ls --recursive hdd/archive-data-items'
    # expect raw-data-item/{id}; after a bundle prepares, bundle-payload/{planId}
    ```
@@ -271,7 +271,7 @@ inert) rather than half-wiring it.
 
    ```bash
    # present on the archive:
-   docker exec ar-io-bundler-minio-hdd sh -c \
+   docker exec ar-io-bundler-minio-archive sh -c \
      'mc alias set hdd http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc ls hdd/archive-data-items/raw-data-item/<id>'
    # gone from the bundler MinIO:
    docker exec ar-io-bundler-minio sh -c \
@@ -282,7 +282,7 @@ inert) rather than half-wiring it.
    add `-v`):
 
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.hdd.yml stop minio-hdd minio-init-hdd
+   docker compose -f docker-compose.yml -f docker-compose.archive.yml stop minio-archive minio-init-archive
    ```
 
    To return to single-MinIO behavior, unset the `ARCHIVE_*` vars and restart.

@@ -888,7 +888,7 @@ gateway.
   7-day tier is unchanged. The HEAD-gate against the archive store is the critical
   safety guard — the bundler copy is never deleted until the archive copy is confirmed present.
 - **Archive retention:** 90 days (`ARCHIVE_RETENTION_DAYS`, default 90) via a native MinIO
-  ILM expiry rule installed by `minio-init-hdd`.
+  ILM expiry rule installed by `minio-init-archive`.
 - **Gateway reads:** the gateway's S3 `AWS_ENDPOINT` points at the archive MinIO (port 9002)
   with the bundler MinIO removed from its retrieval sources. A brief pre-replication window
   falls through to the gateway's other retrieval methods (acceptable for an optimistic

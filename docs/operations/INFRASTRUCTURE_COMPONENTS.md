@@ -38,29 +38,29 @@ This document lists all infrastructure components and how they're managed by our
 > Database migrations are NOT containerized. They run on the host via
 > `yarn db:migrate` (invoked by `scripts/start.sh`) against both databases.
 
-### Optional: Two-Tier MinIO (archive cold) — `docker-compose.hdd.yml`
+### Optional: Two-Tier MinIO (archive cold) — `docker-compose.archive.yml`
 
 Opt-in, **not started by default**. Gated on `ARCHIVE_*` env. Brings up a second,
 archive MinIO that mirrors served content (raw data items + bundle payloads) and
 takes all AR.IO gateway reads, while the bundler MinIO above stays reserved for the
-ingest → bundle → post → seed → verify pipeline. Defined in the `docker-compose.hdd.yml`
+ingest → bundle → post → seed → verify pipeline. Defined in the `docker-compose.archive.yml`
 override (layered on top of the base compose file):
 
 6. **MinIO Archive** (ports 9002-9003)
-   - Container: `ar-io-bundler-minio-hdd`
+   - Container: `ar-io-bundler-minio-archive`
    - Archive S3 storage for gateway reads
    - Port 9002: S3 API · Port 9003: Web Console UI
    - Volume bind-mounted to the HDD via `ARCHIVE_MINIO_DATA_PATH`
    - Bucket: `raw-data-items` (holds `raw-data-item/{id}` + `bundle-payload/{planId}`)
 
 7. **MinIO Init Archive** (runs once, exits)
-   - Container: `ar-io-bundler-minio-init-hdd`
+   - Container: `ar-io-bundler-minio-init-archive`
    - Creates the archive bucket + `gateway-readonly` user, sets anonymous download, and
      installs a native ILM expiry rule (`ARCHIVE_RETENTION_DAYS`, default 90 days)
 
 Bring up both base + archive layers with:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d
 ```
 The async `archive-copy` BullMQ job streams bundler → archive; the gateway's S3 `AWS_ENDPOINT`
 should point at the archive MinIO (port 9002). Leave `ARCHIVE_*` unset to keep single-MinIO
@@ -180,8 +180,8 @@ Ensure no other services are using these ports:
 - 6381 (Redis Queues)
 - 9000 (MinIO S3 API)
 - 9001 (MinIO Console)
-- 9002 (MinIO Archive S3 API — only with the optional `docker-compose.hdd.yml`)
-- 9003 (MinIO Archive Console — only with the optional `docker-compose.hdd.yml`)
+- 9002 (MinIO Archive S3 API — only with the optional `docker-compose.archive.yml`)
+- 9003 (MinIO Archive Console — only with the optional `docker-compose.archive.yml`)
 
 ## Verification Commands
 

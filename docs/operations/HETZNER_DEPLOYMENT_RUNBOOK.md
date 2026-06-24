@@ -200,12 +200,12 @@ databases and grants `turbo_admin` on first Postgres start. `minio-init` creates
 
 **Optional: two-tier MinIO (bundler hot + archive cold).** For the SSD+HDD box shape (§1),
 opt into the archive read tier — gated on `ARCHIVE_*` env, **off by default**. The
-`docker-compose.hdd.yml` override (not started by default) adds `minio-hdd` (ports
+`docker-compose.archive.yml` override (not started by default) adds `minio-archive` (ports
 **9002/9003**, volume bind-mounted to the HDD via `ARCHIVE_MINIO_DATA_PATH`) and
-`minio-init-hdd` (creates the bucket + `gateway-readonly` user + the native ILM expiry
+`minio-init-archive` (creates the bucket + `gateway-readonly` user + the native ILM expiry
 rule, `ARCHIVE_RETENTION_DAYS` default 90 days). Bring up both layers with:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d
 ```
 An async `archive-copy` BullMQ job mirrors each `raw-data-item/{id}` and
 `bundle-payload/{planId}` bundler → archive; the gateway reads only from the archive MinIO and the

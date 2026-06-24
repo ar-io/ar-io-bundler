@@ -256,7 +256,7 @@ the `archive-copy` queue and takes all gateway reads, while the bundler MinIO is
 reserved for the bundling pipeline. The bundler copies are then reclaimed
 **post-permanence** (HEAD-gated on the confirmed archive copy) instead of on the
 90-day rule, and the archive enforces a native 90-day MinIO ILM expiry. Infra lives
-in `docker-compose.hdd.yml` (override). See
+in `docker-compose.archive.yml` (override). See
 `docs/architecture/TWO_TIER_MINIO.md`.
 
 **Cleanup is scheduled in-process** alongside bundle planning (see the job-scheduler note above): the `upload-workers` process registers the `cleanup-fs` schedule (`CLEANUP_SCHEDULE_CRON`, default `0 2 * * *`) at startup. `cron-trigger-cleanup.sh` / `trigger-cleanup.js` remain as manual on-demand triggers — no crontab entry required.
