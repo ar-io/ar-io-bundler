@@ -135,7 +135,7 @@ The fulfillment pipeline runs as BullMQ workers (Redis), defined in
 mode, single instance). Queue names are the `jobLabels` in `src/constants.ts`.
 Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 
-**11 queues** (the `allWorkers` array is the source of truth):
+**14 queues** (the `allWorkers` array is the source of truth):
 
 | Queue (`jobLabel`) | Handler (`src/jobs/`) | Concurrency |
 |--------------------|-----------------------|-------------|
@@ -150,14 +150,23 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 | `unbundle-bdi`     | `unbundle-bdi.ts`     | 2 |
 | `finalize-upload`  | `multiPartUploads.ts` (`finalizeMultipartUpload`) | 3 |
 | `cleanup-fs`       | `cleanup-fs.ts`       | 1 |
+| `redrive-posted`   | `redrive-posted.ts`   | 1 |
+| `refund-balance`   | `allWorkers.ts` (`TurboPaymentService.refundBalanceForData`) | 3 |
+| `broadcast-chunks` | `broadcast-chunks.ts` | `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10) |
 
 **Core bundle flow:** `new-data-item → plan-bundle → prepare-bundle → post-bundle
 → seed-bundle → verify-bundle`. `optical-post`, `put-offsets`, `finalize-upload`,
-`unbundle-bdi`, and `cleanup-fs` run alongside.
+`unbundle-bdi`, `cleanup-fs`, `redrive-posted`, `refund-balance`, and
+`broadcast-chunks` run alongside.
 
 - `plan.ts` groups pending data items into bundle plans by size/feature type.
 - `prepare.ts` assembles the ANS-104 bundle from object storage.
-- `post.ts` posts the bundle to Arweave; `seed.ts` seeds it; `verify.ts` confirms.
+- `post.ts` posts the bundle to Arweave; `seed.ts` prepares + stages the bundle's
+  chunks and enqueues a `broadcast-chunks` job per chunk; `verify.ts` confirms.
+- `broadcast-chunks.ts` POSTs one staged chunk to one of `AR_IO_NODE_URLS`
+  (shuffled, per-node retry + failover via `broadcastChunkToArioNode`), then
+  best-effort deletes the staged bytes. Unset `AR_IO_NODE_URLS` → single
+  `ARWEAVE_UPLOAD_NODE`. Metric `chunk_seed_post_total{endpoint,result}`.
 - `optical-post.ts` posts data-item headers to the AR.IO Gateway optical bridge
   for optimistic caching (`OPTICAL_BRIDGE_URL`).
 - `putOffsets.ts` writes data-item offsets to PostgreSQL (for retrieval).
@@ -181,10 +190,12 @@ and the default-off ones leave behavior unchanged until flipped on.
 | 3 | Bundle chunks (cache) | `ArweaveInterface.pushChunksToGatewayCache` (fired from `seed.ts`) | `CHUNK_CACHE_BRIDGE_ENABLED` == "true" (**OFF**) | `void`, swallows errors | `chunk_cache_bridge_total{result=cached\|error\|disabled}` |
 
 Design decisions:
-- **Seeding is separate from surface 3.** Seeding always targets a real Arweave
-  node (`ARWEAVE_UPLOAD_NODE`) so on-chain landing never depends on the gateway
-  supporting `/chunk` or being healthy. Surface 3 is an *additional* push to the
-  read gateway's `/chunk` cache (`ARWEAVE_GATEWAY`); it never affects seeding.
+- **Seeding is separate from surface 3.** Seeding broadcasts each chunk to real
+  AR.IO chunk-distributor nodes (`AR_IO_NODE_URLS`, via the `broadcast-chunks`
+  queue; unset → the single `ARWEAVE_UPLOAD_NODE`) so on-chain landing never
+  depends on the read gateway supporting `/chunk` or being healthy. Surface 3 is
+  an *additional* best-effort push to the read gateway's `/chunk` cache
+  (`ARWEAVE_GATEWAY`); it never affects seeding.
 - **Surface 2 URL hardening.** The endpoint is read from explicit
   `OPTIMISTIC_TX_BRIDGE_URL` first, falling back to deriving it from
   `OPTICAL_BRIDGE_URL` (`…/queue-data-item` → `…/queue-optimistic-tx`). If neither

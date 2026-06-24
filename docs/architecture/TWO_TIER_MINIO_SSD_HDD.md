@@ -102,7 +102,7 @@ one MinIO, current 90-day `cleanup-fs` semantics, gateway reads the single MinIO
   BullMQ retry/backoff.
 - `src/workers/allWorkers.ts`: `createWorker(jobLabels.archiveCopy, handler,
   { concurrency: ARCHIVE_COPY_WORKER_CONCURRENCY ?? 3 })`; add to `allWorkers`
-  (→ "12 queues").
+  (→ "15 queues").
 - **Enqueue points** (both gated on archive enabled):
   - `raw-data-item/{id}` → from the `new-data-item` handler
     (`src/jobs/newDataItemBatchInsert.ts`), the chokepoint every upload passes

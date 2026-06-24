@@ -17,7 +17,7 @@ This document lists all infrastructure components and how they're managed by our
    
 3. **Redis Queues** (port 6381)
    - Container: `ar-io-bundler-redis-queues`
-   - Used for: BullMQ job queues (12 queues)
+   - Used for: BullMQ job queues (14 queues)
    - Healthcheck: `redis-cli -p 6381 ping`
    
 4. **MinIO** (ports 9000-9001)

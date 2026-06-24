@@ -131,7 +131,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (13 queues)
+- Asynchronous job processing via BullMQ (14 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
@@ -187,17 +187,19 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 13 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "13 queues"):
+BullMQ with 14 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "14 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`
+
+**Per-chunk seed broadcast (`broadcast-chunks`):** `seed-bundle` no longer uploads a bundle's chunks to a single node. It prepares each chunk, stages the bytes in the object store (`chunks/{data_root}/{offset}`), and enqueues **one `broadcast-chunks` job per chunk**. The `broadcast-chunks` worker POSTs each chunk to **one of several AR.IO chunk-distributor nodes** (`AR_IO_NODE_URLS`, shuffled, per-node retry + failover); each distributor performs its own multi-tip broadcast, so reaching one healthy node lands the chunk. Unset `AR_IO_NODE_URLS` → falls back to the single `ARWEAVE_UPLOAD_NODE` (unchanged single-node behavior). One job per chunk = independent retry + parallelism (not a whole-bundle re-seed on a single chunk failure). Metric: `chunk_seed_post_total{endpoint,result}`. The TX header is posted separately via `ARWEAVE_GATEWAYS` (unrelated to chunk seeding).
 
 **Durable balance refunds (`refund-balance`):** when a reserved payment must be returned (e.g. the upload fails after a balance reserve) and the synchronous refund to the payment service fails on the critical path, the refund is enqueued here. The worker retries `refundBalanceForData` (`throwOnFailure: true` → BullMQ attempts/backoff) until it lands, so a wallet is always credited back even through an extended payment-service outage. Added in the "fast-fail payment reserve + durable refund retry" work (commit c0b92c5).
 
 **Posted-bundle recovery (`redrive-posted`, #40):** a bundle whose `seed-bundle` exhausts its retries used to be stranded forever in `posted_bundle`. The `redrive-posted` scheduler re-enqueues seeding for stale `posted_bundle` rows (`POSTED_STALE_THRESHOLD_MS`, default 30 min) and after `MAX_SEED_REDRIVES` (default 5) demotes the bundle to `failed_bundle` (items repacked to `new_data_item`), emitting `posted_bundle_failed_to_seed_total`. Attempt counts live in the `posted_bundle_redrive` table.
 
-**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). Only **four** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
-- `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3)
+**Workers**: PM2-managed in `packages/upload-service/src/workers/allWorkers.ts` (fork mode - single instance). **Five** queues have env-tunable concurrency (the rest are hardcoded in `allWorkers.ts`):
+- `PLAN_WORKER_CONCURRENCY` (default **1** — the plan handler is a self-draining loop, and the internal scheduler fires plan-bundle on a wall-clock tick, so concurrency 1 is the overlap guard; raising it re-introduces overlap), `PREPARE_WORKER_CONCURRENCY` (default 3), `POST_WORKER_CONCURRENCY` (default 2), `VERIFY_WORKER_CONCURRENCY` (default 3), `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (default 10 — chunks are small + independent, so this is the highest)
 - Hardcoded: seed=2, put-offsets=5, new-data-item=5, optical-post=5, unbundle-bdi=2, finalize-upload=3, cleanup-fs=1, redrive-posted=1, refund-balance=3
 
 **Other Phase 1 scale knobs** (from the "scale fixes for production load" work): DB pool `DB_POOL_MIN`/`DB_POOL_MAX` (5/50, `src/arch/db/knexConfig.ts`); server timeouts `REQUEST_TIMEOUT_MS`/`KEEPALIVE_TIMEOUT_MS`/`HEADERS_TIMEOUT_MS` (`src/server.ts`); `MAX_CACHE_DATA_ITEM_SIZE` (100MB).
@@ -299,6 +301,14 @@ AR_IO_ADMIN_KEY=<your-key>
 
 # Optimistic gateway-warming pushes — all best-effort, default OFF (#42/optical):
 # OPTIMISTIC_TX_BRIDGE_ENABLED=false  # OPTIMISTIC_TX_BRIDGE_URL=<override>  # CHUNK_CACHE_BRIDGE_ENABLED=false
+
+# Chunk-seed distributor failover list (comma-separated). The broadcast-chunks
+# worker POSTs each chunk to ONE of these AR.IO nodes (shuffled + failover); use
+# PRIVATE IPs (plaintext POSTs), /chunk is on the gateway/envoy port (:3000).
+# Unset → single ARWEAVE_UPLOAD_NODE (unchanged). Tunables:
+# BROADCAST_CHUNKS_WORKER_CONCURRENCY (10), CHUNK_POST_MAX_TRIES (3),
+# CHUNK_POST_RETRY_DELAY_MS (2000), CHUNK_POST_TIMEOUT_MS (60000).
+# AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000
 
 # X402 (USDC payments)
 X402_PAYMENT_ADDRESS=<ethereum-address>
