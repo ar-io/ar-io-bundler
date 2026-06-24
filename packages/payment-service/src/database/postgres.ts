@@ -1391,10 +1391,14 @@ export class PostgresDatabase implements Database {
       winstonCreditAmount,
       changeId,
       auditChangeReasonOnUpdate: changeReason,
+      // Only a gifted payment creates a "gifted" account; both "payment" (Stripe)
+      // and "crypto_payment" are normal account creations. (The previous
+      // "payment" ? ... : "gifted_account_creation" ternary mislabeled the first
+      // crypto credit to a brand-new wallet as a gifted account creation.)
       auditChangeReasonOnInsert:
-        changeReason === "payment"
-          ? "account_creation"
-          : "gifted_account_creation",
+        changeReason === "gifted_payment"
+          ? "gifted_account_creation"
+          : "account_creation",
     });
   }
 

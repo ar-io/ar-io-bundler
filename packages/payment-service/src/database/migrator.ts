@@ -929,6 +929,37 @@ export class PaymentReceiptUniqueQuoteMigrator extends Migrator {
     return this.operate({
       name: "add unique constraint on payment_receipt.top_up_quote_id",
       operation: async () => {
+        // Guard: the old check-then-insert race could have produced multiple
+        // payment_receipt rows for one top_up_quote_id (esp. in legacy data
+        // imported during cutover). Adding the unique constraint on such data
+        // would otherwise fail with a cryptic Postgres error mid-migration.
+        // We deliberately do NOT auto-delete here — these are money records, and
+        // which duplicate to keep (and whether a refund/chargeback is owed) is an
+        // operator decision made deliberately at cutover, not silently by a
+        // migration. Fail loudly with the offending IDs instead. The whole
+        // migration runs in one transaction, so this throw rolls back cleanly.
+        const duplicates = await this.knex(tableNames.paymentReceipt)
+          .select(columnNames.topUpQuoteId)
+          .count<{ [k: string]: string | number }[]>("* as count")
+          .groupBy(columnNames.topUpQuoteId)
+          .havingRaw("count(*) > 1");
+
+        if (duplicates.length > 0) {
+          const sample = duplicates
+            .slice(0, 10)
+            .map(
+              (d) => (d as Record<string, unknown>)[columnNames.topUpQuoteId],
+            )
+            .join(", ");
+          throw new Error(
+            `Cannot add UNIQUE(${tableNames.paymentReceipt}.${columnNames.topUpQuoteId}): ` +
+              `${duplicates.length} top_up_quote_id value(s) have multiple receipts ` +
+              `(e.g. ${sample}). Resolve these duplicates before applying this ` +
+              `migration (they indicate a pre-fix double-credit; decide per-row ` +
+              `which receipt to keep and whether a refund is owed).`,
+          );
+        }
+
         await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
           t.unique([columnNames.topUpQuoteId]);
         });
