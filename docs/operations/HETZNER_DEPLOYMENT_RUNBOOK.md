@@ -244,12 +244,15 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 - **MinIO/S3:** `S3_ENDPOINT=http://localhost:9000`, rotated `S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`,
   `S3_FORCE_PATH_STYLE=true`, `DATA_ITEM_BUCKET=raw-data-items`, `BACKUP_DATA_ITEM_BUCKET=backup-data-items`.
 - **Optional HDD archive tier (§5/§13; leave unset for single-MinIO behavior):**
-  `ARCHIVE_DATA_ITEM_BUCKET=raw-data-items`, `ARCHIVE_S3_ENDPOINT=http://localhost:9002`,
+  `ARCHIVE_DATA_ITEM_BUCKET=archive-data-items`, `ARCHIVE_S3_ENDPOINT=http://localhost:9002`,
   `ARCHIVE_S3_ACCESS_KEY_ID`/`ARCHIVE_S3_SECRET_ACCESS_KEY`, `ARCHIVE_S3_FORCE_PATH_STYLE=true`,
   `ARCHIVE_COPY_WORKER_CONCURRENCY` (default 3), `ARCHIVE_RETENTION_DAYS` (default 90),
   `SSD_CLEANUP_GRACE_DAYS` (default 0), `ARCHIVE_MINIO_DATA_PATH` (HDD bind mount, used by compose).
-  🔴 **`ARCHIVE_BUCKET_REGION` MUST be distinct** from `S3_REGION`/`DATA_ITEM_BUCKET_REGION`
-  (e.g. `archive-hdd`) — a shared region label makes the archive S3 client clobber the SSD client.
+  🔴 **`ARCHIVE_DATA_ITEM_BUCKET` MUST be distinct** from `DATA_ITEM_BUCKET`/`BACKUP_DATA_ITEM_BUCKET`
+  (e.g. `archive-data-items`), **and `ARCHIVE_BUCKET_REGION` MUST be distinct** from
+  `S3_REGION`/`DATA_ITEM_BUCKET_REGION` (e.g. `archive-hdd`) — object-store routing is keyed by both the
+  bucket name and the region label, so a shared name or region makes the archive S3 client clobber the SSD
+  client (the bundler refuses to wire the archive and logs an error in that case).
 - **Wallets:** `TURBO_JWK_FILE=/opt/ar-io-bundler/wallet.json`, `RAW_DATA_ITEM_JWK_FILE=/opt/ar-io-bundler/rawWallet.json`.
 - **Auth:** `PRIVATE_ROUTE_SECRET`, `JWT_SECRET` (both set, matching across services).
 - **Inter-service:** `PAYMENT_SERVICE_BASE_URL=localhost:4001` (NO protocol), `PAYMENT_SERVICE_PROTOCOL=http`.
@@ -417,7 +420,7 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
      copies to reclaim the small/fast SSD.
      **Rollout order (do not skip steps):** (1) stand up the HDD MinIO (§5 compose override); (2) set the
      `ARCHIVE_*` vars (§7) and restart `upload-workers`; (3) confirm the `archive-copy` queue is populating the
-     HDD (Bull Board + `mc ls hdd/raw-data-items`) **before** touching the gateway; (4) repoint the gateway
+     HDD (Bull Board + `mc ls hdd/archive-data-items`) **before** touching the gateway; (4) repoint the gateway
      `AWS_ENDPOINT` to the HDD MinIO; (5) only then confirm the SSD post-verify cleanup is reclaiming space.
 4. **Bundle seeding (chunks) →** `AR_IO_NODE_URLS` (comma-separated). The `broadcast-chunks` worker POSTs each chunk to **one of** these dedicated AR.IO chunk-distributor nodes (shuffle + per-node retry + failover); each distributor fans the chunk out to Arweave tip nodes, so reaching one healthy node lands it. Use the distributors' **private IPs** — chunk POSTs are plaintext; `/chunk` is served on the gateway/envoy port (`:3000`). Example: `AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000`.
    - **Single-node fallback:** if `AR_IO_NODE_URLS` is **unset**, chunk seeding falls back to the single `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
