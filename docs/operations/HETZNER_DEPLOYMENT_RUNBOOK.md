@@ -270,6 +270,14 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
   `X402_FEE_PERCENT`, and **`UPLOAD_SERVICE_PUBLIC_URL`** = the real public HTTPS URL (not localhost) — x402 signing depends on it.
 - **Prod basics:** `NODE_ENV=production`, `REQUEST_TIMEOUT_MS=600000` (10 GiB uploads), worker concurrencies,
   `API_INSTANCES`/`WORKER_INSTANCES`, `RATE_LIMIT_*`, `OTEL_*`, `PROMETHEUS_PORT=9090`.
+- **Slack notifications (optional but recommended):** one Slack **bot token** (`chat.postMessage`, not a
+  webhook) drives both ops alerts and payment notifications. Set `SLACK_OAUTH_TOKEN` (xoxb), then:
+  `SLACK_ALERT_CHANNEL_ID` + `ALERTS_ENABLED=true` for the admin-dashboard **health alerter** (mirrors the
+  dashboard health rollup; tune with `ALERT_CHECK_INTERVAL_MS`/`ALERT_REMINDER_MS`), and
+  `SLACK_TURBO_TOP_UP_CHANNEL_ID` for **top-up notifications** (crypto + x402 USDC). ⚠️ **invite the bot to each
+  channel** (`/invite @YourBot`) or posts fail with `not_in_channel`. Verify with
+  `node packages/admin-service/admin/notifier/test-slack.js both` before go-live. (Top-ups are skipped only when
+  `NODE_ENV=dev`, so prod posts them automatically; Stripe notifies via Stripe directly.)
 - **Vertical-integration + pricing vars (from backport lanes — defaults preserve old behavior):**
   - `PRICE_ORACLE_GATEWAY_URL` — Arweave byte-price oracle gateway (Lane 3; default `https://arweave.net/price`).
     **Set this to your own gateway** (e.g. `http://localhost:3000/price` / `https://turbo-gateway.com/price`).
@@ -641,6 +649,10 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
   Alert on queue depth (BullMQ), worker liveness (esp. payment-workers + upload-workers), DB pool saturation,
   disk usage (MinIO/Postgres growth), and post/verify failure rates.
 - **Queues:** Bull Board / admin-dashboard at `:3002` (admin-only).
+- **Alerts:** the admin-dashboard's built-in **Slack health alerter** (`ALERTS_ENABLED=true` +
+  `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID`) pushes the dashboard's health-rollup verdict to Slack
+  (service/infra down, pipeline/wallet/payment/queue issues), with anti-spam reminders + resolved messages. See
+  §7 for setup; complements (does not replace) Prometheus/Grafana alerting.
 - **Logs:** install `pm2-logrotate` (PM2 logs) and logrotate for cron logs; the dev box rotates neither.
 
 ---
@@ -670,6 +682,7 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 - [ ] Vertical integration verified against both gateways (optical + MinIO retrieval)
 - [ ] Backport lanes 1–5 integrated, full build + integration tests green
 - [ ] Monitoring + log rotation live
+- [ ] Slack alerter configured (`ALERTS_ENABLED=true`) + top-up channel set; bot invited to channels and a test message delivered (`test-slack.js both`)
 
 ---
 

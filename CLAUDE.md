@@ -138,6 +138,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 **Admin Service** (`packages/admin-service/`):
 - Plain-JS (CommonJS) Koa app — more than Bull Board: a custom admin dashboard (`admin/`) with a stats collector and query modules (`bundleStats.js`, `x402Stats.js`, `uploadStats.js`, `systemHealth.js`) plus an HTML/CSS/JS frontend under `admin/public/`, behind auth + rate-limit middleware
 - Embeds Bull Board (`@bull-board/koa`) for queue monitoring at port 3002
+- Opt-in **Slack health alerter** (`admin/alerter.js` + `admin/notifier/slack.js`, `ALERTS_ENABLED=true`): consumes the dashboard's health rollup (`stats.health`) and posts matching ops alerts to Slack via a bot token, with an anti-spam fire-once/remind/resolve state machine. Test with `node packages/admin-service/admin/notifier/test-slack.js both`. Setup in `docs/operations/ADMIN_GUIDE.md` → Alerting.
 
 ### Dependency Injection Pattern
 

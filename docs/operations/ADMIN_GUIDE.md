@@ -992,7 +992,52 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 
 ### Alerting
 
-**Recommended alerts:**
+#### Built-in Slack health alerter (admin-dashboard)
+
+The `admin-dashboard` process ships an **opt-in Slack alerter** that mirrors the
+dashboard's health rollup — so Slack alerts match exactly what the dashboard
+shows (pipeline/wallet/payments/storage/schedulers/recent queue failures), plus
+raw Postgres/Redis/process-down liveness. It is **high-signal/low-noise**: each
+issue alerts once, reminds at most every `ALERT_REMINDER_MS` while it persists,
+and sends a single ✅ resolved message when it clears.
+
+It uses a Slack **bot token** (`chat.postMessage`), not an incoming webhook, so
+one credential routes both ops alerts and payment notifications to different
+channels by ID. **The bot must be invited to each channel** (`/invite @YourBot`)
+or posts fail with `not_in_channel`.
+
+**Setup:**
+1. Create a Slack app with the `chat:write` (and `chat:write.customize`) bot
+   scopes, install it, and copy the **Bot User OAuth Token** (`xoxb-…`).
+2. Invite the bot to your alert + top-up channels; copy each **Channel ID**
+   (`C0…`, via channel → *View details*).
+3. Set in `.env` and restart the admin-dashboard:
+
+```bash
+SLACK_OAUTH_TOKEN=xoxb-...            # shared by alerter + payment notifications
+SLACK_ALERT_CHANNEL_ID=C0...          # ops/health alerts
+ALERTS_ENABLED=true                   # master switch (default off)
+# Optional tuning:
+ALERT_CHECK_INTERVAL_MS=60000         # how often to evaluate (default 60s)
+ALERT_REMINDER_MS=1800000             # re-alert cadence while still bad (default 30m)
+```
+
+Alert **thresholds** are the dashboard rollup's — tuned via the same
+`ADMIN_*` / `POSTED_*` vars the dashboard uses, not separate alert knobs.
+
+**Verify delivery** before relying on it:
+```bash
+node packages/admin-service/admin/notifier/test-slack.js both
+```
+Posts a test message to the alert and top-up channels and prints the exact Slack
+result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
+
+> **Payment top-up notifications** reuse the same bot token. Set
+> `SLACK_TURBO_TOP_UP_CHANNEL_ID` and both crypto and x402 (USDC) top-ups post to
+> that channel automatically (skipped only when `NODE_ENV=dev`). Stripe payments
+> notify via Stripe directly. See the **Payments & Credits** section.
+
+**Recommended alerts (what the built-in alerter already covers):**
 1. **Service down** - Health check failure
 2. **Queue backlog** - >1000 jobs pending
 3. **Failed uploads** - Error rate >5%
@@ -1001,7 +1046,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 6. **Worker failures** - Worker restarts >5/hour
 7. **Bundle posting failures** - >10% failure rate
 
-**Example: Uptime monitoring**
+**Example: external uptime monitoring (complements the Slack alerter)**
 ```bash
 # Add to cron (check every 5 minutes)
 */5 * * * * curl -fsS --retry 3 http://localhost:3001/health || echo "Upload service down!" | mail -s "Alert: Upload Service Down" admin@example.com

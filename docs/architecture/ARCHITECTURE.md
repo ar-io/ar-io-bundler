@@ -259,6 +259,8 @@ Located in `infrastructure/pm2/ecosystem.config.js`:
 There are **5** PM2 processes: `payment-service`, `upload-api` (cluster),
 `payment-workers`, `upload-workers`, `admin-dashboard` (fork). There is no
 separate `bull-board` process — Bull Board is embedded in `admin-dashboard`.
+The `admin-dashboard` also computes a health rollup and, when `ALERTS_ENABLED`,
+runs an opt-in Slack alerter that pushes that verdict to Slack (`chat.postMessage`).
 
 **Execution Modes**:
 - **Cluster**: APIs leverage multiple CPU cores, load balancing across instances
