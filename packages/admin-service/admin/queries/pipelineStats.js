@@ -119,6 +119,12 @@ async function getPipelineStats(db, opts = {}) {
       inFlightBundles: newBundles.count + plannedBundles.count + postedBundles.count + seededBundles.count,
       stuckPostedBundles: stuckPosted,
       stuckPostedThresholdSec: stuckPostedAgeSec,
+      // Bundles seeded but not yet permanent. Aging here = the verify stage isn't
+      // confirming permanence (the poison-batch case): the row stays in
+      // seeded_bundle and re-fails every verify run instead of moving to
+      // permanent_bundle. (oldest seeded_date age, UTC-correct from the SQL above.)
+      seededBundles: seededBundles.count,
+      seededOldestAgeSec: seededBundles.oldestAgeSec,
       failedBundles: failedBundles.count,
       failedDataItems: failedItems.count,
     },
