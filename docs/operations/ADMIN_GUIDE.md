@@ -458,7 +458,7 @@ The bundler runs 5 PM2 processes across the services (canonical config:
 | `payment-service` | 2 | cluster | Payment API |
 | `payment-workers` | 1 | fork | Background jobs (pending tx, credits) |
 | `upload-api` | 2 | cluster | Upload API |
-| `upload-workers` | 1 | fork | Bundling pipeline (12 queues) |
+| `upload-workers` | 1 | fork | Bundling pipeline (14 queues) |
 | `admin-dashboard` | 1 | fork | Admin stats + embedded Bull Board (:3002) |
 
 ### Quick Commands
@@ -832,12 +832,12 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 - Job delays
 - Worker health
 
-**12 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
+**14 Upload Service Queues** (source of truth: `allWorkers` in `packages/upload-service/src/workers/allWorkers.ts`):
 1. `new-data-item` - New uploads
 2. `plan-bundle` - Bundle planning
 3. `prepare-bundle` - Bundle preparation
 4. `post-bundle` - Arweave posting
-5. `seed-bundle` - Seed bundle to the network
+5. `seed-bundle` - Stage chunks + enqueue per-chunk broadcast (AR_IO_NODE_URLS)
 6. `verify-bundle` - Post/permanence verification
 7. `optical-post` - AR.IO Gateway optimistic caching
 8. `unbundle-bdi` - Nested (BDI) bundle processing
@@ -845,6 +845,8 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 10. `finalize-upload` - Multipart upload finalization
 11. `cleanup-fs` - Tiered filesystem/object cleanup
 12. `redrive-posted` - Redrive posted-but-unverified bundles
+13. `refund-balance` - Durable balance-refund retry
+14. `broadcast-chunks` - Broadcast each chunk to an AR.IO distributor (AR_IO_NODE_URLS, shuffle + failover)
 
 **Payment Service Queues:**
 1. `pending-tx` - Cryptocurrency payment monitoring

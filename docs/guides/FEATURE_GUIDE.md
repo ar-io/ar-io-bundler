@@ -46,7 +46,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 **Enterprise Features:**
 - ✅ **Microservice Architecture** - Separate payment and upload services
 - ✅ **Horizontal Scaling** - PM2 cluster mode for APIs
-- ✅ **Async Job Processing** - 12 BullMQ queues for fulfillment pipeline
+- ✅ **Async Job Processing** - 14 BullMQ queues for fulfillment pipeline
 - ✅ **Circuit Breakers** - Resilience against service failures
 - ✅ **Comprehensive Monitoring** - Prometheus metrics, Winston logging, OpenTelemetry tracing
 - ✅ **Multi-Region Support** - PostgreSQL, Redis, MinIO S3-compatible storage
@@ -97,7 +97,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 │  │                    Infrastructure Layer                               │  │
 │  │                                                                       │  │
 │  │  PostgreSQL (2 DBs)  •  Redis (Cache + Queues)  •  MinIO (S3)       │  │
-│  │  BullMQ (12 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
+│  │  BullMQ (14 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │                                      │                                       │
@@ -122,8 +122,8 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 - **Responsibilities:** Data upload, ANS-104 bundling, Arweave posting, optical caching
 - **Database:** `upload_service` (PostgreSQL)
 - **API Port:** 3001
-- **Workers:** 12 asynchronous job processors
-- **Queues:** 12 BullMQ queues
+- **Workers:** 14 asynchronous job processors
+- **Queues:** 14 BullMQ queues
 
 **Communication Pattern:** Upload Service → Payment Service (HTTP REST with JWT authentication)
 
@@ -1102,7 +1102,7 @@ SKIP_BALANCE_CHECKS=false  # Development only, bypasses all checks
 4. **upload-workers** (Fork, 1 instance) **CRITICAL**
    - Mode: Fork (MUST be 1 to avoid duplicate job execution)
    - Script: `./packages/upload-service/lib/workers/allWorkers.js`
-   - Workers: 12 BullMQ workers
+   - Workers: 14 BullMQ workers
    - Kill timeout: 30 seconds (graceful shutdown)
 
 5. **admin-dashboard** (Fork, 1 instance)
@@ -1192,11 +1192,11 @@ yarn db:migrate:make NAME # Create new migration
 
 **14 Total Queues:**
 
-**Upload Service (12 queues)** — labels per `jobLabels` in `packages/upload-service/src/constants.ts`:
+**Upload Service (14 queues)** — labels per `jobLabels` in `packages/upload-service/src/constants.ts`:
 1. `plan-bundle` - Bundle planning (concurrency: 1)
 2. `prepare-bundle` - Bundle assembly (concurrency: 3)
 3. `post-bundle` - Arweave posting (concurrency: 2)
-4. `seed-bundle` - Chunk seeding (concurrency: 2)
+4. `seed-bundle` - Stage chunks + enqueue per-chunk broadcast (concurrency: 2)
 5. `verify-bundle` - Verification (concurrency: 3)
 6. `put-offsets` - Offset storage (concurrency: 5)
 7. `new-data-item` - Batch DB insert (concurrency: 5)
@@ -1205,6 +1205,8 @@ yarn db:migrate:make NAME # Create new migration
 10. `finalize-upload` - Multipart finalization (concurrency: 3)
 11. `cleanup-fs` - Filesystem cleanup (concurrency: 1)
 12. `redrive-posted` - Redrive posted-but-unverified bundles
+13. `refund-balance` - Durable balance-refund retry (concurrency: 3)
+14. `broadcast-chunks` - Broadcast each chunk to an AR.IO distributor / `AR_IO_NODE_URLS` (concurrency: 10)
 
 **Payment Service (2 queues):**
 1. `pending-tx` - Crypto payment confirmation
@@ -1857,9 +1859,9 @@ Upload Complete
 │   - Post to Arweave gateway                                   │
 │   - Post to AR.IO admin queue (priority)                      │
 │   - Record USD/AR conversion rate                             │
-│ • seedBundle: Upload chunks (5 min timeout)                   │
-│   - Stream bundle for chunking                                │
-│   - Upload chunks via Arweave SDK                             │
+│ • seedBundle: stage + enqueue chunks (5m timeout)             │
+│   - Stream bundle, slice into chunks                          │
+│   - Stage each chunk -> broadcast-chunks job                  │
 └───────────────────────────────────────────────────────────────┘
     ↓
 ┌───────────────────────────────────────────────────────────────┐
@@ -2332,7 +2334,7 @@ http://localhost:9001           # MinIO Console
 | | PostgreSQL (2 databases) | ✅ Supported |
 | | Redis (cache + queues) | ✅ Supported |
 | | MinIO S3-compatible storage | ✅ Supported |
-| | BullMQ (14 queues: 12 upload + 2 payment) | ✅ Supported |
+| | BullMQ (16 queues: 14 upload + 2 payment) | ✅ Supported |
 | **Monitoring** | Winston logging | ✅ Supported |
 | | Prometheus metrics | ✅ Supported |
 | | OpenTelemetry tracing | ✅ Optional |

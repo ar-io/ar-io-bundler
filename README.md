@@ -651,7 +651,7 @@ Accepts data item uploads and manages asynchronous fulfillment of data delivery 
 
 **Features:**
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (12 queues)
+- Asynchronous job processing via BullMQ (14 queues)
 - ANS-104 bundle creation and posting
 - MinIO object storage integration
 - PostgreSQL offset storage for data retrieval

@@ -147,6 +147,25 @@ export const arweaveUploadNode = new URL(
 );
 
 /**
+ * Dedicated AR.IO chunk-distributor nodes. The `broadcast-chunks` worker posts
+ * each chunk to ONE of these (shuffled, with per-node retry + failover); each
+ * node performs its own multi-tip broadcast, so reaching one healthy node lands
+ * the chunk. Comma-separated via `AR_IO_NODE_URLS` (match prod). Unset → falls
+ * back to the single `ARWEAVE_UPLOAD_NODE` (today's single-node behavior).
+ */
+export const arIoNodeUrls: URL[] = (() => {
+  const raw = process.env.AR_IO_NODE_URLS;
+  if (!raw || raw.trim() === "") {
+    return [arweaveUploadNode];
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => new URL(s));
+})();
+
+/**
  * Optimistic surfaces — three independent, strictly best-effort pushes that warm
  * the AR.IO gateway BEFORE a bundle mines. None of them may block or fail the
  * upload or the on-chain bundle post. Each is its own env gate (see
@@ -425,6 +444,7 @@ export const jobLabels = {
   putOffsets: "put-offsets",
   redrivePosted: "redrive-posted",
   refundBalance: "refund-balance",
+  broadcastChunks: "broadcast-chunks",
 } as const;
 export type JobLabel = (typeof jobLabels)[keyof typeof jobLabels];
 

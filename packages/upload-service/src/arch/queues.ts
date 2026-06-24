@@ -17,7 +17,7 @@
 import { jobLabels } from "../constants";
 import { UnbundleBDIMessageBody } from "../jobs/unbundle-bdi";
 import { PlanId, PostedNewDataItem } from "../types/dbTypes";
-import { DataItemOffsetsInfo, UploadId } from "../types/types";
+import { ChunkHeader, DataItemOffsetsInfo, UploadId } from "../types/types";
 import { DatedSignedDataItemHeader } from "../utils/opticalUtils";
 import { getQueue } from "./queues/config";
 
@@ -52,6 +52,7 @@ type QueueTypeToMessageType = {
   [jobLabels.cleanupFs]: Record<string, never>;
   [jobLabels.redrivePosted]: Record<string, never>;
   [jobLabels.refundBalance]: RefundBalanceMessage;
+  [jobLabels.broadcastChunks]: ChunkHeader;
 };
 
 // Durable refund retry payload. winstonCredits is the Winston value serialized
