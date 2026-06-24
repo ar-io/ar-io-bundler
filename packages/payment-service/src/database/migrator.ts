@@ -84,7 +84,7 @@ export class PilotReferralMigrator extends Migrator {
               .integer(columnNames.minimumPaymentAmount)
               .notNullable()
               .defaultTo(0);
-          }
+          },
         ),
     });
   }
@@ -98,7 +98,7 @@ export class PilotReferralMigrator extends Migrator {
           (table) => {
             table.dropColumn(columnNames.maxUses);
             table.dropColumn(columnNames.minimumPaymentAmount);
-          }
+          },
         ),
     });
   }
@@ -120,7 +120,7 @@ export class MaxDiscountMigrator extends Migrator {
               .integer(columnNames.maximumDiscountAmount)
               .notNullable()
               .defaultTo(0);
-          }
+          },
         );
         const pilot50DbInsert: SingleUseCodePaymentCatalogDBInsert = {
           adjustment_name: "Pilot-50 2023 Promo Code",
@@ -134,7 +134,7 @@ export class MaxDiscountMigrator extends Migrator {
           maximum_discount_amount: 10_00,
         };
         await this.knex(
-          tableNames.singleUseCodePaymentAdjustmentCatalog
+          tableNames.singleUseCodePaymentAdjustmentCatalog,
         ).insert(pilot50DbInsert);
       },
     });
@@ -148,7 +148,7 @@ export class MaxDiscountMigrator extends Migrator {
           tableNames.singleUseCodePaymentAdjustmentCatalog,
           (table) => {
             table.dropColumn(columnNames.maximumDiscountAmount);
-          }
+          },
         );
         await this.knex(tableNames.singleUseCodePaymentAdjustmentCatalog)
           .where({ code_value: "PILOT50" })
@@ -178,8 +178,8 @@ export class GiftByEmailMigrator extends Migrator {
           this.topUpQuoteTableNames.map((table) =>
             this.knex.schema.alterTable(table, (table) => {
               table.string(columnNames.giftMessage).nullable();
-            })
-          )
+            }),
+          ),
         );
 
         await this.knex.schema.createTable(
@@ -198,7 +198,7 @@ export class GiftByEmailMigrator extends Migrator {
             table.string(columnNames.giftedWincAmount).notNullable();
             table.string(columnNames.giftMessage).nullable();
             table.string(columnNames.senderEmail).nullable();
-          }
+          },
         );
 
         await this.knex.schema.createTableLike(
@@ -210,7 +210,7 @@ export class GiftByEmailMigrator extends Migrator {
               .notNullable()
               .defaultTo(this.knex.fn.now());
             table.string(columnNames.destinationAddress).notNullable();
-          }
+          },
         );
       },
     });
@@ -224,8 +224,8 @@ export class GiftByEmailMigrator extends Migrator {
           this.topUpQuoteTableNames.map((table) =>
             this.knex.schema.alterTable(table, (table) => {
               table.dropColumn(columnNames.giftMessage);
-            })
-          )
+            }),
+          ),
         );
 
         await this.knex.schema.dropTable(tableNames.unredeemedGift);
@@ -263,7 +263,7 @@ export class LimitedSubsidyEventMigrator extends Migrator {
               .string(columnNames.limitationIntervalUnit)
               .notNullable()
               .defaultTo("hour"); // 24 hours
-          }
+          },
         );
       },
     });
@@ -280,7 +280,7 @@ export class LimitedSubsidyEventMigrator extends Migrator {
             table.dropColumn(columnNames.wincLimitation);
             table.dropColumn(columnNames.limitationInterval);
             table.dropColumn(columnNames.limitationIntervalUnit);
-          }
+          },
         );
       },
     });
@@ -316,7 +316,7 @@ export class ArPaymentMigrator extends Migrator {
           tableNames.pendingPaymentTransaction,
           (table) => {
             this.pendingPaymentTables(table);
-          }
+          },
         );
 
         await this.knex.schema.createTable(
@@ -329,7 +329,7 @@ export class ArPaymentMigrator extends Migrator {
               .notNullable()
               .defaultTo(this.knex.fn.now());
             table.string(columnNames.failedReason).notNullable();
-          }
+          },
         );
 
         await this.knex.schema.createTable(
@@ -344,7 +344,7 @@ export class ArPaymentMigrator extends Migrator {
               .notNullable()
               .defaultTo(this.knex.fn.now())
               .index();
-          }
+          },
         );
       },
     });
@@ -355,13 +355,13 @@ export class ArPaymentMigrator extends Migrator {
       name: "rollback from crypto payment",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          tableNames.pendingPaymentTransaction
+          tableNames.pendingPaymentTransaction,
         );
         await this.knex.schema.dropTableIfExists(
-          tableNames.failedPaymentTransaction
+          tableNames.failedPaymentTransaction,
         );
         await this.knex.schema.dropTableIfExists(
-          tableNames.creditedPaymentTransaction
+          tableNames.creditedPaymentTransaction,
         );
       },
     });
@@ -397,7 +397,7 @@ export class DelegatedPaymentsMigrator extends Migrator {
           tableNames.delegatedPaymentApproval,
           (table) => {
             this.delegatedPaymentTables(table);
-          }
+          },
         );
 
         await this.knex.schema.createTable(
@@ -410,14 +410,14 @@ export class DelegatedPaymentsMigrator extends Migrator {
               .timestamp(columnNames.inactiveDate)
               .notNullable()
               .defaultTo(this.knex.fn.now());
-          }
+          },
         );
 
         await this.knex.schema.alterTable(
           tableNames.balanceReservation,
           (table) => {
             table.jsonb(columnNames.overflowSpend).nullable();
-          }
+          },
         );
 
         // Create a GIN index on the JSONB column when it is not null
@@ -436,16 +436,16 @@ export class DelegatedPaymentsMigrator extends Migrator {
       name: "rollback from delegated payments",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         );
         await this.knex.schema.dropTableIfExists(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         );
         await this.knex.schema.alterTable(
           tableNames.balanceReservation,
           (table) => {
             table.dropColumn(columnNames.overflowSpend);
-          }
+          },
         );
       },
     });
@@ -487,7 +487,7 @@ export class ArNSPurchaseMigrator extends Migrator {
           (table) => {
             table.string(columnNames.nonce).primary();
             this.arNSReceiptTables(table);
-          }
+          },
         );
 
         await this.knex.schema.createTable(
@@ -500,7 +500,7 @@ export class ArNSPurchaseMigrator extends Migrator {
               .notNullable()
               .defaultTo(this.knex.fn.now());
             table.string(columnNames.failedReason).notNullable();
-          }
+          },
         );
       },
     });
@@ -511,7 +511,7 @@ export class ArNSPurchaseMigrator extends Migrator {
       name: "rollback from arns purchase",
       operation: async () => {
         await this.knex.schema.dropTableIfExists(
-          tableNames.arNSPurchaseReceipt
+          tableNames.arNSPurchaseReceipt,
         );
         await this.knex.schema.dropTableIfExists(tableNames.failedArNSPurchase);
       },
@@ -559,7 +559,7 @@ export class ArNSPurchaseQuoteMigrator extends Migrator {
             table.integer(columnNames.paymentAmount).notNullable();
             table.integer(columnNames.quotedPaymentAmount).notNullable();
             table.string(columnNames.currencyType).notNullable();
-          }
+          },
         );
 
         await this.knex.schema.alterTable(
@@ -572,7 +572,7 @@ export class ArNSPurchaseQuoteMigrator extends Migrator {
             table.integer(columnNames.quotedPaymentAmount).nullable();
             table.string(columnNames.currencyType).nullable();
             table.string(columnNames.excessWinc).nullable();
-          }
+          },
         );
 
         await this.knex.schema.alterTable(
@@ -585,7 +585,7 @@ export class ArNSPurchaseQuoteMigrator extends Migrator {
             table.integer(columnNames.quotedPaymentAmount).nullable();
             table.string(columnNames.currencyType).nullable();
             table.string(columnNames.excessWinc).nullable();
-          }
+          },
         );
       },
     });
@@ -607,7 +607,7 @@ export class ArNSPurchaseQuoteMigrator extends Migrator {
             table.dropColumn(columnNames.quotedPaymentAmount);
             table.dropColumn(columnNames.currencyType);
             table.dropColumn(columnNames.excessWinc);
-          }
+          },
         );
 
         await this.knex.schema.alterTable(
@@ -620,7 +620,7 @@ export class ArNSPurchaseQuoteMigrator extends Migrator {
             table.dropColumn(columnNames.quotedPaymentAmount);
             table.dropColumn(columnNames.currencyType);
             table.dropColumn(columnNames.excessWinc);
-          }
+          },
         );
       },
     });
@@ -640,13 +640,13 @@ export class ArNSPurchaseStoreMessageIdMigrator extends Migrator {
           tableNames.arNSPurchaseReceipt,
           (table) => {
             table.string(columnNames.messageId).nullable();
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.failedArNSPurchase,
           (table) => {
             table.string(columnNames.messageId).nullable();
-          }
+          },
         );
       },
     });
@@ -660,13 +660,13 @@ export class ArNSPurchaseStoreMessageIdMigrator extends Migrator {
           tableNames.arNSPurchaseReceipt,
           (table) => {
             table.dropColumn(columnNames.messageId);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.failedArNSPurchase,
           (table) => {
             table.dropColumn(columnNames.messageId);
-          }
+          },
         );
       },
     });
@@ -687,7 +687,7 @@ export class DelegatedArNSPurchasesMigrator extends Migrator {
           (table) => {
             table.string(columnNames.paidBy).nullable();
             table.jsonb(columnNames.overflowSpend).nullable();
-          }
+          },
         );
 
         // Create a GIN index on the JSONB column when it is not null
@@ -703,7 +703,7 @@ export class DelegatedArNSPurchasesMigrator extends Migrator {
           (table) => {
             table.string(columnNames.paidBy).nullable();
             table.jsonb(columnNames.overflowSpend).nullable();
-          }
+          },
         );
       },
     });
@@ -718,14 +718,14 @@ export class DelegatedArNSPurchasesMigrator extends Migrator {
           (table) => {
             table.dropColumn(columnNames.paidBy);
             table.dropColumn(columnNames.overflowSpend);
-          }
+          },
         );
         await this.knex.schema.alterTable(
           tableNames.failedArNSPurchase,
           (table) => {
             table.dropColumn(columnNames.paidBy);
             table.dropColumn(columnNames.overflowSpend);
-          }
+          },
         );
       },
     });
@@ -751,7 +751,7 @@ export class KyveFeeMigrator extends Migrator {
           adjustment_exclusivity: "inclusive_kyve",
         };
         await this.knex(tableNames.paymentAdjustmentCatalog).insert(
-          kyveTurboInfraFeeDBInsert
+          kyveTurboInfraFeeDBInsert,
         );
       },
     });
@@ -798,8 +798,8 @@ export class RefererMigrator extends Migrator {
           this.tablesToAddReferer.map((table) =>
             this.knex.schema.alterTable(table, (t) => {
               t.string(columnNames.referer).nullable();
-            })
-          )
+            }),
+          ),
         );
         await this.knex.schema.alterTable(tableNames.user, (t) => {
           t.string(columnNames.walletLabels).nullable();
@@ -816,8 +816,8 @@ export class RefererMigrator extends Migrator {
           this.tablesToAddReferer.map((table) =>
             this.knex.schema.alterTable(table, (t) => {
               t.dropColumn(columnNames.referer);
-            })
-          )
+            }),
+          ),
         );
         await this.knex.schema.alterTable(tableNames.user, (t) => {
           t.dropColumn(columnNames.walletLabels);
@@ -848,8 +848,8 @@ export class AddTransactionSenderAddressPaymentTxMigrator extends Migrator {
               t.string(columnNames.transactionSenderAddress)
                 .notNullable()
                 .defaultTo("");
-            })
-          )
+            }),
+          ),
         );
       },
     });
@@ -863,8 +863,8 @@ export class AddTransactionSenderAddressPaymentTxMigrator extends Migrator {
           this.tablesToAddTransactionSenderAddress.map((table) =>
             this.knex.schema.alterTable(table, (t) => {
               t.dropColumn(columnNames.transactionSenderAddress);
-            })
-          )
+            }),
+          ),
         );
       },
     });
@@ -892,8 +892,8 @@ export class AddUsdEquivalentToCryptoPaymentsMigrator extends Migrator {
               t.decimal(columnNames.usdEquivalent, 24, 6)
                 .notNullable()
                 .defaultTo(0);
-            })
-          )
+            }),
+          ),
         );
       },
     });
@@ -907,9 +907,48 @@ export class AddUsdEquivalentToCryptoPaymentsMigrator extends Migrator {
           this.tablesToAddUsdEquivalent.map((table) =>
             this.knex.schema.alterTable(table, (t) => {
               t.dropColumn(columnNames.usdEquivalent);
-            })
-          )
+            }),
+          ),
         );
+      },
+    });
+  }
+}
+
+export class PaymentReceiptUniqueQuoteMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  // Enforce one payment_receipt per top_up_quote_id at the DB layer so a
+  // concurrent or duplicated webhook delivery cannot credit the same quote
+  // twice (the app-level check-then-insert is not atomic). The pre-existing
+  // non-unique lookup index is redundant once the unique index exists, so it
+  // is dropped.
+  public migrate() {
+    return this.operate({
+      name: "add unique constraint on payment_receipt.top_up_quote_id",
+      operation: async () => {
+        await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
+          t.unique([columnNames.topUpQuoteId]);
+        });
+        await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
+          t.dropIndex([columnNames.topUpQuoteId]);
+        });
+      },
+    });
+  }
+
+  public rollback(): Promise<void> {
+    return this.operate({
+      name: "rollback unique constraint on payment_receipt.top_up_quote_id",
+      operation: async () => {
+        await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
+          t.index([columnNames.topUpQuoteId]);
+        });
+        await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
+          t.dropUnique([columnNames.topUpQuoteId]);
+        });
       },
     });
   }
