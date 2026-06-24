@@ -115,7 +115,7 @@ Bundle planning, cleanup, and the posted-bundle re-driver are **BullMQ repeatabl
 ```
 0–7d    FS keep   MinIO keep    7–90d   FS DELETE MinIO keep    90d+   FS DELETE MinIO DELETE (Arweave permanent)
 ```
-`FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`. Cleanup runs via the in-process `cleanup-fs` scheduler (`CLEANUP_SCHEDULE_CRON`); `cron-trigger-cleanup.sh` is just a manual trigger for the same queue. A bash fallback (`scripts/cleanup-bundler-files.sh`, `CLEANUP_RETENTION_DAYS`) works with workers offline — don't run both. **`CLEANUP_REQUIRE_PERMANENT_BUNDLE` (default ON, #41):** cleanup will not delete a data item's only off-chain copy until its bundle is confirmed `permanent_bundle`, so under multi-source permanence a slow second gateway delays cleanup (storage grows) rather than risking early deletion.
+`FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`. **Durable** data cleanup runs via the in-process database-aware `cleanup-fs` scheduler (`CLEANUP_SCHEDULE_CRON`); `cron-trigger-cleanup.sh` / `trigger-cleanup.js` are just manual triggers for the same queue. `scripts/cleanup-bundler-files.sh` is a **TEMP-scratch-only** janitor (`TEMP_DIR`, `CLEANUP_RETENTION_DAYS`) — it does NOT touch the durable `raw_/metadata_` data dir (a blind mtime delete there could drop a paid, receipted-but-unfinalized upload), so the two are complementary, not alternatives. **`CLEANUP_REQUIRE_PERMANENT_BUNDLE` (default ON, #41):** cleanup will not delete a data item's only off-chain copy until its bundle is confirmed `permanent_bundle`, so under multi-source permanence a slow second gateway delays cleanup (storage grows) rather than risking early deletion.
 
 ## Pitfalls (learned on this deployment)
 

@@ -357,8 +357,11 @@ interval. Confirm registration after deploy with
 `pm2 logs upload-workers | grep "job schedulers"`. **Teardown:** schedulers persist in
 Redis — to stop one, set its `*_SCHEDULE_CRON` to `""` and restart, or
 `getQueue(label).removeJobScheduler(id)`. The `cron-trigger-*.sh` scripts remain as
-manual on-demand triggers. Confirm the cleanup vars (§7) are set, and pick **one** cleanup
-mechanism (the internal scheduler over the bash `cleanup-bundler-files.sh`).
+manual on-demand triggers. Confirm the cleanup vars (§7) are set. **Durable** upload
+data is cleaned ONLY by the database-aware internal `cleanup-fs` scheduler (it deletes
+`raw_/metadata_` files only after a bundle is `permanent_bundle`). `scripts/cleanup-bundler-files.sh`
+is a TEMP-scratch-only janitor — never point it at the durable data dir; a blind mtime
+delete there can drop a paid, receipted-but-unfinalized upload. See `scripts/CLEANUP_SETUP.md`.
 
 🛑 **The verify cron still applies** (`scripts/trigger-verify.sh` is not part of the
 internal scheduler). It runs via crontab and is still subject to the stripped-PATH

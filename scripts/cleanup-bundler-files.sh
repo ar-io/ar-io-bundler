@@ -1,6 +1,21 @@
 #!/bin/bash
-# Cleanup script for ar-io-bundler temp and data files
-# Configurable via .env file
+# Janitor for the ar-io-bundler TEMP scratch tree ONLY.
+#
+# ⚠️ SAFETY: this script does mtime-only `find -delete` with NO knowledge of
+# bundler/database state, so it must NEVER be pointed at durable storage.
+#
+#   - TEMP_DIR (packages/upload-service/temp) is disposable bundle-assembly
+#     scratch (bundle/, header/, raw-data-item/, multipart-uploads/, …). It is
+#     reconstructed from the object store on retry, so deleting old scratch is safe.
+#   - The durable filesystem backup (FS_DATA_PATH / UPLOAD_SERVICE_DATA_DIR, the
+#     raw_/metadata_ copies that back a signed receipt) is NOT touched here. It is
+#     cleaned ONLY by the database-aware `cleanup-fs` worker, which deletes a data
+#     item's files exclusively after its bundle is `permanent_bundle` (tiered
+#     FILESYSTEM_CLEANUP_DAYS / MINIO_CLEANUP_DAYS). A blind mtime delete of that
+#     directory could remove a paid, already-receipted upload that has not yet
+#     been finalized on Arweave — see scripts/CLEANUP_SETUP.md.
+#
+# Configurable via the root .env file.
 
 set -e
 
@@ -15,11 +30,11 @@ else
     exit 1
 fi
 
-# Configuration with defaults
-TEMP_DIR="${TEMP_DIR:-/home/vilenarios/ar-io-bundler/packages/upload-service/temp}"
-DATA_DIR="${UPLOAD_SERVICE_DATA_DIR:-/home/vilenarios/ar-io-bundler/packages/upload-service/upload-service-data}"
+# Configuration with defaults. NOTE: intentionally no UPLOAD_SERVICE_DATA_DIR /
+# FS_DATA_PATH here — durable data is the cleanup-fs worker's responsibility.
+TEMP_DIR="${TEMP_DIR:-$ROOT_DIR/packages/upload-service/temp}"
 RETENTION_DAYS="${CLEANUP_RETENTION_DAYS:-90}"
-LOG_DIR="${CLEANUP_LOG_DIR:-/home/vilenarios/ar-io-bundler/logs}"
+LOG_DIR="${CLEANUP_LOG_DIR:-$ROOT_DIR/logs}"
 LOG_FILE="${LOG_DIR}/cleanup-bundler-files.log"
 DRY_RUN="${CLEANUP_DRY_RUN:-false}"
 
@@ -101,25 +116,18 @@ clean_directory() {
 
 # Main execution
 log "=========================================="
-log "Starting bundler file cleanup"
+log "Starting bundler TEMP-scratch cleanup"
 log "Dry run: $DRY_RUN"
+log "(durable upload data is cleaned by the DB-aware cleanup-fs worker, not here)"
 log "=========================================="
 
-# Clean temp directory
+# Clean temp directory ONLY (disposable bundle-assembly scratch).
 clean_directory "$TEMP_DIR" "temp"
-
-# Clean upload-service-data directory
-clean_directory "$DATA_DIR" "upload-service-data"
 
 # Print disk usage summary
 if [ -d "$TEMP_DIR" ]; then
     TEMP_USAGE=$(du -sh "$TEMP_DIR" 2>/dev/null | cut -f1)
     log "Current temp directory size: $TEMP_USAGE"
-fi
-
-if [ -d "$DATA_DIR" ]; then
-    DATA_USAGE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
-    log "Current data directory size: $DATA_USAGE"
 fi
 
 log "=========================================="
