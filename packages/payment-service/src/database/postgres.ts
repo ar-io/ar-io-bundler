@@ -182,7 +182,7 @@ export class PostgresDatabase implements Database {
     });
   }
   public async createTopUpQuote(
-    topUpQuote: CreateTopUpQuoteParams
+    topUpQuote: CreateTopUpQuoteParams,
   ): Promise<void> {
     this.log.debug("Inserting new top up quote...", {
       topUpQuote,
@@ -219,7 +219,7 @@ export class PostgresDatabase implements Database {
 
     await this.writer.transaction(async (knexTransaction) => {
       await knexTransaction<TopUpQuoteDBResult>(tableNames.topUpQuote).insert(
-        topUpQuoteDbInsert
+        topUpQuoteDbInsert,
       );
 
       await knexTransaction.batchInsert(
@@ -234,20 +234,20 @@ export class PostgresDatabase implements Database {
             top_up_quote_id: topUpQuoteId,
           };
           return adjustmentDbInsert;
-        })
+        }),
       );
     });
   }
 
   public async getTopUpQuote(topUpQuoteId: string): Promise<TopUpQuote> {
     const topUpQuoteDbResult = await this.reader<TopUpQuoteDBResult>(
-      tableNames.topUpQuote
+      tableNames.topUpQuote,
     ).where({
       [columnNames.topUpQuoteId]: topUpQuoteId,
     });
     if (topUpQuoteDbResult.length === 0) {
       throw Error(
-        `No top up quote found in database with ID '${topUpQuoteId}'`
+        `No top up quote found in database with ID '${topUpQuoteId}'`,
       );
     }
 
@@ -256,7 +256,7 @@ export class PostgresDatabase implements Database {
 
   public async updatePromoInfo(
     userAddress: string,
-    promoInfo: PromotionalInfo
+    promoInfo: PromotionalInfo,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
       await this.getUser(userAddress, knexTransaction);
@@ -277,10 +277,10 @@ export class PostgresDatabase implements Database {
 
   public async getUser(
     userAddress: string,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<User> {
     const userDbResult = await knexTransaction<UserDBResult>(
-      tableNames.user
+      tableNames.user,
     ).where({
       user_address: userAddress,
     });
@@ -294,7 +294,7 @@ export class PostgresDatabase implements Database {
 
   public async getBalance(
     userAddress: string,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<GetBalanceResult> {
     // TODO: getBalance should be the result of current_winc_balance - all pending balance_reservation.reserved_winc_amount once finalized_reservations are implemented
 
@@ -341,7 +341,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async createPaymentReceipt(
-    paymentReceipt: CreatePaymentReceiptParams
+    paymentReceipt: CreatePaymentReceiptParams,
   ): Promise<void | UnredeemedGift> {
     this.log.debug("Inserting new payment receipt...", {
       paymentReceipt,
@@ -357,13 +357,13 @@ export class PostgresDatabase implements Database {
 
     return this.writer.transaction(async (knexTransaction) => {
       const topUpQuoteDbResults = await knexTransaction<TopUpQuoteDBResult>(
-        tableNames.topUpQuote
+        tableNames.topUpQuote,
       ).where({
         top_up_quote_id: topUpQuoteId,
       });
       if (topUpQuoteDbResults.length === 0) {
         throw Error(
-          `No top up quote found in database with id '${topUpQuoteId}'`
+          `No top up quote found in database with id '${topUpQuoteId}'`,
         );
       }
 
@@ -378,20 +378,20 @@ export class PostgresDatabase implements Database {
 
       if (new Date(quote_expiration_date).getTime() < new Date().getTime()) {
         throw Error(
-          `Top up quote with id '${topUpQuoteId}' has already been expired!`
+          `Top up quote with id '${topUpQuoteId}' has already been expired!`,
         );
       }
 
       if (paymentAmount < +payment_amount || currencyType !== currency_type) {
         throw Error(
-          `Amount from top up quote (${payment_amount} ${currency_type}) does not match the amount paid on the payment receipt (${paymentAmount} ${currencyType})!`
+          `Amount from top up quote (${payment_amount} ${currency_type}) does not match the amount paid on the payment receipt (${paymentAmount} ${currencyType})!`,
         );
       }
 
       // Check adjustment eligibility
       const paymentAdjustmentDbResults =
         await knexTransaction<PaymentAdjustmentDBResult>(
-          tableNames.paymentAdjustment
+          tableNames.paymentAdjustment,
         ).where({
           top_up_quote_id: topUpQuoteId,
         });
@@ -400,7 +400,7 @@ export class PostgresDatabase implements Database {
         // Check the single use promo code table for any matching adjustment catalogs
         const singleUseAdjustmentCatalog =
           await knexTransaction<SingleUseCodePaymentCatalogDBResult>(
-            tableNames.singleUseCodePaymentAdjustmentCatalog
+            tableNames.singleUseCodePaymentAdjustmentCatalog,
           )
             .where({
               catalog_id,
@@ -412,14 +412,14 @@ export class PostgresDatabase implements Database {
           await this.assertCodeEligibility(
             destination_address,
             singleUseAdjustmentCatalog,
-            knexTransaction
+            knexTransaction,
           );
         }
       }
 
       // Delete top up quote
       const topUpQuote = await knexTransaction<TopUpQuoteDBResult>(
-        tableNames.topUpQuote
+        tableNames.topUpQuote,
       )
         .where({
           top_up_quote_id: topUpQuoteId,
@@ -429,7 +429,7 @@ export class PostgresDatabase implements Database {
 
       // Re-insert as payment receipt
       await knexTransaction<PaymentReceiptDBResult>(
-        tableNames.paymentReceipt
+        tableNames.paymentReceipt,
       ).insert({ ...topUpQuote[0], payment_receipt_id: paymentReceiptId });
 
       if (destination_address_type === "email") {
@@ -442,7 +442,7 @@ export class PostgresDatabase implements Database {
         };
         const unredeemedGiftDbResult =
           await knexTransaction<UnredeemedGiftDBResult>(
-            tableNames.unredeemedGift
+            tableNames.unredeemedGift,
           )
             .insert(unredeemedGiftDbInsert)
             .returning("*");
@@ -457,61 +457,15 @@ export class PostgresDatabase implements Database {
 
         return unredeemedGiftDbResult.map(unredeemedGiftDBMap)[0];
       } else {
-        const destinationUser = (
-          await knexTransaction<UserDBResult>(tableNames.user).where({
-            user_address: destination_address,
-          })
-        )[0];
-
-        if (destinationUser === undefined) {
-          this.log.debug("No existing user was found; creating new user...", {
-            userAddress: destination_address,
-            newBalance: winston_credit_amount,
-            paymentReceipt,
-          });
-          await knexTransaction<UserDBResult>(tableNames.user).insert({
-            user_address: destination_address,
-            user_address_type: destination_address_type,
-            winston_credit_balance: winston_credit_amount,
-          });
-
-          const auditLogInsert: AuditLogInsert = {
-            user_address: destination_address,
-            winston_credit_amount,
-            change_reason: "account_creation",
-            change_id: paymentReceiptId,
-          };
-          await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-        } else {
-          // Increment balance of existing user
-          const currentBalance = new Winston(
-            destinationUser.winston_credit_balance
-          );
-          const newBalance = currentBalance.plus(
-            new Winston(winston_credit_amount)
-          );
-
-          this.log.debug("Incrementing balance...", {
-            userAddress: destination_address,
-            currentBalance,
-            newBalance,
-            paymentReceipt,
-          });
-
-          await knexTransaction<UserDBResult>(tableNames.user)
-            .where({
-              user_address: destination_address,
-            })
-            .update({ winston_credit_balance: newBalance.toString() });
-
-          const auditLogInsert: AuditLogInsert = {
-            user_address: destination_address,
-            winston_credit_amount,
-            change_reason: "payment",
-            change_id: paymentReceiptId,
-          };
-          await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-        }
+        await this.atomicCreditUser({
+          knexTransaction,
+          userAddress: destination_address,
+          userAddressType: destination_address_type as UserAddressType,
+          winstonCreditAmount: new Winston(winston_credit_amount),
+          changeId: paymentReceiptId,
+          auditChangeReasonOnInsert: "account_creation",
+          auditChangeReasonOnUpdate: "payment",
+        });
         return;
       }
     });
@@ -522,7 +476,7 @@ export class PostgresDatabase implements Database {
    *  a pre-existing top up quote. This is meant as an admin tool for creating bypassed payments
    */
   public async createBypassedPaymentReceipts(
-    paymentReceipts: CreateBypassedPaymentReceiptParams[]
+    paymentReceipts: CreateBypassedPaymentReceiptParams[],
   ): Promise<UnredeemedGift[]> {
     this.log.debug("Inserting new bypassed payment receipts...", {
       paymentReceipts,
@@ -559,7 +513,7 @@ export class PostgresDatabase implements Database {
         };
 
         await knexTransaction<PaymentReceiptDBResult>(
-          tableNames.paymentReceipt
+          tableNames.paymentReceipt,
         ).insert(paymentReceiptDbInsert);
 
         if (destinationAddressType === "email") {
@@ -571,7 +525,7 @@ export class PostgresDatabase implements Database {
             sender_email: senderEmail,
           };
           const unredeemedGift = await knexTransaction<UnredeemedGiftDBResult>(
-            tableNames.unredeemedGift
+            tableNames.unredeemedGift,
           )
             .insert(unredeemedGiftDbInsert)
             .returning("*");
@@ -587,59 +541,15 @@ export class PostgresDatabase implements Database {
 
           unredeemedGifts.push(unredeemedGift.map(unredeemedGiftDBMap)[0]);
         } else {
-          // Increment balance of existing user
-          const destinationUser = (
-            await knexTransaction<UserDBResult>(tableNames.user).where({
-              user_address: destinationAddress,
-            })
-          )[0];
-
-          if (destinationUser === undefined) {
-            this.log.debug("No existing user was found; creating new user...", {
-              userAddress: destinationAddress,
-              newBalance: winc.toString(),
-            });
-            await knexTransaction<UserDBResult>(tableNames.user).insert({
-              user_address: destinationAddress,
-              user_address_type: destinationAddressType,
-              winston_credit_balance: winc.toString(),
-            });
-
-            const auditLogInsert: AuditLogInsert = {
-              user_address: destinationAddress,
-              winston_credit_amount: winc.toString(),
-              change_reason: "bypassed_account_creation",
-              change_id: paymentReceiptId,
-            };
-            await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-          } else {
-            // Increment balance of existing user
-            const currentBalance = new Winston(
-              destinationUser.winston_credit_balance
-            );
-            const newBalance = currentBalance.plus(winc);
-
-            this.log.debug("Incrementing balance...", {
-              userAddress: destinationAddress,
-              currentBalance,
-              newBalance,
-            });
-
-            await knexTransaction<UserDBResult>(tableNames.user)
-              .where({
-                user_address: destinationAddress,
-              })
-              .update({ winston_credit_balance: newBalance.toString() });
-
-            const auditLogInsert: AuditLogInsert = {
-              user_address: destinationAddress,
-              winston_credit_amount: winc.toString(),
-              change_reason: "bypassed_payment",
-              change_id: paymentReceiptId,
-            };
-
-            await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-          }
+          await this.atomicCreditUser({
+            knexTransaction,
+            userAddress: destinationAddress,
+            userAddressType: destinationAddressType,
+            winstonCreditAmount: winc,
+            changeId: paymentReceiptId,
+            auditChangeReasonOnInsert: "bypassed_account_creation",
+            auditChangeReasonOnUpdate: "bypassed_payment",
+          });
         }
       }
       return unredeemedGifts;
@@ -660,24 +570,24 @@ export class PostgresDatabase implements Database {
     return this.writer.transaction(async (knexTransaction) => {
       const unredeemedGiftDbResults =
         await knexTransaction<UnredeemedGiftDBResult>(
-          tableNames.unredeemedGift
+          tableNames.unredeemedGift,
         ).where({
           payment_receipt_id: paymentReceiptId,
         });
 
       if (unredeemedGiftDbResults.length === 0) {
         this.log.warn(
-          `No unredeemed gift found in database with payment receipt ID '${paymentReceiptId}'`
+          `No unredeemed gift found in database with payment receipt ID '${paymentReceiptId}'`,
         );
 
         const redeemedDbResults = await knexTransaction<RedeemedGiftDBResult>(
-          tableNames.redeemedGift
+          tableNames.redeemedGift,
         ).where({
           payment_receipt_id: paymentReceiptId,
         });
         if (redeemedDbResults.length > 0) {
           this.log.warn(
-            `Payment receipt ID '${paymentReceiptId}' has already been redeemed!`
+            `Payment receipt ID '${paymentReceiptId}' has already been redeemed!`,
           );
           throw new GiftAlreadyRedeemed();
         }
@@ -687,14 +597,14 @@ export class PostgresDatabase implements Database {
 
       const paymentReceiptDbResults =
         await knexTransaction<PaymentReceiptDBResult>(
-          tableNames.paymentReceipt
+          tableNames.paymentReceipt,
         ).where({
           payment_receipt_id: paymentReceiptId,
         });
 
       if (paymentReceiptDbResults.length === 0) {
         this.log.warn(
-          `No payment receipt found in database with payment receipt ID '${paymentReceiptId}'`
+          `No payment receipt found in database with payment receipt ID '${paymentReceiptId}'`,
         );
         throw new GiftRedemptionError();
       }
@@ -703,7 +613,7 @@ export class PostgresDatabase implements Database {
 
       if (unredeemedGiftDbResult.recipient_email !== recipientEmail) {
         this.log.warn(
-          `Recipient email '${recipientEmail}' does not match unredeemed gift recipient email '${unredeemedGiftDbResult.recipient_email}'`
+          `Recipient email '${recipientEmail}' does not match unredeemed gift recipient email '${unredeemedGiftDbResult.recipient_email}'`,
         );
         throw new GiftRedemptionError();
       }
@@ -720,116 +630,62 @@ export class PostgresDatabase implements Database {
         .del();
 
       await knexTransaction(tableNames.redeemedGift).insert(
-        redeemedGiftDbInsert
+        redeemedGiftDbInsert,
       );
 
-      const destinationUser = (
-        await knexTransaction<UserDBResult>(tableNames.user).where({
-          user_address: destinationAddress,
-        })
-      )[0];
+      const { user } = await this.atomicCreditUser({
+        knexTransaction,
+        userAddress: destinationAddress,
+        userAddressType: destinationAddressType,
+        winstonCreditAmount: new Winston(
+          unredeemedGiftDbResult.gifted_winc_amount,
+        ),
+        changeId: paymentReceiptId,
+        auditChangeReasonOnInsert: "gifted_account_creation",
+        auditChangeReasonOnUpdate: "gifted_payment_redemption",
+      });
 
-      if (destinationUser === undefined) {
-        this.log.debug("No existing user was found; creating new user...", {
-          userAddress: destinationAddress,
-          newBalance: unredeemedGiftDbResult.gifted_winc_amount,
-        });
-        const userDbInsert: UserDBInsert = {
-          user_address: destinationAddress,
-          user_address_type: destinationAddressType,
-          winston_credit_balance: unredeemedGiftDbResult.gifted_winc_amount,
-        };
-        const userDbResult = await knexTransaction<UserDBResult>(
-          tableNames.user
-        )
-          .insert(userDbInsert)
-          .returning("*");
-
-        const auditLogInsert: AuditLogInsert = {
-          user_address: destinationAddress,
-          winston_credit_amount: unredeemedGiftDbResult.gifted_winc_amount,
-          change_reason: "gifted_account_creation",
-          change_id: paymentReceiptId,
-        };
-        await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-        return {
-          user: userDbResult.map(userDBMap)[0],
-          wincRedeemed: new Winston(unredeemedGiftDbResult.gifted_winc_amount),
-        };
-      } else {
-        // Increment balance of existing user
-        const currentBalance = new Winston(
-          destinationUser.winston_credit_balance
-        );
-        const newBalance = currentBalance.plus(
-          new Winston(unredeemedGiftDbResult.gifted_winc_amount)
-        );
-
-        this.log.debug("Incrementing balance...", {
-          userAddress: destinationAddress,
-          currentBalance,
-          newBalance,
-        });
-
-        const userDbResult = await knexTransaction<UserDBResult>(
-          tableNames.user
-        )
-          .where({
-            user_address: destinationAddress,
-          })
-          .update({ winston_credit_balance: newBalance.toString() })
-          .returning("*");
-
-        const auditLogInsert: AuditLogInsert = {
-          user_address: destinationAddress,
-          winston_credit_amount: unredeemedGiftDbResult.gifted_winc_amount,
-          change_reason: "gifted_payment_redemption",
-          change_id: paymentReceiptId,
-        };
-        await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-
-        return {
-          user: userDbResult.map(userDBMap)[0],
-          wincRedeemed: new Winston(unredeemedGiftDbResult.gifted_winc_amount),
-        };
-      }
+      return {
+        user,
+        wincRedeemed: new Winston(unredeemedGiftDbResult.gifted_winc_amount),
+      };
     });
   }
 
   public async getPaymentReceipt(
     paymentReceiptId: string,
-    knexTransaction: KnexTransaction | Knex = this.reader
+    knexTransaction: KnexTransaction | Knex = this.reader,
   ): Promise<PaymentReceipt> {
     return this.getPaymentReceiptWhere(
       { [columnNames.paymentReceiptId]: paymentReceiptId },
-      knexTransaction
+      knexTransaction,
     );
   }
 
   private async getPaymentReceiptByTopUpQuoteId(
     topUpQuoteId: string,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<PaymentReceipt> {
     return this.getPaymentReceiptWhere(
       { [columnNames.topUpQuoteId]: topUpQuoteId },
-      knexTransaction
+      knexTransaction,
     );
   }
 
   private async getPaymentReceiptWhere(
     where: Partial<PaymentReceiptDBResult>,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<PaymentReceipt> {
     const paymentReceiptDbResults =
       await knexTransaction<PaymentReceiptDBResult>(
-        tableNames.paymentReceipt
+        tableNames.paymentReceipt,
       ).where(where);
 
     if (paymentReceiptDbResults.length === 0) {
       throw Error(
         `No payment receipts found in database with query ${JSON.stringify(
-          where
-        )}!`
+          where,
+        )}!`,
       );
     }
 
@@ -838,18 +694,18 @@ export class PostgresDatabase implements Database {
 
   private async getChargebackReceiptWhere(
     where: Partial<ChargebackReceiptDBResult>,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<ChargebackReceipt[]> {
     const chargebackReceiptDbResult =
       await knexTransaction<ChargebackReceiptDBResult>(
-        tableNames.chargebackReceipt
+        tableNames.chargebackReceipt,
       ).where(where);
 
     return chargebackReceiptDbResult.map(chargebackReceiptDBMap);
   }
 
   public async getChargebackReceiptsForAddress(
-    userAddress: string
+    userAddress: string,
   ): Promise<ChargebackReceipt[]> {
     return this.getChargebackReceiptWhere({
       destination_address: userAddress,
@@ -874,7 +730,7 @@ export class PostgresDatabase implements Database {
         destinationAddressType,
       } = await this.getPaymentReceiptByTopUpQuoteId(
         topUpQuoteId,
-        knexTransaction
+        knexTransaction,
       );
 
       let userAddress: string | undefined;
@@ -882,7 +738,7 @@ export class PostgresDatabase implements Database {
       if (destinationAddressType === "email") {
         const redeemedGiftDbResults =
           await knexTransaction<RedeemedGiftDBResult>(
-            tableNames.unredeemedGift
+            tableNames.unredeemedGift,
           ).where({
             payment_receipt_id: paymentReceiptId,
           });
@@ -890,7 +746,7 @@ export class PostgresDatabase implements Database {
         if (redeemedGiftDbResults.length === 0) {
           // When no redeemed exists yet, delete the unredeemed gift and leave user address undefined
           await knexTransaction<UnredeemedGiftDBResult>(
-            tableNames.unredeemedGift
+            tableNames.unredeemedGift,
           )
             .where({
               payment_receipt_id: paymentReceiptId,
@@ -928,7 +784,7 @@ export class PostgresDatabase implements Database {
         await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
       } else {
         this.log.warn(
-          `Chargeback receipt created for payment receipt ID '${paymentReceiptId}' but user has not redeemed gift yet!`
+          `Chargeback receipt created for payment receipt ID '${paymentReceiptId}' but user has not redeemed gift yet!`,
         );
       }
 
@@ -941,7 +797,7 @@ export class PostgresDatabase implements Database {
 
       // Create Chargeback Receipt
       await knexTransaction<ChargebackReceiptDBResult>(
-        tableNames.chargebackReceipt
+        tableNames.chargebackReceipt,
       ).insert({
         ...paymentReceiptDbResult[0],
         chargeback_reason: chargebackReason,
@@ -951,17 +807,17 @@ export class PostgresDatabase implements Database {
   }
 
   public async getChargebackReceipt(
-    chargebackReceiptId: string
+    chargebackReceiptId: string,
   ): Promise<ChargebackReceipt> {
     const chargebackReceiptDbResult =
       await this.reader<ChargebackReceiptDBResult>(
-        tableNames.chargebackReceipt
+        tableNames.chargebackReceipt,
       ).where({
         [columnNames.chargebackReceiptId]: chargebackReceiptId,
       });
     if (chargebackReceiptDbResult.length === 0) {
       throw Error(
-        `No chargeback receipt found in database with ID '${chargebackReceiptId}'`
+        `No chargeback receipt found in database with ID '${chargebackReceiptId}'`,
       );
     }
 
@@ -999,7 +855,7 @@ export class PostgresDatabase implements Database {
         overflow_spend: JSON.stringify(overflow_spend),
       };
       await knexTransaction<BalanceReservationDBInsert>(
-        tableNames.balanceReservation
+        tableNames.balanceReservation,
       ).insert(balanceReservationDbInsert);
 
       const batchUploadAdjustmentInserts: UploadAdjustmentDBInsert[] =
@@ -1012,7 +868,7 @@ export class PostgresDatabase implements Database {
         }));
       await knexTransaction.batchInsert(
         tableNames.uploadAdjustment,
-        batchUploadAdjustmentInserts
+        batchUploadAdjustmentInserts,
       );
     });
   }
@@ -1020,11 +876,11 @@ export class PostgresDatabase implements Database {
   public async refundBalance(
     signerAddress: string,
     winstonCreditAmount: Winston,
-    dataItemId: TransactionId
+    dataItemId: TransactionId,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
       const reservation = await knexTransaction<BalanceReservationDBResult>(
-        tableNames.balanceReservation
+        tableNames.balanceReservation,
       )
         .where({
           data_item_id: dataItemId,
@@ -1043,7 +899,7 @@ export class PostgresDatabase implements Database {
   }
 
   public async checkForExistingPaymentByTopUpQuoteId(
-    top_up_quote_id: string
+    top_up_quote_id: string,
   ): Promise<boolean> {
     return this.reader.transaction(async (knexTransaction) => {
       const [
@@ -1052,15 +908,15 @@ export class PostgresDatabase implements Database {
         failedTopUpQuoteReceiptResult,
       ] = await Promise.all([
         knexTransaction<PaymentReceiptDBResult>(
-          tableNames.paymentReceipt
+          tableNames.paymentReceipt,
         ).where({ top_up_quote_id }),
         knexTransaction<ChargebackReceiptDBResult>(
-          tableNames.chargebackReceipt
+          tableNames.chargebackReceipt,
         ).where({
           top_up_quote_id,
         }),
         knexTransaction<FailedTopUpQuoteDBResult>(
-          tableNames.failedTopUpQuote
+          tableNames.failedTopUpQuote,
         ).where({ top_up_quote_id }),
       ]);
       return (
@@ -1078,12 +934,12 @@ export class PostgresDatabase implements Database {
     const currentDate = new Date().toISOString();
     return (
       await this.reader<UploadAdjustmentCatalogDBResult>(
-        tableNames.uploadAdjustmentCatalog
+        tableNames.uploadAdjustmentCatalog,
       )
         .whereRaw(
           `'${currentDate}' >= ${columnNames.adjustmentStartDate} and (
           ${columnNames.adjustmentEndDate} is null or '${currentDate}' < ${columnNames.adjustmentEndDate}
-        )`
+        )`,
         )
         .orderBy(columnNames.adjustmentPriority, "asc")
     ).map(uploadAdjustmentCatalogDBMap);
@@ -1095,12 +951,12 @@ export class PostgresDatabase implements Database {
     const currentDate = new Date().toISOString();
     return (
       await this.reader<PaymentAdjustmentCatalogDBResult>(
-        tableNames.paymentAdjustmentCatalog
+        tableNames.paymentAdjustmentCatalog,
       )
         .whereRaw(
           `'${currentDate}' >= ${columnNames.adjustmentStartDate} and (
           ${columnNames.adjustmentEndDate} is null or '${currentDate}' < ${columnNames.adjustmentEndDate}
-        )`
+        )`,
         )
         .orderBy(columnNames.adjustmentPriority, "asc")
     ).map(paymentAdjustmentCatalogDBMap);
@@ -1109,11 +965,11 @@ export class PostgresDatabase implements Database {
   private async checkForSingleUsePromoCodeEligibility(
     userAddress: string,
     catalogId: string,
-    knexTransaction: KnexTransaction
+    knexTransaction: KnexTransaction,
   ): Promise<boolean> {
     const existingAdjustments =
       await knexTransaction<PaymentAdjustmentDBResult>(
-        tableNames.paymentAdjustment
+        tableNames.paymentAdjustment,
       ).where({
         user_address: userAddress,
         catalog_id: catalogId,
@@ -1122,28 +978,28 @@ export class PostgresDatabase implements Database {
     const existingPaymentReceiptPromises = existingAdjustments.map(
       ({ top_up_quote_id }) =>
         knexTransaction<PaymentReceiptDBResult>(
-          tableNames.paymentReceipt
+          tableNames.paymentReceipt,
         ).where({
           top_up_quote_id,
-        })
+        }),
     );
 
     const existingPaymentReceiptDbResults = await Promise.all(
-      existingPaymentReceiptPromises
+      existingPaymentReceiptPromises,
     );
 
     return existingPaymentReceiptDbResults.every(
-      (paymentReceiptDbResults) => paymentReceiptDbResults.length === 0
+      (paymentReceiptDbResults) => paymentReceiptDbResults.length === 0,
     );
   }
 
   private async checkForNewUsersCodeEligibility(
     userAddress: string,
-    knexTransaction: KnexTransaction
+    knexTransaction: KnexTransaction,
   ): Promise<boolean> {
     const existingPaymentReceipts =
       await knexTransaction<PaymentReceiptDBResult>(
-        tableNames.paymentReceipt
+        tableNames.paymentReceipt,
       ).where({
         destination_address: userAddress,
       });
@@ -1160,7 +1016,7 @@ export class PostgresDatabase implements Database {
       max_uses,
       adjustment_end_date,
     }: SingleUseCodePaymentCatalogDBResult,
-    knexTransaction: KnexTransaction
+    knexTransaction: KnexTransaction,
   ): Promise<void> {
     if (adjustment_end_date && new Date() > new Date(adjustment_end_date)) {
       throw new PromoCodeExpired(code_value, adjustment_end_date);
@@ -1170,7 +1026,7 @@ export class PostgresDatabase implements Database {
     if (max_uses > 0) {
       const existingAdjustments =
         await knexTransaction<PaymentAdjustmentDBResult>(
-          tableNames.paymentAdjustment
+          tableNames.paymentAdjustment,
         ).where({
           catalog_id,
         });
@@ -1183,12 +1039,12 @@ export class PostgresDatabase implements Database {
       target_user_group === "new"
         ? await this.checkForNewUsersCodeEligibility(
             userAddress,
-            knexTransaction
+            knexTransaction,
           )
         : await this.checkForSingleUsePromoCodeEligibility(
             userAddress,
             catalog_id,
-            knexTransaction
+            knexTransaction,
           );
     if (!isEligible) {
       throw new UserIneligibleForPromoCode(userAddress, code_value);
@@ -1197,7 +1053,7 @@ export class PostgresDatabase implements Database {
 
   public async getSingleUsePromoCodeAdjustments(
     promoCodes: string[],
-    userAddress: string
+    userAddress: string,
   ): Promise<SingleUseCodePaymentCatalog[]> {
     if (promoCodes.length === 0) {
       return [];
@@ -1206,7 +1062,7 @@ export class PostgresDatabase implements Database {
       const currentDate = new Date().toISOString();
       const promoCodeAdjustments =
         await knexTransaction<SingleUseCodePaymentCatalogDBResult>(
-          tableNames.singleUseCodePaymentAdjustmentCatalog
+          tableNames.singleUseCodePaymentAdjustmentCatalog,
         )
           .whereRaw(`'${currentDate}' >= ${columnNames.adjustmentStartDate}`)
           .orderBy(columnNames.adjustmentPriority, "asc");
@@ -1217,7 +1073,7 @@ export class PostgresDatabase implements Database {
         const code = promoCodes[i];
 
         const matchingAdjustments = promoCodeAdjustments.filter(
-          (a) => a.code_value === code
+          (a) => a.code_value === code,
         );
         if (matchingAdjustments.length === 0) {
           throw new PromoCodeNotFound(code);
@@ -1234,7 +1090,7 @@ export class PostgresDatabase implements Database {
         await this.assertCodeEligibility(
           userAddress,
           promoCodeAdjustment,
-          knexTransaction
+          knexTransaction,
         );
 
         qualifiedAdjustments.push(promoCodeAdjustment);
@@ -1248,7 +1104,7 @@ export class PostgresDatabase implements Database {
     knexTransaction: KnexTransaction,
     adjustments: PaymentAdjustment[],
     userAddress: string,
-    paymentId: string
+    paymentId: string,
   ) {
     return knexTransaction.batchInsert(
       tableNames.paymentAdjustment,
@@ -1263,13 +1119,13 @@ export class PostgresDatabase implements Database {
             top_up_quote_id: paymentId,
           };
           return adjustmentDbInsert;
-        }
-      )
+        },
+      ),
     );
   }
 
   public async createPendingTransaction(
-    params: CreatePendingTransactionParams
+    params: CreatePendingTransactionParams,
   ): Promise<void> {
     this.log.debug("Inserting new pending transaction...", params);
 
@@ -1300,26 +1156,26 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction<PendingPaymentTransactionDBResult>(
-        tableNames.pendingPaymentTransaction
+        tableNames.pendingPaymentTransaction,
       ).insert(pendingTransactionDbInsert);
 
       await this.insertPaymentAdjustments(
         knexTransaction,
         adjustments,
         destinationAddress,
-        transactionId
+        transactionId,
       );
     });
   }
 
   public async creditPendingTransaction(
     transactionId: string,
-    blockHeight: number
+    blockHeight: number,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
       const pendingTransactionDbResults =
         await knexTransaction<PendingPaymentTransactionDBResult>(
-          tableNames.pendingPaymentTransaction
+          tableNames.pendingPaymentTransaction,
         )
           .where({
             transaction_id: transactionId,
@@ -1339,7 +1195,7 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction<CreditedPaymentTransactionDBResult>(
-        tableNames.creditedPaymentTransaction
+        tableNames.creditedPaymentTransaction,
       ).insert(creditedTransactionDbInsert);
 
       await this.creditOrCreateUser({
@@ -1349,7 +1205,7 @@ export class PostgresDatabase implements Database {
         changeReason: "crypto_payment",
         changeId: transactionId,
         winstonCreditAmount: new Winston(
-          pendingTransaction.winston_credit_amount
+          pendingTransaction.winston_credit_amount,
         ),
         knexTransaction,
       });
@@ -1358,12 +1214,12 @@ export class PostgresDatabase implements Database {
 
   public async failPendingTransaction(
     transactionId: string,
-    failedReason: string
+    failedReason: string,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
       const pendingTransactionDbResults =
         await knexTransaction<PendingPaymentTransactionDBResult>(
-          tableNames.pendingPaymentTransaction
+          tableNames.pendingPaymentTransaction,
         )
           .where({
             transaction_id: transactionId,
@@ -1383,13 +1239,13 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction<FailedPaymentTransactionDBResult>(
-        tableNames.failedPaymentTransaction
+        tableNames.failedPaymentTransaction,
       ).insert(failedTransactionDbInsert);
     });
   }
 
   public async checkForPendingTransaction(
-    transactionId: TransactionId
+    transactionId: TransactionId,
   ): Promise<
     | PendingPaymentTransaction
     | FailedPaymentTransaction
@@ -1416,7 +1272,7 @@ export class PostgresDatabase implements Database {
               })
               .first();
             return res || Promise.reject(new Error("No results found"));
-          })
+          }),
         );
 
         if (isFailedPaymentTransactionDBResult(result)) {
@@ -1437,9 +1293,80 @@ export class PostgresDatabase implements Database {
 
   public async getPendingTransactions(): Promise<PendingPaymentTransaction[]> {
     const dbResults = await this.reader<PendingPaymentTransactionDBResult>(
-      tableNames.pendingPaymentTransaction
+      tableNames.pendingPaymentTransaction,
     );
     return dbResults.map(pendingPaymentTransactionDBMap);
+  }
+
+  /**
+   * Atomically credit (creating if absent) a user's winston balance in a single
+   * `INSERT ... ON CONFLICT DO UPDATE`. The balance is incremented in-DB on the
+   * numeric value, so there is no read-modify-write window and concurrent
+   * credits to the same wallet can no longer lose an update. Arithmetic is exact
+   * (Postgres `numeric`, no float). Writes the matching audit-log row, choosing
+   * the insert-vs-update change reason from whether the row was newly created
+   * (`xmax = 0` is true for the tuple inserted by this statement).
+   *
+   * Returns whether the user was created and the resulting (post-credit) user.
+   */
+  private async atomicCreditUser({
+    knexTransaction,
+    userAddress,
+    userAddressType,
+    winstonCreditAmount,
+    changeId,
+    auditChangeReasonOnInsert,
+    auditChangeReasonOnUpdate,
+  }: {
+    knexTransaction: KnexTransaction;
+    userAddress: string;
+    userAddressType: UserAddressType;
+    winstonCreditAmount: Winston;
+    changeId: string;
+    auditChangeReasonOnInsert: AuditChangeReason;
+    auditChangeReasonOnUpdate: AuditChangeReason;
+  }): Promise<{ created: boolean; user: User }> {
+    const amount = winstonCreditAmount.toString();
+
+    const rows = await knexTransaction<UserDBResult>(tableNames.user)
+      .insert({
+        user_address: userAddress,
+        user_address_type: userAddressType,
+        winston_credit_balance: amount,
+      })
+      .onConflict(columnNames.userAddress)
+      .merge({
+        winston_credit_balance: knexTransaction.raw(
+          "(??.??::numeric + EXCLUDED.??::numeric)::text",
+          [
+            tableNames.user,
+            columnNames.winstonCreditBalance,
+            columnNames.winstonCreditBalance,
+          ],
+        ),
+      })
+      .returning(knexTransaction.raw("*, (xmax = 0) AS created"));
+
+    const row = rows[0] as UserDBResult & { created: boolean };
+
+    this.log.debug("Atomically credited user balance.", {
+      userAddress,
+      amount,
+      created: row.created,
+      newBalance: row.winston_credit_balance,
+    });
+
+    const auditLogInsert: AuditLogInsert = {
+      user_address: userAddress,
+      winston_credit_amount: amount,
+      change_reason: row.created
+        ? auditChangeReasonOnInsert
+        : auditChangeReasonOnUpdate,
+      change_id: changeId,
+    };
+    await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
+
+    return { created: row.created, user: userDBMap(row) };
   }
 
   private async creditOrCreateUser({
@@ -1457,61 +1384,26 @@ export class PostgresDatabase implements Database {
     winstonCreditAmount: Winston;
     knexTransaction: KnexTransaction;
   }): Promise<void> {
-    try {
-      const user = await this.getUser(userAddress, knexTransaction);
-      const currentBalance = user.winstonCreditBalance;
-      const newBalance = currentBalance.plus(winstonCreditAmount);
-
-      this.log.debug("Incrementing balance...", {
-        userAddress,
-        currentBalance,
-        newBalance,
-      });
-
-      await knexTransaction<UserDBResult>(tableNames.user)
-        .where({
-          user_address: userAddress,
-        })
-        .update({ winston_credit_balance: newBalance.toString() });
-
-      const auditLogInsert: AuditLogInsert = {
-        user_address: userAddress,
-        winston_credit_amount: winstonCreditAmount.toString(),
-        change_reason: changeReason,
-        change_id: changeId,
-      };
-      await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-    } catch (error) {
-      if (error instanceof UserNotFoundWarning) {
-        this.log.debug(
-          `No user found with address '${userAddress}'. Creating a new user with balance of credited winc amount.`
-        );
-        const userDbInsert: UserDBInsert = {
-          user_address: userAddress,
-          user_address_type: userAddressType,
-          winston_credit_balance: winstonCreditAmount.toString(),
-        };
-        await knexTransaction<UserDBResult>(tableNames.user).insert(
-          userDbInsert
-        );
-        const auditLogInsert: AuditLogInsert = {
-          user_address: userAddress,
-          winston_credit_amount: winstonCreditAmount.toString(),
-          change_reason:
-            changeReason === "payment"
-              ? "account_creation"
-              : "gifted_account_creation",
-          change_id: changeId,
-        };
-        await knexTransaction(tableNames.auditLog).insert(auditLogInsert);
-      } else {
-        throw error;
-      }
-    }
+    await this.atomicCreditUser({
+      knexTransaction,
+      userAddress,
+      userAddressType,
+      winstonCreditAmount,
+      changeId,
+      auditChangeReasonOnUpdate: changeReason,
+      // Only a gifted payment creates a "gifted" account; both "payment" (Stripe)
+      // and "crypto_payment" are normal account creations. (The previous
+      // "payment" ? ... : "gifted_account_creation" ternary mislabeled the first
+      // crypto credit to a brand-new wallet as a gifted account creation.)
+      auditChangeReasonOnInsert:
+        changeReason === "gifted_payment"
+          ? "gifted_account_creation"
+          : "account_creation",
+    });
   }
 
   public async createNewCreditedTransaction(
-    params: CreateNewCreditedTransactionParams
+    params: CreateNewCreditedTransactionParams,
   ): Promise<void> {
     this.log.debug("Inserting new credited transaction...", {
       params,
@@ -1546,7 +1438,7 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction<CreditedPaymentTransactionDBResult>(
-        tableNames.creditedPaymentTransaction
+        tableNames.creditedPaymentTransaction,
       ).insert(creditedTransactionDbInsert);
 
       await knexTransaction.batchInsert(
@@ -1562,8 +1454,8 @@ export class PostgresDatabase implements Database {
               top_up_quote_id: transactionId,
             };
             return adjustmentDbInsert;
-          }
-        )
+          },
+        ),
       );
 
       await this.creditOrCreateUser({
@@ -1585,7 +1477,7 @@ export class PostgresDatabase implements Database {
   }: WincUsedForUploadAdjustmentParams): Promise<WC> {
     const uploadAdjustmentDbResult =
       await this.reader<UploadAdjustmentDBResult>(
-        tableNames.uploadAdjustment
+        tableNames.uploadAdjustment,
       ).where({ catalog_id: catalogId, user_address: userAddress })
         .andWhereRaw(`
         ${columnNames.adjustmentDate} > NOW() - interval '${limitationInterval} ${limitationIntervalUnit}'
@@ -1593,13 +1485,13 @@ export class PostgresDatabase implements Database {
 
     return uploadAdjustmentDbResult.reduce(
       (acc, { adjusted_winc_amount }) => acc.plus(W(adjusted_winc_amount)),
-      W(0)
+      W(0),
     );
   }
 
   private async getLockedUser(
     userAddress: string,
-    knexTransaction: KnexTransaction
+    knexTransaction: KnexTransaction,
   ): Promise<User> {
     const user = await knexTransaction<UserDBResult>(tableNames.user)
       .where({
@@ -1625,12 +1517,12 @@ export class PostgresDatabase implements Database {
     return this.writer.transaction(async (knexTransaction) => {
       const conflictingApprovals = await Promise.all([
         knexTransaction<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         ).where({
           approval_data_item_id: approvalDataItemId,
         }),
         knexTransaction<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         ).where({
           approval_data_item_id: approvalDataItemId,
         }),
@@ -1658,7 +1550,7 @@ export class PostgresDatabase implements Database {
 
       const approvalDbResult =
         await knexTransaction<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
           .insert(delegatedPaymentApprovalDbInsert)
           .returning("*");
@@ -1695,7 +1587,7 @@ export class PostgresDatabase implements Database {
       // TODO: Consider revokes and reserve balance happening at the same time
       const deletedActiveApprovals =
         await knexTransaction<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
           .where({
             approved_address: approvedAddress,
@@ -1718,9 +1610,9 @@ export class PostgresDatabase implements Database {
           ...(await knexTransaction
             .batchInsert<InactiveDelegatedPaymentApprovalDBResult>(
               tableNames.inactiveDelegatedPaymentApproval,
-              newInactiveApprovalInserts
+              newInactiveApprovalInserts,
             )
-            .returning("*"))
+            .returning("*")),
         );
 
         const approvedAmount = newInactiveApprovals
@@ -1753,7 +1645,7 @@ export class PostgresDatabase implements Database {
       // so that if they are refunded the balance returns to paying user
       const existingUsedApprovalsMovedToRevoked =
         await knexTransaction<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
           .where({
             approved_address: approvedAddress,
@@ -1780,13 +1672,13 @@ export class PostgresDatabase implements Database {
 
   public async getAllApprovalsForUserAddress(
     userAddress: UserAddress,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<{
     givenApprovals: DelegatedPaymentApproval[];
     receivedApprovals: DelegatedPaymentApproval[];
   }> {
     const dbResults = await knexTransaction<DelegatedPaymentApprovalDBResult>(
-      tableNames.delegatedPaymentApproval
+      tableNames.delegatedPaymentApproval,
     )
       .where({
         approved_address: userAddress,
@@ -1818,10 +1710,10 @@ export class PostgresDatabase implements Database {
       approvedAddress,
       payingAddress,
     }: { payingAddress: UserAddress; approvedAddress: UserAddress },
-    knexTransaction = this.reader
+    knexTransaction = this.reader,
   ): Promise<DelegatedPaymentApproval[]> {
     const dbResults = await knexTransaction<DelegatedPaymentApprovalDBResult>(
-      tableNames.delegatedPaymentApproval
+      tableNames.delegatedPaymentApproval,
     ).where({
       paying_address: payingAddress,
       approved_address: approvedAddress,
@@ -1849,7 +1741,7 @@ export class PostgresDatabase implements Database {
 
   private async trimExpiredApprovals(
     approvals: DelegatedPaymentApprovalDBResult[],
-    knexTransaction: KnexTransaction = this.writer
+    knexTransaction: KnexTransaction = this.writer,
   ): Promise<DelegatedPaymentApprovalDBResult[]> {
     const expiredApprovals: DelegatedPaymentApprovalDBResult[] = [];
     const trimmedApprovals: DelegatedPaymentApprovalDBResult[] = [];
@@ -1865,7 +1757,7 @@ export class PostgresDatabase implements Database {
 
       const deletedApproval = (
         await knexTransaction<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
           .where({
             approval_data_item_id,
@@ -1882,7 +1774,7 @@ export class PostgresDatabase implements Database {
             inactive_reason: "expired",
           };
         await knexTransaction(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         ).insert(inactiveApprovalInsert);
       }
 
@@ -1897,24 +1789,27 @@ export class PostgresDatabase implements Database {
       });
 
       // sort into tuples by paying address
-      const sortedApprovals = expiredApprovals.reduce((acc, approval) => {
-        const payingAddress = approval.paying_address;
-        if (!acc[payingAddress]) {
-          acc[payingAddress] = [];
-        }
-        acc[payingAddress].push(approval);
-        return acc;
-      }, {} as Record<UserAddress, DelegatedPaymentApprovalDBResult[]>);
+      const sortedApprovals = expiredApprovals.reduce(
+        (acc, approval) => {
+          const payingAddress = approval.paying_address;
+          if (!acc[payingAddress]) {
+            acc[payingAddress] = [];
+          }
+          acc[payingAddress].push(approval);
+          return acc;
+        },
+        {} as Record<UserAddress, DelegatedPaymentApprovalDBResult[]>,
+      );
 
       for (const expiredApprovals of Object.values(sortedApprovals)) {
         const paying_address = expiredApprovals[0].paying_address;
         const usedWincAmount = expiredApprovals.reduce(
           (acc, approval) => acc.plus(W(approval.used_winc_amount)),
-          W(0)
+          W(0),
         );
         const approvedWincAmount = expiredApprovals.reduce(
           (acc, approval) => acc.plus(W(approval.approved_winc_amount)),
-          W(0)
+          W(0),
         );
         const wincToRefund = approvedWincAmount.minus(usedWincAmount);
 
@@ -1943,7 +1838,7 @@ export class PostgresDatabase implements Database {
       approvedAddress: UserAddress;
       payingAddress: UserAddress;
     },
-    knexTransaction: KnexTransaction
+    knexTransaction: KnexTransaction,
   ): Promise<DelegatedPaymentApproval[]> {
     return this.getApprovalsFromPayerForAddress(params, knexTransaction).catch(
       (error) => {
@@ -1951,7 +1846,7 @@ export class PostgresDatabase implements Database {
           return [];
         }
         throw error;
-      }
+      },
     );
   }
 
@@ -2001,7 +1896,7 @@ export class PostgresDatabase implements Database {
       let receipt: ArNSPurchaseDBResult[];
       try {
         receipt = await knexTransaction<ArNSPurchaseDBResult>(
-          tableNames.arNSPurchaseReceipt
+          tableNames.arNSPurchaseReceipt,
         )
           .insert(pendingArNSPurchaseDbInsert)
           .returning("*");
@@ -2019,12 +1914,12 @@ export class PostgresDatabase implements Database {
 
   public async updateFailedArNSPurchase(
     nonce: string,
-    failedReason: string
+    failedReason: string,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
       const pendingArNSPurchaseDbResult =
         await knexTransaction<ArNSPurchaseDBResult>(
-          tableNames.arNSPurchaseReceipt
+          tableNames.arNSPurchaseReceipt,
         )
           .where({
             nonce: nonce,
@@ -2060,7 +1955,7 @@ export class PostgresDatabase implements Database {
 
   public async getArNSPurchaseStatus(
     nonce: string,
-    knexTransaction: KnexTransaction = this.reader
+    knexTransaction: KnexTransaction = this.reader,
   ): Promise<ArNSPurchaseStatusResult | undefined> {
     const tables = [
       tableNames.arNSPurchaseReceipt,
@@ -2078,7 +1973,7 @@ export class PostgresDatabase implements Database {
           const res = await knexTransaction(tableName).where({ nonce }).first();
 
           return res || Promise.reject(new Error("No results found"));
-        })
+        }),
       );
 
       return arnsPurchaseDBMap(result);
@@ -2091,11 +1986,11 @@ export class PostgresDatabase implements Database {
   }
 
   public async createArNSPurchaseQuote(
-    params: ArNSPurchaseQuoteParams
+    params: ArNSPurchaseQuoteParams,
   ): Promise<ArNSPurchaseQuote> {
     return this.writer.transaction(async (knexTransaction) => {
       const receipt = await knexTransaction<ArNSPurchaseQuoteDBResult>(
-        tableNames.arNSPurchaseQuote
+        tableNames.arNSPurchaseQuote,
       )
         .insert(arnsPurchaseQuoteDBInsertFromParams(params))
         .returning("*");
@@ -2113,7 +2008,7 @@ export class PostgresDatabase implements Database {
             top_up_quote_id: nonce,
           };
           return adjustmentDbInsert;
-        })
+        }),
       );
 
       return arnsPurchaseQuoteDBMap(receipt[0]);
@@ -2133,10 +2028,10 @@ export class PostgresDatabase implements Database {
   }
 
   public async getArNSPurchaseQuote(
-    nonce: string
+    nonce: string,
   ): Promise<{ quote: ArNSPurchaseQuote }> {
     const result = await this.reader<ArNSPurchaseQuoteDBResult>(
-      tableNames.arNSPurchaseQuote
+      tableNames.arNSPurchaseQuote,
     )
       .where({ nonce })
       .first();
@@ -2150,12 +2045,12 @@ export class PostgresDatabase implements Database {
 
   public async updateArNSPurchaseQuoteToFailure(
     nonce: string,
-    failedReason: string
+    failedReason: string,
   ): Promise<void> {
     return this.writer.transaction(async (knexTransaction) => {
       const pendingArNSPurchaseDbResult =
         await knexTransaction<ArNSPurchaseQuoteDBResult>(
-          tableNames.arNSPurchaseQuote
+          tableNames.arNSPurchaseQuote,
         )
           .where({
             nonce: nonce,
@@ -2186,7 +2081,7 @@ export class PostgresDatabase implements Database {
     return this.writer.transaction(async (knexTransaction) => {
       const pendingArNSPurchaseDbResult =
         await knexTransaction<ArNSPurchaseQuoteDBResult>(
-          tableNames.arNSPurchaseQuote
+          tableNames.arNSPurchaseQuote,
         )
           .where({
             nonce,
@@ -2203,7 +2098,7 @@ export class PostgresDatabase implements Database {
         await this.updateArNSPurchaseQuoteToFailure(nonce, "expired");
 
         throw Error(
-          `Quote with nonce ${nonce} has expired. Quote expiration date: ${quote_expiration_date}`
+          `Quote with nonce ${nonce} has expired. Quote expiration date: ${quote_expiration_date}`,
         );
       }
 
@@ -2211,7 +2106,7 @@ export class PostgresDatabase implements Database {
       if (excess_winc && excess_winc !== "0") {
         if (+excess_winc < 0) {
           throw new Error(
-            `Excess winc cannot be negative. Received: ${excess_winc}`
+            `Excess winc cannot be negative. Received: ${excess_winc}`,
           );
         }
 
@@ -2231,7 +2126,7 @@ export class PostgresDatabase implements Database {
             winston_credit_balance: excess_winc.toString(),
           };
           await knexTransaction<UserDBResult>(tableNames.user).insert(
-            userDbInsert
+            userDbInsert,
           );
           const auditLogInsert: AuditLogInsert = {
             user_address: userAddress,
@@ -2243,7 +2138,7 @@ export class PostgresDatabase implements Database {
         } else {
           // Update the existing user with the excess winc
           const newBalance = W(user.winston_credit_balance).plus(
-            W(excess_winc)
+            W(excess_winc),
           );
           await knexTransaction<UserDBResult>(tableNames.user)
             .where({ user_address: userAddress })
@@ -2273,7 +2168,7 @@ export class PostgresDatabase implements Database {
       };
 
       await knexTransaction<ArNSPurchaseDBResult>(
-        tableNames.arNSPurchaseReceipt
+        tableNames.arNSPurchaseReceipt,
       ).insert(dbInsert);
     });
   }
@@ -2324,7 +2219,7 @@ export class PostgresDatabase implements Database {
       // Lock all received approvals when signer provides paid-by addresses
       const receivedApprovals = (
         await knexTransaction<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
           .where({
             approved_address: signerAddress,
@@ -2345,7 +2240,7 @@ export class PostgresDatabase implements Database {
           // Cover the whole remainder if signer has enough balance, else continue to the next payer
 
           const signerSpendAmount = signerBalance.isGreaterThanOrEqualTo(
-            remainingWincAmount
+            remainingWincAmount,
           )
             ? remainingWincAmount
             : signerBalance;
@@ -2365,7 +2260,7 @@ export class PostgresDatabase implements Database {
         }
 
         const approvalsFromPayer = receivedApprovals.filter(
-          (approval) => approval.payingAddress === payingAddress
+          (approval) => approval.payingAddress === payingAddress,
         );
 
         if (approvalsFromPayer.length === 0) {
@@ -2453,7 +2348,7 @@ export class PostgresDatabase implements Database {
             approvedWincAmount.minus(usedWincAmount);
           const wincAmountToSpend =
             remainingApprovalAmount.isGreaterThanOrEqualTo(
-              remainingWincToCreditToApprovals
+              remainingWincToCreditToApprovals,
             )
               ? remainingWincToCreditToApprovals
               : remainingApprovalAmount;
@@ -2467,7 +2362,7 @@ export class PostgresDatabase implements Database {
             // Move the approval to used if the entire approval was used
             const approval =
               await knexTransaction<DelegatedPaymentApprovalDBResult>(
-                tableNames.delegatedPaymentApproval
+                tableNames.delegatedPaymentApproval,
               )
                 .where({
                   approval_data_item_id: approvalDataItemId,
@@ -2481,11 +2376,11 @@ export class PostgresDatabase implements Database {
                 inactive_reason: "used",
               };
             await knexTransaction<InactiveDelegatedPaymentApprovalDBResult>(
-              tableNames.inactiveDelegatedPaymentApproval
+              tableNames.inactiveDelegatedPaymentApproval,
             ).insert(inactiveApprovalDbInsert);
           } else {
             await knexTransaction<DelegatedPaymentApprovalDBResult>(
-              tableNames.delegatedPaymentApproval
+              tableNames.delegatedPaymentApproval,
             )
               .where({
                 approval_data_item_id: approvalDataItemId,
@@ -2502,7 +2397,7 @@ export class PostgresDatabase implements Database {
             {
               payingAddress,
               remainingWincToCreditToApprovals,
-            }
+            },
           );
           throw new InsufficientBalance(payingAddress);
         }
@@ -2583,7 +2478,7 @@ export class PostgresDatabase implements Database {
               approvedAddress: signerAddress,
               payingAddress: paying_address,
             },
-            knexTransaction
+            knexTransaction,
           );
         for (const {
           approvalDataItemId,
@@ -2596,7 +2491,7 @@ export class PostgresDatabase implements Database {
           if (usedWincAmount.isGreaterThanOrEqualTo(winc_amount)) {
             const newUsedWincAmount = usedWincAmount.minus(winc_amount);
             await knexTransaction<DelegatedPaymentApprovalDBResult>(
-              tableNames.delegatedPaymentApproval
+              tableNames.delegatedPaymentApproval,
             )
               .where({
                 approval_data_item_id: approvalDataItemId,
@@ -2608,7 +2503,7 @@ export class PostgresDatabase implements Database {
           } else {
             const newUsedWincAmount = W(0);
             await knexTransaction<DelegatedPaymentApprovalDBResult>(
-              tableNames.delegatedPaymentApproval
+              tableNames.delegatedPaymentApproval,
             )
               .where({
                 approval_data_item_id: approvalDataItemId,
@@ -2624,7 +2519,7 @@ export class PostgresDatabase implements Database {
         // Handle refunding any inactive approvals
         const inactiveApprovalsFromPayer =
           await knexTransaction<InactiveDelegatedPaymentApprovalDBResult>(
-            tableNames.inactiveDelegatedPaymentApproval
+            tableNames.inactiveDelegatedPaymentApproval,
           ).where({
             approved_address: signerAddress,
             paying_address: paying_address,
@@ -2642,10 +2537,10 @@ export class PostgresDatabase implements Database {
             // Refund the balance to the paying address when the approval is expired or revoked
             const payer = await this.getLockedUser(
               paying_address,
-              knexTransaction
+              knexTransaction,
             );
             const newBalance = payer.winstonCreditBalance.plus(
-              W(used_winc_amount)
+              W(used_winc_amount),
             );
             await knexTransaction<UserDBResult>(tableNames.user)
               .where({
@@ -2666,13 +2561,13 @@ export class PostgresDatabase implements Database {
           }
           const usedWincAmount = W(used_winc_amount);
           const newUsedWincAmount = usedWincAmount.isGreaterThanOrEqualTo(
-            remainingWincToRefundToApprovals
+            remainingWincToRefundToApprovals,
           )
             ? usedWincAmount.minus(remainingWincToRefundToApprovals)
             : W(0);
           const res = (
             await knexTransaction<InactiveDelegatedPaymentApprovalDBResult>(
-              tableNames.inactiveDelegatedPaymentApproval
+              tableNames.inactiveDelegatedPaymentApproval,
             )
               .where({
                 approval_data_item_id,
@@ -2691,7 +2586,7 @@ export class PostgresDatabase implements Database {
           };
 
           await knexTransaction<DelegatedPaymentApprovalDBResult>(
-            tableNames.delegatedPaymentApproval
+            tableNames.delegatedPaymentApproval,
           ).insert(delegatedDbInsert);
 
           remainingWincToRefundToApprovals =
@@ -2721,7 +2616,7 @@ export class PostgresDatabase implements Database {
   // x402 Payment Methods
 
   async createX402Payment(
-    params: CreateX402PaymentParams
+    params: CreateX402PaymentParams,
   ): Promise<X402PaymentTransaction> {
     const {
       userAddress,
@@ -2758,7 +2653,7 @@ export class PostgresDatabase implements Database {
     };
 
     await this.writer<X402PaymentTransactionDBResult>(
-      tableNames.x402PaymentTransaction
+      tableNames.x402PaymentTransaction,
     ).insert(dbInsert);
 
     globalLogger.info("Created x402 payment transaction", {
@@ -2789,10 +2684,10 @@ export class PostgresDatabase implements Database {
   }
 
   async getX402Payment(
-    paymentId: string
+    paymentId: string,
   ): Promise<X402PaymentTransaction | undefined> {
     const result = await this.reader<X402PaymentTransactionDBResult>(
-      tableNames.x402PaymentTransaction
+      tableNames.x402PaymentTransaction,
     )
       .where({ id: paymentId })
       .first();
@@ -2805,10 +2700,10 @@ export class PostgresDatabase implements Database {
   }
 
   async getX402PaymentByTxHash(
-    txHash: string
+    txHash: string,
   ): Promise<X402PaymentTransaction | undefined> {
     const result = await this.reader<X402PaymentTransactionDBResult>(
-      tableNames.x402PaymentTransaction
+      tableNames.x402PaymentTransaction,
     )
       .where({ tx_hash: txHash })
       .first();
@@ -2821,10 +2716,10 @@ export class PostgresDatabase implements Database {
   }
 
   async getX402PaymentByDataItemId(
-    dataItemId: DataItemId
+    dataItemId: DataItemId,
   ): Promise<X402PaymentTransaction | undefined> {
     const result = await this.reader<X402PaymentTransactionDBResult>(
-      tableNames.x402PaymentTransaction
+      tableNames.x402PaymentTransaction,
     )
       .where({ data_item_id: dataItemId })
       .first();
@@ -2849,7 +2744,7 @@ export class PostgresDatabase implements Database {
     await this.writer.transaction(async (knexTransaction) => {
       // Update payment status
       await knexTransaction<X402PaymentTransactionDBResult>(
-        tableNames.x402PaymentTransaction
+        tableNames.x402PaymentTransaction,
       )
         .where({ id: payment.id })
         .update({
@@ -2863,7 +2758,7 @@ export class PostgresDatabase implements Database {
       if (refundWinc && refundWinc.isGreaterThan(W(0))) {
         const user = await this.getLockedUser(
           payment.userAddress,
-          knexTransaction
+          knexTransaction,
         );
         const newBalance = user.winstonCreditBalance.plus(refundWinc);
 
@@ -2894,7 +2789,7 @@ export class PostgresDatabase implements Database {
 
       // Delete reservation
       await knexTransaction<X402PaymentReservationDBResult>(
-        tableNames.x402PaymentReservation
+        tableNames.x402PaymentReservation,
       )
         .where({ data_item_id: dataItemId })
         .del();
@@ -2925,7 +2820,7 @@ export class PostgresDatabase implements Database {
     };
 
     await this.writer<X402PaymentReservationDBResult>(
-      tableNames.x402PaymentReservation
+      tableNames.x402PaymentReservation,
     ).insert(dbInsert);
 
     this.log.debug("Created x402 payment reservation", {
@@ -2936,10 +2831,10 @@ export class PostgresDatabase implements Database {
   }
 
   async getX402PaymentReservation(
-    dataItemId: DataItemId
+    dataItemId: DataItemId,
   ): Promise<X402PaymentReservation | undefined> {
     const result = await this.reader<X402PaymentReservationDBResult>(
-      tableNames.x402PaymentReservation
+      tableNames.x402PaymentReservation,
     )
       .where({ data_item_id: dataItemId })
       .first();
@@ -2959,7 +2854,7 @@ export class PostgresDatabase implements Database {
 
   async deleteX402PaymentReservation(dataItemId: DataItemId): Promise<void> {
     await this.writer<X402PaymentReservationDBResult>(
-      tableNames.x402PaymentReservation
+      tableNames.x402PaymentReservation,
     )
       .where({ data_item_id: dataItemId })
       .del();
@@ -3003,7 +2898,7 @@ export class PostgresDatabase implements Database {
           winston_credit_balance: winstonAmount.toString(),
         };
         await knexTransaction<UserDBResult>(tableNames.user).insert(
-          userDbInsert
+          userDbInsert,
         );
 
         const auditLogInsert: AuditLogInsert = {
@@ -3045,7 +2940,7 @@ export class PostgresDatabase implements Database {
     const now = new Date().toISOString();
 
     const deletedCount = await this.writer<X402PaymentReservationDBResult>(
-      tableNames.x402PaymentReservation
+      tableNames.x402PaymentReservation,
     )
       .where("expires_at", "<", now)
       .del();
@@ -3058,7 +2953,7 @@ export class PostgresDatabase implements Database {
   }
 
   private x402PaymentFromDbResult(
-    result: X402PaymentTransactionDBResult
+    result: X402PaymentTransactionDBResult,
   ): X402PaymentTransaction {
     return {
       id: result.id,

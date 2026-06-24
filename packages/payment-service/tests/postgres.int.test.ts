@@ -57,7 +57,7 @@ describe("PostgresDatabase class", () => {
 
   before(async () => {
     await db["writer"]<SingleUseCodePaymentCatalogDBResult>(
-      tableNames.singleUseCodePaymentAdjustmentCatalog
+      tableNames.singleUseCodePaymentAdjustmentCatalog,
     ).insert({
       code_value: postgresTestPromoCode,
       adjustment_exclusivity: "exclusive",
@@ -70,7 +70,7 @@ describe("PostgresDatabase class", () => {
 
   describe("createTopUpQuote method", () => {
     const quoteExpirationDate = new Date(
-      "2023-03-23 12:34:56.789Z"
+      "2023-03-23 12:34:56.789Z",
     ).toISOString();
 
     before(async () => {
@@ -100,7 +100,7 @@ describe("PostgresDatabase class", () => {
 
     it("creates the expected top up quote in the database", async () => {
       const topUpQuote = await db["writer"]<TopUpQuoteDBResult>(
-        tableNames.topUpQuote
+        tableNames.topUpQuote,
       ).where({ top_up_quote_id: "Unique Identifier" });
       expect(topUpQuote.length).to.equal(1);
 
@@ -125,7 +125,7 @@ describe("PostgresDatabase class", () => {
       expect(payment_provider).to.equal("stripe");
       expect(quote_creation_date).to.exist;
       expect(new Date(quote_expiration_date).toISOString()).to.equal(
-        quoteExpirationDate
+        quoteExpirationDate,
       );
       expect(top_up_quote_id).to.equal("Unique Identifier");
       expect(winston_credit_amount).to.equal("500");
@@ -133,7 +133,7 @@ describe("PostgresDatabase class", () => {
 
     it("creates the expected payment adjustment in the database", async () => {
       const paymentAdjustments = await db["writer"]<PaymentAdjustmentDBResult>(
-        tableNames.paymentAdjustment
+        tableNames.paymentAdjustment,
       ).where({
         top_up_quote_id: "Unique Identifier",
       });
@@ -238,7 +238,7 @@ describe("PostgresDatabase class", () => {
 
     it("creates the expected payment_receipt in the database entity", async () => {
       const paymentReceipt = await db["writer"]<PaymentReceiptDBResult>(
-        tableNames.paymentReceipt
+        tableNames.paymentReceipt,
       ).where({ payment_receipt_id: "Unique Identifier" });
       expect(paymentReceipt.length).to.equal(1);
 
@@ -291,13 +291,13 @@ describe("PostgresDatabase class", () => {
       expect(oldUser.length).to.equal(1);
 
       expect(oldUser[0].winston_credit_balance).to.equal(
-        oldUserBalance.plus(oldUserPaymentAmount).toString()
+        oldUserBalance.plus(oldUserPaymentAmount).toString(),
       );
     });
 
     it("deletes the top_up_quotes as expected", async () => {
       const topUpQuoteDbResults = await db["writer"]<TopUpQuoteDBResult>(
-        tableNames.topUpQuote
+        tableNames.topUpQuote,
       );
       const topUpIds = topUpQuoteDbResults.map((r) => r.top_up_quote_id);
 
@@ -330,13 +330,13 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.paymentReceipt).where({
             payment_receipt_id: "This is fine",
           })
-        ).length
+        ).length,
       ).to.equal(0);
     });
 
     it("errors as expected when top_up_quote is beyond expiration date", async () => {
       const quoteExpirationDateInThePast = new Date(
-        Date.now() - 1000
+        Date.now() - 1000,
       ).toISOString();
 
       await dbTestHelper.insertStubTopUpQuote({
@@ -362,7 +362,7 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.paymentReceipt).where({
             payment_receipt_id: "This is a string",
           })
-        ).length
+        ).length,
       ).to.equal(0);
     });
 
@@ -383,7 +383,7 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.paymentReceipt).where({
             payment_receipt_id: "This is fine",
           })
-        ).length
+        ).length,
       ).to.equal(0);
     });
 
@@ -395,7 +395,7 @@ describe("PostgresDatabase class", () => {
       const promoCodeEventCatalogId = await db[
         "reader"
       ]<SingleUseCodePaymentCatalogDBResult>(
-        tableNames.singleUseCodePaymentAdjustmentCatalog
+        tableNames.singleUseCodePaymentAdjustmentCatalog,
       )
         .where({ code_value: postgresTestPromoCode })
         .first()
@@ -433,7 +433,7 @@ describe("PostgresDatabase class", () => {
           await db["reader"](tableNames.paymentReceipt).where({
             payment_receipt_id: "Unique Identifier promo code",
           })
-        ).length
+        ).length,
       ).to.equal(1);
 
       await expectAsyncErrorThrow({
@@ -453,8 +453,90 @@ describe("PostgresDatabase class", () => {
           await db["reader"](tableNames.paymentReceipt).where({
             payment_receipt_id: "Unique Identifier second promo code ",
           })
-        ).length
+        ).length,
       ).to.equal(0);
+    });
+  });
+
+  describe("atomic credit concurrency + idempotency (C2)", () => {
+    it("does not lose updates when many credits hit the same brand-new wallet concurrently", async () => {
+      const address = randomCharString();
+      const concurrency = 25;
+      const creditEach = new Winston("1000");
+
+      // Seed N independent top-up quotes for the SAME destination address.
+      const quoteIds = Array.from({ length: concurrency }, () =>
+        randomCharString(),
+      );
+      await Promise.all(
+        quoteIds.map((top_up_quote_id) =>
+          dbTestHelper.insertStubTopUpQuote({
+            top_up_quote_id,
+            payment_amount: "100",
+            currency_type: "usd",
+            destination_address: address,
+            destination_address_type: "arweave",
+            winston_credit_amount: creditEach.toString(),
+          }),
+        ),
+      );
+
+      // Fire all payment receipts concurrently. The user does not yet exist, so
+      // this exercises BOTH the create-race (ON CONFLICT) and the read-modify-
+      // write increment lost-update window that the atomic upsert closes. With
+      // the previous unlocked read-then-write, some of these credits would be
+      // silently lost and the final balance would be < concurrency * creditEach.
+      await Promise.all(
+        quoteIds.map((topUpQuoteId) =>
+          db.createPaymentReceipt({
+            paymentAmount: 100,
+            currencyType: "usd",
+            topUpQuoteId,
+            paymentReceiptId: randomCharString(),
+          }),
+        ),
+      );
+
+      const user = await db["writer"]<UserDBResult>(tableNames.user).where({
+        user_address: address,
+      });
+      expect(user.length).to.equal(1);
+      expect(user[0].winston_credit_balance).to.equal(
+        creditEach.times(concurrency).toString(),
+      );
+
+      // The audit log must record exactly one row per credit (no lost ledger
+      // entries either).
+      const auditRows = await db["writer"]<AuditLogDBResult>(
+        tableNames.auditLog,
+      ).where({ user_address: address });
+      expect(auditRows.length).to.equal(concurrency);
+    });
+
+    it("enforces one payment_receipt per top_up_quote_id (duplicate webhook guard)", async () => {
+      const top_up_quote_id = randomCharString();
+      await dbTestHelper.insertStubPaymentReceipt({
+        payment_receipt_id: randomCharString(),
+        top_up_quote_id,
+      });
+
+      let caught: Error | null = null;
+      try {
+        await dbTestHelper.insertStubPaymentReceipt({
+          payment_receipt_id: randomCharString(),
+          top_up_quote_id,
+        });
+      } catch (err) {
+        caught = err as Error;
+      }
+
+      expect(
+        caught,
+        "a duplicate top_up_quote_id must be rejected",
+      ).to.not.equal(null);
+      expect(caught?.message).to.contain(
+        "payment_receipt_top_up_quote_id_unique",
+      );
     });
   });
 
@@ -515,7 +597,7 @@ describe("PostgresDatabase class", () => {
 
     it("creates the expected chargeback receipt in the database", async () => {
       const chargebackReceipt = await db["writer"]<ChargebackReceiptDBResult>(
-        tableNames.chargebackReceipt
+        tableNames.chargebackReceipt,
       ).where({
         chargeback_receipt_id: "A great Unique Identifier",
       });
@@ -562,7 +644,7 @@ describe("PostgresDatabase class", () => {
       expect(oldUser.length).to.equal(1);
 
       expect(oldUser[0].winston_credit_balance).to.equal(
-        naughtyUserBalance.minus(new Winston("100")).toString()
+        naughtyUserBalance.minus(new Winston("100")).toString(),
       );
     });
 
@@ -581,7 +663,7 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.chargebackReceipt).where({
             chargeback_receipt_id: "Great value",
           })
-        ).length
+        ).length,
       ).to.equal(0);
     });
 
@@ -603,13 +685,13 @@ describe("PostgresDatabase class", () => {
       });
 
       const negativeBalanceUserBefore = await db["writer"]<UserDBResult>(
-        tableNames.user
+        tableNames.user,
       ).where({
         user_address: underfundedUserAddress,
       });
 
       const balanceBeforeChargeback = new Winston(
-        negativeBalanceUserBefore[0].winston_credit_balance
+        negativeBalanceUserBefore[0].winston_credit_balance,
       );
 
       await db.createChargebackReceipt({
@@ -619,19 +701,19 @@ describe("PostgresDatabase class", () => {
       });
 
       const negativeBalanceAfter = await db["writer"]<UserDBResult>(
-        tableNames.user
+        tableNames.user,
       ).where({
         user_address: underfundedUserAddress,
       });
 
       const balanceAfterChargeback = new Winston(
-        negativeBalanceAfter[0].winston_credit_balance
+        negativeBalanceAfter[0].winston_credit_balance,
       );
 
       expect(balanceAfterChargeback.toString()).to.equal(
         balanceBeforeChargeback
           .minus(new Winston(disputedWinstonAmount))
-          .toString()
+          .toString(),
       );
 
       expect(
@@ -639,7 +721,7 @@ describe("PostgresDatabase class", () => {
           await db["writer"](tableNames.chargebackReceipt).where({
             chargeback_receipt_id: chargebackReceiptId,
           })
-        ).length
+        ).length,
       ).to.equal(1);
     });
   });
@@ -879,16 +961,16 @@ describe("PostgresDatabase class", () => {
       expect(balanceReservationDbResult.length).to.equal(1);
       expect(balanceReservationDbResult[0].user_address).to.equal(richAddress);
       expect(balanceReservationDbResult[0].reserved_winc_amount).to.equal(
-        "500"
+        "500",
       );
       expect(balanceReservationDbResult[0].reserved_date).to.exist;
       expect(typeof balanceReservationDbResult[0].reservation_id).to.equal(
-        "string"
+        "string",
       );
       expect(balanceReservationDbResult[0].data_item_id).to.equal(stubTxId1);
 
       const adjustmentDbResult = await db["writer"]<UploadAdjustmentDBInsert>(
-        tableNames.uploadAdjustment
+        tableNames.uploadAdjustment,
       ).where({
         reservation_id: balanceReservationDbResult[0].reservation_id,
       });
@@ -901,7 +983,7 @@ describe("PostgresDatabase class", () => {
       expect(adjustmentDbResult[1].adjustment_index).to.equal(1);
 
       const auditLogDbResult = await db["writer"]<AuditLogDBResult>(
-        tableNames.auditLog
+        tableNames.auditLog,
       ).where({
         change_id: stubTxId1,
       });
@@ -977,7 +1059,7 @@ describe("PostgresDatabase class", () => {
 
       const inactiveApprovals = await dbTestHelper
         .knex<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
         .where({
           paying_address: payingAddress,
@@ -1068,7 +1150,7 @@ describe("PostgresDatabase class", () => {
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemId,
@@ -1143,7 +1225,7 @@ describe("PostgresDatabase class", () => {
       const inactiveApproval1 = (
         await dbTestHelper
           .knex<InactiveDelegatedPaymentApprovalDBResult>(
-            tableNames.inactiveDelegatedPaymentApproval
+            tableNames.inactiveDelegatedPaymentApproval,
           )
           .where({
             approval_data_item_id: approval1DataItemId,
@@ -1155,7 +1237,7 @@ describe("PostgresDatabase class", () => {
       const inactiveApproval2 = (
         await dbTestHelper
           .knex<InactiveDelegatedPaymentApprovalDBResult>(
-            tableNames.inactiveDelegatedPaymentApproval
+            tableNames.inactiveDelegatedPaymentApproval,
           )
           .where({
             approval_data_item_id: approval2DataItemId,
@@ -1167,7 +1249,7 @@ describe("PostgresDatabase class", () => {
       const delegatedApproval3 = (
         await dbTestHelper
           .knex<DelegatedPaymentApprovalDBResult>(
-            tableNames.delegatedPaymentApproval
+            tableNames.delegatedPaymentApproval,
           )
           .where({
             approval_data_item_id: approval3DataItemId,
@@ -1321,7 +1403,7 @@ describe("PostgresDatabase class", () => {
       await db.refundBalance(
         happyAddress,
         new Winston(100_000),
-        uniqueDataItemId
+        uniqueDataItemId,
       );
 
       const happyUser = await db.getUser(happyAddress);
@@ -1335,7 +1417,7 @@ describe("PostgresDatabase class", () => {
         promiseToError: db.refundBalance(
           "Non Existent Address",
           new Winston(1337),
-          uniqueDataItemId
+          uniqueDataItemId,
         ),
         errorType: "UserNotFoundWarning",
         errorMessage:
@@ -1392,7 +1474,7 @@ describe("PostgresDatabase class", () => {
       const approval1UsedWincAmount = (
         await dbTestHelper
           .knex<DelegatedPaymentApprovalDBResult>(
-            tableNames.delegatedPaymentApproval
+            tableNames.delegatedPaymentApproval,
           )
           .where({
             approved_address: signerAddress,
@@ -1404,7 +1486,7 @@ describe("PostgresDatabase class", () => {
       const approval2UsedWincAmount = (
         await dbTestHelper
           .knex<DelegatedPaymentApprovalDBResult>(
-            tableNames.delegatedPaymentApproval
+            tableNames.delegatedPaymentApproval,
           )
           .where({
             approved_address: signerAddress,
@@ -1432,7 +1514,7 @@ describe("PostgresDatabase class", () => {
       });
 
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("900");
 
       await db.reserveBalance({
@@ -1452,18 +1534,18 @@ describe("PostgresDatabase class", () => {
 
       // payingAddress should have un-used winc balance restored on revoke
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("950");
 
       await db.refundBalance(
         signerAddress,
         new Winston(50),
-        approvalDataItemIdRevoked
+        approvalDataItemIdRevoked,
       );
 
       // payingAddress should have the refunded winc amount restored when approval was revoked
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("1000");
     });
 
@@ -1486,7 +1568,7 @@ describe("PostgresDatabase class", () => {
       });
 
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("900");
 
       await db.reserveBalance({
@@ -1502,18 +1584,18 @@ describe("PostgresDatabase class", () => {
 
       // payingAddress should have un-used winc balance restored on expiration
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("950");
 
       await db.refundBalance(
         signerAddress,
         new Winston(50),
-        approvalDataItemIdRevoked
+        approvalDataItemIdRevoked,
       );
 
       // payingAddress should have the refunded winc amount restored when approval was expired
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("1000");
     });
 
@@ -1536,7 +1618,7 @@ describe("PostgresDatabase class", () => {
         approvedWincAmount: W("100"),
       });
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("900");
 
       await db.reserveBalance({
@@ -1551,7 +1633,7 @@ describe("PostgresDatabase class", () => {
 
       const inactiveApprovals = await dbTestHelper
         .knex<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemIdRevoked,
@@ -1569,28 +1651,28 @@ describe("PostgresDatabase class", () => {
 
       const inactiveApprovalsAfterRevoke = await dbTestHelper
         .knex<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemIdRevoked,
         });
       expect(inactiveApprovalsAfterRevoke).to.have.length(1);
       expect(inactiveApprovalsAfterRevoke[0].inactive_reason).to.equal(
-        "revoked"
+        "revoked",
       );
       expect(inactiveApprovalsAfterRevoke[0].revoke_data_item_id).to.equal(
-        revokeDataItemId
+        revokeDataItemId,
       );
 
       await db.refundBalance(
         signerAddress,
         new Winston(100),
-        approvalDataItemIdRevoked
+        approvalDataItemIdRevoked,
       );
 
       // payingAddress should have all winc balance restored on used but then revoked and then refunded approvals
       expect(
-        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString()
+        (await dbTestHelper.db.getBalance(payingAddress)).winc.toString(),
       ).to.equal("1000");
     });
   });
@@ -1601,7 +1683,7 @@ describe("PostgresDatabase class", () => {
 
       const adjustmentDbResult = await db.getSingleUsePromoCodeAdjustments(
         [postgresTestPromoCode],
-        userAddress
+        userAddress,
       );
       expect(adjustmentDbResult.length).to.equal(1);
 
@@ -1636,7 +1718,7 @@ describe("PostgresDatabase class", () => {
 
       before(async () => {
         await db["writer"]<SingleUseCodePaymentCatalogDBResult>(
-          tableNames.singleUseCodePaymentAdjustmentCatalog
+          tableNames.singleUseCodePaymentAdjustmentCatalog,
         ).insert({
           code_value: pilotReferralPromoCode,
           adjustment_exclusivity: "exclusive",
@@ -1656,7 +1738,7 @@ describe("PostgresDatabase class", () => {
 
         const adjustmentDbResult = await db.getSingleUsePromoCodeAdjustments(
           [pilotReferralPromoCode],
-          userAddress
+          userAddress,
         );
         expect(adjustmentDbResult.length).to.equal(1);
 
@@ -1702,7 +1784,7 @@ describe("PostgresDatabase class", () => {
         await expectAsyncErrorThrow({
           promiseToError: db.getSingleUsePromoCodeAdjustments(
             [pilotReferralPromoCode],
-            "userAddress"
+            "userAddress",
           ),
           errorMessage: `The promo code '${pilotReferralPromoCode}' has already been used the maximum number of times (10)`,
           errorType: "PromoCodeExceedsMaxUses",
@@ -1731,7 +1813,7 @@ describe("PostgresDatabase class", () => {
         await expectAsyncErrorThrow({
           promiseToError: db.getSingleUsePromoCodeAdjustments(
             [postgresTestPromoCode],
-            usedPromoCodeUserAddress
+            usedPromoCodeUserAddress,
           ),
           errorMessage: `The user 'usedPromoCodeUserAddress' is ineligible for the promo code '${postgresTestPromoCode}'`,
           errorType: "UserIneligibleForPromoCode",
@@ -1761,7 +1843,7 @@ describe("PostgresDatabase class", () => {
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemId,
@@ -1772,7 +1854,7 @@ describe("PostgresDatabase class", () => {
       expect(delegatedApprovals[0].approved_address).to.equal(approvedAddress);
       expect(delegatedApprovals[0].paying_address).to.equal(payingAddress);
       expect(delegatedApprovals[0].approval_data_item_id).to.equal(
-        approvalDataItemId
+        approvalDataItemId,
       );
       expect(delegatedApprovals[0].creation_date).to.exist;
       expect(delegatedApprovals[0].used_winc_amount).to.equal("0");
@@ -1851,7 +1933,7 @@ describe("PostgresDatabase class", () => {
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemId,
@@ -1894,7 +1976,7 @@ describe("PostgresDatabase class", () => {
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemId,
@@ -1968,7 +2050,7 @@ describe("PostgresDatabase class", () => {
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           paying_address: payingAddress,
@@ -1976,9 +2058,8 @@ describe("PostgresDatabase class", () => {
 
       expect(delegatedApprovals.length).to.equal(2);
 
-      const { winc, controlledWinc, effectiveBalance } = await db.getBalance(
-        payingAddress
-      );
+      const { winc, controlledWinc, effectiveBalance } =
+        await db.getBalance(payingAddress);
       expect(controlledWinc.toString()).to.equal("1000");
       // The user's spending power on their account is 200 because the user has 2 approvals with 400 approved balance each
       expect(winc.toString()).to.equal("200");
@@ -2026,7 +2107,7 @@ describe("PostgresDatabase class", () => {
 
       const inactiveApprovals = await dbTestHelper
         .knex<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
         .where({
           approved_address: approvedAddress,
@@ -2034,12 +2115,12 @@ describe("PostgresDatabase class", () => {
       expect(inactiveApprovals.length).to.equal(2);
       expect(inactiveApprovals[0].inactive_reason).to.equal("revoked");
       expect(inactiveApprovals[0].revoke_data_item_id).to.equal(
-        revokeDataItemId
+        revokeDataItemId,
       );
 
       const delegatedApprovals = await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .where({
           approval_data_item_id: approvalDataItemId,
@@ -2154,7 +2235,7 @@ describe("PostgresDatabase class", () => {
         "Expired data item ID -- Get All Approvals Test";
       await dbTestHelper
         .knex<DelegatedPaymentApprovalDBResult>(
-          tableNames.delegatedPaymentApproval
+          tableNames.delegatedPaymentApproval,
         )
         .insert({
           approval_data_item_id: expiredGivenApproval,
@@ -2172,30 +2253,30 @@ describe("PostgresDatabase class", () => {
       expect(givenApprovals.length).to.equal(2);
 
       expect(givenApprovals[0].approvalDataItemId).to.equal(
-        givenApprovalWithClosestExpirationDate
+        givenApprovalWithClosestExpirationDate,
       );
       expect(givenApprovals[1].approvalDataItemId).to.equal(
-        givenApprovalWithAnExpirationDate
+        givenApprovalWithAnExpirationDate,
       );
 
       expect(receivedApprovals.length).to.equal(4);
 
       expect(receivedApprovals[0].approvalDataItemId).to.equal(
-        receivedApprovalWithClosestExpirationDate
+        receivedApprovalWithClosestExpirationDate,
       );
       expect(receivedApprovals[1].approvalDataItemId).to.equal(
-        receivedApprovalWithAnExpirationDate
+        receivedApprovalWithAnExpirationDate,
       );
       expect(receivedApprovals[2].approvalDataItemId).to.equal(
-        oldestReceivedApprovalWithNoExpiration
+        oldestReceivedApprovalWithNoExpiration,
       );
       expect(receivedApprovals[3].approvalDataItemId).to.equal(
-        receivedApprovalWithNoExpiration
+        receivedApprovalWithNoExpiration,
       );
 
       const inactiveApprovals = await dbTestHelper
         .knex<InactiveDelegatedPaymentApprovalDBResult>(
-          tableNames.inactiveDelegatedPaymentApproval
+          tableNames.inactiveDelegatedPaymentApproval,
         )
         .where({
           paying_address: userAddress,
@@ -2203,7 +2284,7 @@ describe("PostgresDatabase class", () => {
 
       expect(inactiveApprovals.length).to.equal(1);
       expect(inactiveApprovals[0].approval_data_item_id).to.equal(
-        expiredGivenApproval
+        expiredGivenApproval,
       );
       expect(inactiveApprovals[0].inactive_reason).to.equal("expired");
 
@@ -2249,10 +2330,10 @@ describe("PostgresDatabase class", () => {
 
       expect(approvalsFromPayer.length).to.equal(2);
       expect(approvalsFromPayer[0].approvalDataItemId).to.equal(
-        approvalDataItemId1
+        approvalDataItemId1,
       );
       expect(approvalsFromPayer[1].approvalDataItemId).to.equal(
-        approvalDataItemId2
+        approvalDataItemId2,
       );
     });
 
@@ -2391,7 +2472,7 @@ describe("PostgresDatabase class", () => {
           },
         ]);
         expect(pendingArNSPurchases[0].paid_by).to.equal(
-          payerOne + "," + payerTwo
+          payerOne + "," + payerTwo,
         );
 
         const signer = await db.getUser(owner);
@@ -2399,7 +2480,7 @@ describe("PostgresDatabase class", () => {
 
         const inactiveApprovals = await dbTestHelper
           .knex<InactiveDelegatedPaymentApprovalDBResult>(
-            tableNames.inactiveDelegatedPaymentApproval
+            tableNames.inactiveDelegatedPaymentApproval,
           )
           .where({
             approved_address: owner,
@@ -2409,7 +2490,7 @@ describe("PostgresDatabase class", () => {
 
         const inactiveApprovals2 = await dbTestHelper
           .knex<InactiveDelegatedPaymentApprovalDBResult>(
-            tableNames.inactiveDelegatedPaymentApproval
+            tableNames.inactiveDelegatedPaymentApproval,
           )
           .where({
             approved_address: owner,
@@ -2613,7 +2694,7 @@ describe("PostgresDatabase class", () => {
         });
         await db.updateFailedArNSPurchase(
           nonce,
-          "Failed Reason -- Update Failed ArNS Purchase Test 2"
+          "Failed Reason -- Update Failed ArNS Purchase Test 2",
         );
         const failedArNSPurchases = await dbTestHelper
           .knex<FailedArNSPurchaseDBResult>(tableNames.failedArNSPurchase)
@@ -2635,7 +2716,7 @@ describe("PostgresDatabase class", () => {
 
         const approval = await dbTestHelper
           .knex<DelegatedPaymentApprovalDBResult>(
-            tableNames.delegatedPaymentApproval
+            tableNames.delegatedPaymentApproval,
           )
           .where({
             paying_address: payerAddress,
@@ -2916,7 +2997,7 @@ describe("PostgresDatabase class", () => {
 
       const user = await db.getUser(owner);
       expect(user.winstonCreditBalance.toString()).to.equal(
-        excessWinc.toString()
+        excessWinc.toString(),
       );
     });
 
@@ -2927,7 +3008,7 @@ describe("PostgresDatabase class", () => {
 
       await db.updateArNSPurchaseQuoteToFailure(
         nonce,
-        "Quote failed due to timeout"
+        "Quote failed due to timeout",
       );
 
       const failedQuote = await dbTestHelper
@@ -2937,7 +3018,7 @@ describe("PostgresDatabase class", () => {
 
       expect(failedQuote).to.exist;
       expect(failedQuote?.failed_reason).to.equal(
-        "Quote failed due to timeout"
+        "Quote failed due to timeout",
       );
 
       await expectAsyncErrorThrow({
@@ -2953,7 +3034,7 @@ describe("PostgresDatabase class", () => {
       await expectAsyncErrorThrow({
         promiseToError: db.updateArNSPurchaseQuoteToFailure(
           fakeNonce,
-          "Some failure"
+          "Some failure",
         ),
         errorMessage: `No ArNS name purchase found in the database with nonce '${fakeNonce}'`,
         errorType: "ArNSPurchaseNotFound",
