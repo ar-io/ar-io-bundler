@@ -412,13 +412,3 @@ curl --resolve turbo.services.ar-io.dev:443:<box-tailscale-ip> \
   -H "Authorization: Bearer <token>" \
   https://turbo.services.ar-io.dev/minio-metrics/bundler/cluster
 ```
-
-## Open items to confirm during implementation
-
-1. Multipart-finalize path: does it funnel through `new-data-item`, or is a second
-   `archive-copy` enqueue needed in `finalizeMultipartUpload`?
-2. `permanent_bundle` columns: are `plan_id` and the bundle txid both available for the
-   bundler-cleanup join, or is a migration needed?
-3. Confirm the gateway's S3 key layout matches `raw-data-item/{id}` on the archive bucket
-   exactly (so a HEAD/GET by ID resolves).
-</content>

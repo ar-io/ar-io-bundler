@@ -51,7 +51,7 @@ override (layered on top of the base compose file):
    - Archive S3 storage for gateway reads
    - Port 9002: S3 API · Port 9003: Web Console UI
    - Volume bind-mounted to the HDD via `ARCHIVE_MINIO_DATA_PATH`
-   - Bucket: `raw-data-items` (holds `raw-data-item/{id}` + `bundle-payload/{planId}`)
+   - Bucket: `archive-data-items` (holds `raw-data-item/{id}` + `bundle-payload/{planId}`)
 
 7. **MinIO Init Archive** (runs once, exits)
    - Container: `ar-io-bundler-minio-init-archive`

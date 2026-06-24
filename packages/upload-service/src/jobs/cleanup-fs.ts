@@ -53,7 +53,20 @@ const MINIO_CLEANUP_DAYS = +(process.env.MINIO_CLEANUP_DAYS || 90);
 // reclaimed POST-PERMANENCE (as soon as a bundle is permanent and its archive copy
 // is confirmed) rather than on the 90-day MINIO_CLEANUP_DAYS rule. An optional
 // grace margin holds bundler copies for a few extra days after permanence.
-const BUNDLER_CLEANUP_GRACE_DAYS = +(process.env.BUNDLER_CLEANUP_GRACE_DAYS || 0);
+// Guard a malformed env value: a bare `+("abc")` would be NaN, and the date math
+// at the sweep's start (`Date.now() - NaN * ...`) then throws in toISOString().
+const parsedBundlerCleanupGraceDays = Number(
+  process.env.BUNDLER_CLEANUP_GRACE_DAYS ?? 0
+);
+const BUNDLER_CLEANUP_GRACE_DAYS =
+  Number.isFinite(parsedBundlerCleanupGraceDays) &&
+  parsedBundlerCleanupGraceDays >= 0
+    ? parsedBundlerCleanupGraceDays
+    : 0;
+// The persisted config-row key keeps its legacy "archive-ssd-cleanup-cursor"
+// VALUE on purpose (the const NAME was renamed ssd→bundler, the value was not):
+// renaming the value would orphan the saved cursor on existing deployments and
+// re-scan permanent_bundle from the beginning.
 const ARCHIVE_BUNDLER_CURSOR_KEY = "archive-ssd-cleanup-cursor";
 const PERMANENT_BUNDLE_BATCH_SIZE = 200;
 
