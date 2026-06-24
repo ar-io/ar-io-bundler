@@ -646,7 +646,7 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 ## 17. Monitoring & logs
 
 - **Metrics:** see **`docs/operations/OBSERVABILITY.md`** for the full picture — app metrics
-  (`:3001/bundler_metrics`, `:4001/metrics`), MinIO native metrics (via nginx `/minio-metrics/{bundler,archive}/`,
+  (`:3001/bundler_metrics`, `:4001/metrics`), MinIO native metrics (via nginx `/minio-metrics/{bundler,archive}/cluster`,
   bearer-token gated), and **node_exporter** (`:9100`, host CPU/mem/disk; firewall-gated to the collector CIDRs and
   auto-discovered by the fleet hcloud-SD job). Alert on queue depth (BullMQ), worker liveness (esp. payment-workers +
   upload-workers), DB pool saturation, disk-fill (`node_filesystem_avail_bytes`, `minio_cluster_capacity_usable_free_bytes`),
