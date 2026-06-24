@@ -86,6 +86,7 @@ export const sendCryptoFundSlackMessage = async ({
   tokenType,
   winstonCreditAmount,
   usdEquivalent,
+  referer,
 }: (PendingPaymentTransaction | CreateNewCreditedTransactionParams) & {
   usdEquivalent: number;
 }) => {
@@ -113,6 +114,9 @@ export const sendCryptoFundSlackMessage = async ({
     return;
   }
 
+  // Match the legacy Turbo format, which included the referrer when present.
+  const referrerLine = referer ? `\nReferrer: ${referer}` : "";
+
   return sendSlackMessage({
     channel: slackChannels.topUp,
     message: `New crypto payment credited:\`\`\`
@@ -120,7 +124,7 @@ Tokens: ${tokens} ${tokenType}
 Credits: ${credits}
 USD Equivalent: ${usdEquivalent === 0 ? "less than $0.01" : `$${usdEquivalent}`}
 Address: ${destinationAddress}
-TxID: ${transactionId}\`\`\``,
+TxID: ${transactionId}${referrerLine}\`\`\``,
   });
 };
 
