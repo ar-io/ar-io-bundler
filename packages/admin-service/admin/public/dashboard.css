@@ -716,3 +716,32 @@ table td .copyable-id {
 @media (prefers-reduced-motion: reduce) {
   #dashboard .section, #dashboard .charts-row, .stat-card { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Lucide icon styling (replaces emojis) ---------- */
+.stat-icon {
+  color: var(--primary-color);
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 12px;
+  background: var(--lavender-wash); flex-shrink: 0;
+}
+.stat-icon svg, .health-icon svg, .status-icon svg, .window-verdict-icon svg { display: block; }
+
+.health-icon { display: inline-flex; align-items: center; color: var(--text-secondary); }
+.health-item.healthy .health-icon { color: var(--success-color); }
+.health-item.unhealthy .health-icon { color: var(--danger-color); }
+.health-item.unknown .health-icon { color: var(--warning-color); }
+
+.status-icon { display: inline-flex; align-items: center; }
+.status-banner.ok .status-icon { color: var(--sev-ok); }
+.status-banner.degraded .status-icon { color: var(--sev-warn); }
+.status-banner.critical .status-icon { color: var(--sev-critical); }
+
+.window-verdict-icon { display: inline-flex; align-items: center; }
+.window-verdict.ok .window-verdict-icon { color: var(--sev-ok); }
+.window-verdict.warn .window-verdict-icon { color: var(--sev-warn); }
+.window-verdict.critical .window-verdict-icon { color: var(--sev-critical); }
+.window-verdict.info .window-verdict-icon { color: var(--sev-info); }
+
+.copy-icon svg, .copy-feedback svg { vertical-align: -2px; }
+.queue-name svg { vertical-align: -1px; opacity: .7; }
+.refresh-btn svg, .btn svg { vertical-align: -2px; }

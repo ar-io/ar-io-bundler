@@ -8,6 +8,37 @@
  * - Manual refresh (no auto-refresh per user request)
  */
 
+/* ---------- Lucide icons (inline SVG, colored via currentColor) ---------- */
+const LUCIDE = {
+  "circle-check": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m9 12 2 2 4-4\" />",
+  "triangle-alert": "<path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\" /> <path d=\"M12 9v4\" /> <path d=\"M12 17h.01\" />",
+  "octagon-alert": "<path d=\"M12 16h.01\" /> <path d=\"M12 8v4\" /> <path d=\"M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z\" />",
+  "moon": "<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\" />",
+  "circle-x": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m15 9-6 6\" /> <path d=\"m9 9 6 6\" />",
+  "circle-help": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3\" /> <path d=\"M12 17h.01\" />",
+  "refresh-cw": "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\" /> <path d=\"M21 3v5h-5\" /> <path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\" /> <path d=\"M8 16H3v5\" />",
+  "copy": "<rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\" ry=\"2\" /> <path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\" />",
+  "check": "<path d=\"M20 6 9 17l-5-5\" />",
+  "search": "<path d=\"m21 21-4.34-4.34\" /> <circle cx=\"11\" cy=\"11\" r=\"8\" />",
+  "upload": "<path d=\"M12 3v12\" /> <path d=\"m17 8-5-5-5 5\" /> <path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\" />",
+  "package": "<path d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\" /> <path d=\"M12 22V12\" /> <polyline points=\"3.29 7 12 12 20.71 7\" /> <path d=\"m7.5 4.27 9 5.15\" />",
+  "users": "<path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" /> <path d=\"M16 3.128a4 4 0 0 1 0 7.744\" /> <path d=\"M22 21v-2a4 4 0 0 0-3-3.87\" /> <circle cx=\"9\" cy=\"7\" r=\"4\" />",
+  "credit-card": "<rect width=\"20\" height=\"14\" x=\"2\" y=\"5\" rx=\"2\" /> <line x1=\"2\" x2=\"22\" y1=\"10\" y2=\"10\" />",
+  "coins": "<path d=\"M13.744 17.736a6 6 0 1 1-7.48-7.48\" /> <path d=\"M15 6h1v4\" /> <path d=\"m6.134 14.768.866-.5 2 3.464\" /> <circle cx=\"16\" cy=\"8\" r=\"6\" />",
+  "banknote": "<rect width=\"20\" height=\"12\" x=\"2\" y=\"6\" rx=\"2\" /> <circle cx=\"12\" cy=\"12\" r=\"2\" /> <path d=\"M6 12h.01M18 12h.01\" />",
+  "external-link": "<path d=\"M15 3h6v6\" /> <path d=\"M10 14 21 3\" /> <path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\" />",
+  "log-out": "<path d=\"m16 17 5-5-5-5\" /> <path d=\"M21 12H9\" /> <path d=\"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4\" />",
+  "activity": "<path d=\"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2\" />",
+};
+function icon(name, opts = {}) {
+  const inner = LUCIDE[name];
+  if (!inner) return '';
+  const size = opts.size || 16;
+  const cls = opts.cls ? ` class="${opts.cls}"` : '';
+  const style = opts.color ? ` style="color:${opts.color}"` : '';
+  return `<svg${cls}${style} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${inner}</svg>`;
+}
+
 // Chart instances (global to allow updates)
 let signatureChart = null;
 let paymentModeChart = null;
@@ -58,10 +89,10 @@ function renderWindowHealth(d) {
   const el = document.getElementById('window-health');
   const verdict = d.verdict || 'idle';
   const map = {
-    healthy: { cls: 'ok', icon: '✅', text: 'Healthy' },
-    degraded: { cls: 'warn', icon: '⚠️', text: 'Degraded' },
-    critical: { cls: 'critical', icon: '🚨', text: 'Problems' },
-    idle: { cls: 'info', icon: '😴', text: 'Idle (no activity)' },
+    healthy: { cls: 'ok', icon: 'circle-check', text: 'Healthy' },
+    degraded: { cls: 'warn', icon: 'triangle-alert', text: 'Degraded' },
+    critical: { cls: 'critical', icon: 'octagon-alert', text: 'Problems' },
+    idle: { cls: 'info', icon: 'moon', text: 'Idle (no activity)' },
   };
   const v = map[verdict] || map.idle;
   const failed = (d.itemsFailed || 0) + (d.bundlesFailed || 0);
@@ -70,7 +101,7 @@ function renderWindowHealth(d) {
 
   el.innerHTML = `
     <div class="window-verdict ${v.cls}">
-      <span class="window-verdict-icon">${v.icon}</span>
+      <span class="window-verdict-icon">${icon(v.icon, { size: 26 })}</span>
       <div>
         <div class="window-verdict-text">${v.text}</div>
         <div class="window-verdict-sub">pipeline over the ${WINDOW_LABEL[d.window] || d.window}${lat}</div>
@@ -273,7 +304,7 @@ function updateStatusBanner(health) {
   banner.style.display = 'block';
 
   const labels = { ok: 'All systems healthy', degraded: 'Degraded', critical: 'Critical' };
-  const icons = { ok: '✅', degraded: '⚠️', critical: '🚨' };
+  const icons = { ok: 'circle-check', degraded: 'triangle-alert', critical: 'octagon-alert' };
   banner.className = `status-banner ${health.status}`;
   if (dot) dot.className = `status-dot ${health.status}`;
 
@@ -286,7 +317,7 @@ function updateStatusBanner(health) {
 
   banner.innerHTML = `
     <div class="status-head">
-      <span class="status-icon">${icons[health.status] || '•'}</span>
+      <span class="status-icon">${icon(icons[health.status] || 'circle-help', { size: 22 })}</span>
       <span class="status-title">${labels[health.status] || health.status}</span>
       ${health.counts ? `<span class="status-counts">${health.counts.critical} critical · ${health.counts.degraded} warnings</span>` : ''}
     </div>
@@ -383,7 +414,7 @@ function updateStorageHealth(storage) {
   if (storage.minio) {
     const ok = storage.minio.status === 'healthy';
     html += `<div class="health-item ${storage.minio.status}">
-      <span class="health-icon">${ok ? '✅' : '❌'}</span>
+      <span class="health-icon">${ok ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div><div class="health-name">MinIO Object Storage</div>
       <div class="health-meta">${ok ? escapeHtml(storage.minio.endpoint || '') : escapeHtml(storage.minio.error || 'down')}</div></div></div>`;
   }
@@ -391,7 +422,7 @@ function updateStorageHealth(storage) {
     const d = storage.disk;
     const cls = d.status === 'healthy' ? 'healthy' : d.status === 'unknown' ? 'unknown' : 'unhealthy';
     html += `<div class="health-item ${cls}">
-      <span class="health-icon">${cls === 'healthy' ? '✅' : cls === 'unknown' ? '❔' : '❌'}</span>
+      <span class="health-icon">${cls === 'healthy' ? icon('circle-check', { size: 18 }) : cls === 'unknown' ? icon('circle-help', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div><div class="health-name">Disk (${escapeHtml(d.path || '/')})</div>
       <div class="health-meta">${d.usedPct != null ? `${d.usedPct}% used · ${d.freeFormatted} free of ${d.totalFormatted}` : escapeHtml(d.error || '')}</div></div></div>`;
   }
@@ -410,7 +441,7 @@ function updateSchedulerHealth(schedulers) {
       ? `${s.pattern || ''}${s.nextRun ? ` · next ${new Date(s.nextRun).toLocaleString()}` : ''}`
       : (s.error || 'NOT REGISTERED');
     return `<div class="health-item ${ok ? 'healthy' : 'unhealthy'}">
-      <span class="health-icon">${ok ? '✅' : '❌'}</span>
+      <span class="health-icon">${ok ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div><div class="health-name">${escapeHtml(name)} scheduler</div>
       <div class="health-meta">${escapeHtml(meta)}</div></div></div>`;
   }).join('');
@@ -450,7 +481,7 @@ function updateFailedPayments(rows) {
 function updateFailedBundles(rows) {
   const table = document.getElementById('failed-bundles-table');
   if (!rows || rows.length === 0) {
-    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No failed bundles 🎉</td></tr>';
+    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No failed bundles</td></tr>';
     return;
   }
   table.innerHTML = `
@@ -489,7 +520,7 @@ function updateSystemHealth(health) {
     const el = document.createElement('div');
     el.className = `health-item ${data.status}`;
     el.innerHTML = `
-      <span class="health-icon">${data.status === 'healthy' ? '✅' : '❌'}</span>
+      <span class="health-icon">${data.status === 'healthy' ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div>
         <div class="health-name">${formatServiceName(name)}</div>
         <div class="health-meta">${data.uptime || 'Unknown'} | ${data.memory || '--'}</div>
@@ -503,7 +534,7 @@ function updateSystemHealth(health) {
     const el = document.createElement('div');
     el.className = `health-item ${data.status}`;
     el.innerHTML = `
-      <span class="health-icon">${data.status === 'healthy' ? '✅' : '❌'}</span>
+      <span class="health-icon">${data.status === 'healthy' ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div>
         <div class="health-name">${formatServiceName(name)}</div>
         <div class="health-meta">${data.memoryUsed || data.connections ? `${data.connections || ''} ${data.memoryUsed || ''}`.trim() : 'Active'}</div>
@@ -879,7 +910,7 @@ function updateQueueStatus(queues) {
     const failedClass = activeIncident ? 'text-danger' : (q.failed > 0 ? 'muted' : '');
     el.innerHTML = `
       <div class="queue-head">
-        <a class="queue-name" href="${boardUrl}" title="Open in Bull Board">${q.name} ↗</a>
+        <a class="queue-name" href="${boardUrl}" title="Open in Bull Board">${q.name} ${icon('external-link', { size: 13 })}</a>
         ${q.failed > 0 ? `<button class="btn btn-xs" onclick="retryQueue('${escapeHtml(q.name)}')">Retry ${q.failed.toLocaleString()}</button>` : ''}
       </div>
       <div class="queue-stats">
@@ -1234,8 +1265,8 @@ function makeCopyable(fullId, displayText = null, type = 'id') {
                title="Click to copy full ${type}: ${escapeHtml(fullId)}"
                id="${uniqueId}">
             <code>${display}</code>
-            <span class="copy-icon">📋</span>
-            <span class="copy-feedback">✓ Copied!</span>
+            <span class="copy-icon">${icon('copy', { size: 13 })}</span>
+            <span class="copy-feedback">${icon('check', { size: 13 })} Copied!</span>
           </span>`;
 }
 
@@ -1363,10 +1394,10 @@ async function triggerAction(action, confirmMsg) {
     });
     if (res.status === 401) { window.location.href = '/admin/login'; return; }
     const data = await res.json();
-    if (res.ok) { alert(`✅ ${data.message || 'Triggered'}`); fetchStats(); }
-    else alert(`❌ ${data.error || 'Failed'}`);
+    if (res.ok) { alert(`${data.message || 'Triggered'}`); fetchStats(); }
+    else alert(`Error: ${data.error || 'Failed'}`);
   } catch (err) {
-    alert(`❌ ${err.message}`);
+    alert(`Error: ${err.message}`);
   }
 }
 
@@ -1385,11 +1416,11 @@ async function retryQueue(queueName) {
     const data = await res.json();
     if (res.ok) {
       const more = data.remaining > 0 ? ` — ${data.remaining} still failed (click Retry again to continue)` : '';
-      alert(`✅ Retried ${data.retried} job(s) in ${queueName}${more}`);
+      alert(`Retried ${data.retried} job(s) in ${queueName}${more}`);
       fetchStats();
-    } else alert(`❌ ${data.error || 'Failed'}`);
+    } else alert(`Error: ${data.error || 'Failed'}`);
   } catch (err) {
-    alert(`❌ ${err.message}`);
+    alert(`Error: ${err.message}`);
   }
 }
 
