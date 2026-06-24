@@ -185,6 +185,52 @@ root `CLAUDE.md` cleanup table, README gateway-integration section.
 - The SSD-delete HEAD-gate on the archive store is the critical guard: never delete the
   SSD copy until the HDD copy is confirmed.
 
+### Enabling on an existing deployment (seed the SSD-cleanup cursor first)
+
+The post-permanence SSD sweep (`cleanupSsdAfterArchive`) scans `permanent_bundle`
+forward from a cursor persisted in the `config` table under
+`archive-ssd-cleanup-cursor`. On a deployment that **already has permanent bundles**,
+that cursor starts at epoch, so the first run examines every historical bundle. None
+have an HDD copy yet, so each is deferred and its missing keys are **re-enqueued** as
+`archive-copy` jobs (see "self-healing reconciliation" below). For old bundles whose
+SSD objects were already deleted by the prior 90-day cleanup, the copy can never
+succeed — the bundle stays deferred, the **persisted cursor wedges at the oldest
+un-archivable bundle**, and every subsequent run re-scans the whole table and
+re-enqueues thousands of doomed jobs.
+
+Pin the cursor to "now" **before** setting `ARCHIVE_*`, so only bundles that become
+permanent *after* enablement (which receive HDD copies at ingest/prepare) are swept:
+
+```sql
+INSERT INTO config (key, value) VALUES (
+  'archive-ssd-cleanup-cursor',
+  json_build_object('permanentDate', (SELECT max(permanent_date) FROM permanent_bundle)::text,
+                    'bundleId', NULL)::text)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+```
+
+Skip the seed only to deliberately backfill the entire historical corpus to HDD — then
+size the HDD accordingly and expect heavy `archive-copy` load plus many *expected*
+`result="error"` copies on bundles whose SSD source is already gone.
+
+### Operational behavior (hardening from the follow-up, PR #90)
+
+- **Self-healing reconciliation.** The `archive-copy` enqueues at ingest/prepare are
+  best-effort (a Redis blip or a crash between the DB insert and the enqueue can drop
+  one). When the SSD sweep later finds a permanent bundle whose HDD copy is missing, it
+  **re-enqueues the missing `archive-copy`** instead of merely deferring — so a dropped
+  enqueue self-heals rather than stranding the SSD copy (and wedging the cursor) forever.
+- **Copy integrity guard.** `copyKeyToArchive` verifies the archived byte count equals
+  the source before the object is eligible for the SSD-delete HEAD-gate; on a size
+  mismatch it deletes the bad object and throws so the BullMQ retry re-copies (the
+  existence-only HEAD alone would otherwise let a truncated copy pass and the gateway
+  would serve short bytes as authoritative).
+- **Monitoring.** `archive_copy_total{kind,result}` — `kind` ∈ {`raw-data-item`,
+  `bundle-payload`}, `result` ∈ {`success`,`error`,`skipped`}. Watch the
+  `upload-archive-copy` queue depth and the `archive-ssd-cleanup-cursor` config row: a
+  cursor that never advances across runs signals a persistent deferral (an HDD copy that
+  never lands) — correlate with `result="error"` copies.
+
 ## Verification
 
 - **Unit**: `archive-copy` handler (no-op disabled; copies + preserves payload metadata

@@ -64,12 +64,12 @@ The repo-root `ecosystem.config.js` is a deprecated shim that re-exports the can
 - `payment_service` DB holds users, balances (Winston credits), receipts, crypto/x402 payments.
 - Objects (raw uploads, bundles) live in **MinIO** via the S3 abstraction (`getS3ObjectStore()`), even locally — `FileSystemObjectStore` exists but is not wired.
 
-### The bundle pipeline (BullMQ, 14 upload queues + 1 payment queue)
+### The bundle pipeline (BullMQ, 15 upload queues + 1 payment queue)
 
 ```
 upload → new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle → permanent
                          ↑ (in-process scheduler)            ↘ optical-post → gateway      ↘ put-offsets
-other queues: finalize-upload, unbundle-bdi, cleanup-fs, redrive-posted, refund-balance, broadcast-chunks   payment-pending-tx (payment-workers)
+other queues: finalize-upload, unbundle-bdi, cleanup-fs, redrive-posted, refund-balance, broadcast-chunks, archive-copy   payment-pending-tx (payment-workers)
 ```
 
 - **`plan-bundle` is driven by an in-process BullMQ scheduler, NOT cron.** At startup `upload-workers` registers repeatable schedulers (`upsertRepeatable` in `src/arch/queues.ts`, wired in `src/workers/allWorkers.ts`): `plan-bundle` (`PLAN_SCHEDULE_CRON`, default `*/5 * * * *`), `cleanup-fs` (`CLEANUP_SCHEDULE_CRON`, `0 2 * * *`), and `redrive-posted` (`POSTED_REDRIVE_SCHEDULE_CRON`, `*/10 * * * *`). So the #1 "uploads work but nothing posts" check is: **is `upload-workers` up and did it log `Registered BullMQ job schedulers`?** — not "is the cron installed." The `cron-trigger-*.sh` scripts still exist but are **manual** on-demand triggers only; do NOT add them to crontab or they double-fire alongside the scheduler.
@@ -116,6 +116,15 @@ Bundle planning, cleanup, and the posted-bundle re-driver are **BullMQ repeatabl
 0–7d    FS keep   MinIO keep    7–90d   FS DELETE MinIO keep    90d+   FS DELETE MinIO DELETE (Arweave permanent)
 ```
 `FILESYSTEM_CLEANUP_DAYS=7`, `MINIO_CLEANUP_DAYS=90`. **Durable** data cleanup runs via the in-process database-aware `cleanup-fs` scheduler (`CLEANUP_SCHEDULE_CRON`); `cron-trigger-cleanup.sh` / `trigger-cleanup.js` are just manual triggers for the same queue. `scripts/cleanup-bundler-files.sh` is a **TEMP-scratch-only** janitor (`TEMP_DIR`, `CLEANUP_RETENTION_DAYS`) — it does NOT touch the durable `raw_/metadata_` data dir (a blind mtime delete there could drop a paid, receipted-but-unfinalized upload), so the two are complementary, not alternatives. **`CLEANUP_REQUIRE_PERMANENT_BUNDLE` (default ON, #41):** cleanup will not delete a data item's only off-chain copy until its bundle is confirmed `permanent_bundle`, so under multi-source permanence a slow second gateway delays cleanup (storage grows) rather than risking early deletion.
+
+### Two-tier MinIO (SSD hot + HDD archive) — optional, gated on `ARCHIVE_*` (default OFF)
+
+A second, HDD-backed MinIO (`minio-hdd`, `:9002`, `docker-compose.hdd.yml`) that mirrors served content (`raw-data-item` + `bundle-payload`) so gateway reads don't compete with the bundling pipeline on the fast SSD. When `ARCHIVE_*` is set: an async **`archive-copy`** queue copies each object SSD→HDD at ingest/prepare; the gateway reads **only** the HDD; and `cleanup-fs` switches the SSD-MinIO tier from the 90-day age rule to a **post-permanence sweep** that deletes each SSD copy once its HDD copy is HEAD-confirmed (the gateway never sees the SSD). Unset `ARCHIVE_*` → byte-for-byte the single-MinIO behavior above. Full design + ops: `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`; deploy steps: runbook §5/§7/§13.
+
+- **🔴 Enablement order (don't skip):** HDD MinIO up → **seed the SSD-cleanup cursor on an existing DB** (below) → set `ARCHIVE_*` + restart `upload-workers` → confirm `archive-copy` populates HDD (`mc ls hdd/archive-data-items`) → repoint gateway `AWS_ENDPOINT` to the HDD → only then confirm SSD reclaim.
+- **🔴 Existing DB → seed the cursor FIRST.** The sweep scans `permanent_bundle` from epoch; pre-existing bundles have no HDD copy, so they defer + re-enqueue `archive-copy`, and any whose SSD source was already 90-day-cleaned wedge the persisted cursor (`config` key `archive-ssd-cleanup-cursor`) at the oldest one → every run re-scans the whole table. Pin the cursor to the current `max(permanent_date)` before enabling (SQL in the runbook §13 / design doc) so only newly-permanent bundles are swept.
+- **Bucket/region must be distinct** from `DATA_ITEM_BUCKET`/`S3_REGION` (routing is keyed by both) — on a collision the bundler refuses to wire the archive and logs an error (stays inert). HDD keeps a **90-day ILM expiry** (`ARCHIVE_RETENTION_DAYS`); after that, served copies fall back to chain retrieval. `SSD_CLEANUP_GRACE_DAYS` (default 0) adds a margin before SSD reclaim.
+- **Monitor:** `archive_copy_total{kind,result}` (kind=`raw-data-item`/`bundle-payload`, result=`success`/`error`/`skipped`), `upload-archive-copy` depth, and whether `archive-ssd-cleanup-cursor` advances run-to-run (stuck = a persistent deferral / HDD copy that never lands). The sweep **re-enqueues** missing copies (self-healing) and verifies copy byte-count parity before deleting the SSD original.
 
 ## Pitfalls (learned on this deployment)
 

@@ -422,6 +422,30 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
      `ARCHIVE_*` vars (§7) and restart `upload-workers`; (3) confirm the `archive-copy` queue is populating the
      HDD (Bull Board + `mc ls hdd/archive-data-items`) **before** touching the gateway; (4) repoint the gateway
      `AWS_ENDPOINT` to the HDD MinIO; (5) only then confirm the SSD post-verify cleanup is reclaiming space.
+     - 🔴 **Enabling on a deployment that ALREADY has permanent bundles (existing DB): seed the SSD-cleanup
+       cursor first.** The post-permanence SSD sweep scans `permanent_bundle` from the beginning. Every
+       pre-existing permanent bundle has no HDD copy yet, so the sweep defers it and **re-enqueues an
+       `archive-copy`** for it (the self-healing reconciliation backstop). For old bundles whose SSD objects
+       were already deleted by the prior 90-day cleanup, that copy can never succeed, the bundle stays
+       deferred forever, and the persisted cursor **wedges at the oldest un-archivable bundle** — so every
+       cleanup run re-scans the whole table and re-enqueues thousands of doomed jobs. Avoid this by pinning
+       the cursor to "now" before enabling, so only **newly**-permanent bundles (which get HDD copies at
+       ingest) are swept:
+       ```sql
+       -- run against the upload_service DB BEFORE setting ARCHIVE_*
+       INSERT INTO config (key, value) VALUES (
+         'archive-ssd-cleanup-cursor',
+         json_build_object('permanentDate', (SELECT max(permanent_date) FROM permanent_bundle)::text,
+                           'bundleId', NULL)::text)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+       ```
+       (Skip the seed only if you deliberately want a full historical SSD→HDD backfill — then size the HDD for
+       the entire corpus and expect heavy `archive-copy` load plus many *expected* `result="error"` copies on
+       bundles whose SSD source was already cleaned.)
+     - **Monitor:** `archive_copy_total{kind,result}` (copy outcomes by `raw-data-item`/`bundle-payload` and
+       `success`/`error`/`skipped`) and the `upload-archive-copy` queue depth. The SSD reclaim resume point
+       lives in the `config` row `archive-ssd-cleanup-cursor`; a cursor that never advances across runs means a
+       persistent deferral (an HDD copy that never lands) — investigate the `error`-result copies.
 4. **Bundle seeding (chunks) →** `AR_IO_NODE_URLS` (comma-separated). The `broadcast-chunks` worker POSTs each chunk to **one of** these dedicated AR.IO chunk-distributor nodes (shuffle + per-node retry + failover); each distributor fans the chunk out to Arweave tip nodes, so reaching one healthy node lands it. Use the distributors' **private IPs** — chunk POSTs are plaintext; `/chunk` is served on the gateway/envoy port (`:3000`). Example: `AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000`.
    - **Single-node fallback:** if `AR_IO_NODE_URLS` is **unset**, chunk seeding falls back to the single `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
    - **Why direct-to-core:4000 (fallback path):** the fallback carries **chunks only** (`POST /chunk`) — core accepts + caches them optimistically, and going direct skips TLS/nginx/rate-limit/x402 overhead. This is purely a chunk-delivery endpoint.
