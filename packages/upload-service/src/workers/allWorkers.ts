@@ -279,10 +279,11 @@ const archiveCopyWorker = createWorker<ArchiveCopyMessage>(
     });
   },
   {
-    concurrency: parseInt(
-      process.env.ARCHIVE_COPY_WORKER_CONCURRENCY || "3",
-      10
-    ),
+    // `|| 3` (not `?? `) so a malformed env (NaN from parseInt) also falls back
+    // to the default instead of passing NaN through to the BullMQ worker.
+    concurrency:
+      Number.parseInt(process.env.ARCHIVE_COPY_WORKER_CONCURRENCY ?? "", 10) ||
+      3,
   }
 );
 
