@@ -12,6 +12,8 @@ equivalent. Three independent metric sources, three different exposure paths.
 | **App (payment)** | `:4001/metrics` | payments/Stripe/x402/chargebacks + Node process | the public API port `:4001` | ⚠️ none yet (world-readable) |
 | **MinIO** (both tiers) | private `:9000` / `:9002` `…/minio/v2/metrics/cluster` | capacity/disk-fill, S3 request rates/errors/latency, ILM expiry, drives/health | **nginx** `:443` → `/minio-metrics/{bundler,archive}/cluster` | nginx CIDR allowlist **+** MinIO bearer token |
 | **node_exporter** | `:9100/metrics` | host CPU, memory, **disk/filesystem fill**, network, load | the port `:9100` directly | **cloud firewall** (source-CIDR) |
+| **postgres_exporter** | `:9187/metrics` | connections, xacts, locks, DB/table/index sizes, per-DB `pg_stat_*` | the port `:9187` directly | **cloud firewall** (source-CIDR) |
+| **redis_exporter** | `:9121/scrape?target=…` | memory, evictions, keyspace, ops/sec — both `cache` (6379) + `queues` (6381) | the port `:9121` directly | **cloud firewall** (source-CIDR) |
 
 > The MinIO scrape setup (bearer token, paths, collector job) is documented in
 > `docs/architecture/TWO_TIER_MINIO.md` → "Observability: scraping MinIO metrics".
@@ -65,6 +67,62 @@ the public IP).
 > (and to `metrics-allowlist.conf` for MinIO) once they're confirmed, or scrapes from
 > those instances will be dropped.
 
+## postgres_exporter & redis_exporter (DB/cache metrics)
+
+The RDS/ElastiCache analog. Same exposure model as node_exporter (apt host process →
+cloud-firewall rule to the collector CIDRs), but **not** auto-discovered — each needs an
+explicit collector scrape job.
+
+**postgres_exporter** (`:9187`) — reads via a dedicated **read-only `monitoring` role**
+(`pg_monitor`, login, `CONNECT` on both DBs); the DSN lives in
+`/etc/default/prometheus-postgres-exporter` (mode `640`, owner `root:prometheus`). `pg_stat_database`
+is cluster-wide, so one exporter covers `payment_service` + `upload_service`.
+
+```bash
+# in postgres: CREATE ROLE monitoring LOGIN PASSWORD '…'; GRANT pg_monitor TO monitoring;
+#              GRANT CONNECT ON DATABASE payment_service, upload_service TO monitoring;
+apt-get install -y prometheus-postgres-exporter
+# /etc/default/prometheus-postgres-exporter:
+#   DATA_SOURCE_NAME="postgresql://monitoring:<pw>@127.0.0.1:5432/postgres?sslmode=disable"
+```
+
+**redis_exporter** (`:9121`) — both instances are passwordless and served by **one**
+exporter via multi-target: `/scrape?target=redis://localhost:6379` (cache) and
+`…:6381` (queues). `localhost` resolves from the exporter (on the box).
+
+```bash
+apt-get install -y prometheus-redis-exporter   # default /metrics = cache; queues via /scrape
+```
+
+Firewall (same source set as `:9100`):
+
+```bash
+hcloud firewall add-rule ar-io-bundler-fw --direction in --protocol tcp --port 9187 \
+  --source-ips 10.83.0.0/24 --source-ips 100.64.0.0/10 --source-ips fd7a:115c:a1e0::/48 \
+  --source-ips 34.205.91.20/32 --source-ips 34.192.58.42/32 --source-ips 54.166.111.219/32
+# …and again with --port 9121
+```
+
+**Collector scrape jobs to add** (these are not auto-discovered):
+
+```yaml
+- job_name: ar_io_dev_bundler_postgres
+  scrape_interval: 60s
+  static_configs:
+    - targets: ['178.105.217.148:9187']
+
+- job_name: ar_io_dev_bundler_redis
+  metrics_path: /scrape
+  scrape_interval: 60s
+  static_configs:
+    - { targets: ['redis://localhost:6379'], labels: { redis_instance: cache } }
+    - { targets: ['redis://localhost:6381'], labels: { redis_instance: queues } }
+  relabel_configs:
+    - { source_labels: [__address__], target_label: __param_target }
+    - { source_labels: [__param_target], target_label: instance }
+    - { target_label: __address__, replacement: '178.105.217.148:9121' }   # the exporter
+```
+
 ## Collector scrape config (MinIO)
 
 node_exporter is auto-discovered; MinIO needs explicit jobs (https + bearer token,
@@ -91,8 +149,5 @@ Generate the MinIO token: `mc admin prometheus generate <alias> cluster`.
   public API ports. To gate them, front the app on `:443` only (close direct
   `:3001/:4001` in the firewall) and clamp the two paths in nginx with
   `metrics-allowlist.conf`.
-- **postgres_exporter** (`:9187`) and **redis_exporter** (`:9121`, cache + queues) — the
-  RDS/ElastiCache analog. Same pattern as node_exporter (install → firewall rule to
-  collector CIDRs → **new** collector scrape job, since they're not auto-discovered).
 - **Tracing** — OpenTelemetry → Honeycomb is wired (`packages/upload-service/src/arch/tracing.ts`)
   but dormant until `HONEYCOMB_API_KEY` is set.
