@@ -80,3 +80,6 @@ backups/
 
 # perf baseline run outputs
 scripts/perf/results/
+
+# Admin dashboard first-run credential (hash only) — never commit
+.admin-auth.json

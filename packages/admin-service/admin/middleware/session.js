@@ -35,6 +35,8 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { argon2id, argon2Verify } = require('hash-wasm');
 
 const COOKIE_NAME = 'arbundler_admin_session';
@@ -42,6 +44,26 @@ const COOKIE_NAME = 'arbundler_admin_session';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || ''; // legacy plaintext fallback
+
+// File where a password set via the first-run UI is persisted (hash only). Lives
+// outside the git tree so deploys don't clobber it; chmod 600. Env vars above
+// take precedence over this file when set.
+const ADMIN_AUTH_FILE = process.env.ADMIN_AUTH_FILE
+  || path.join(__dirname, '../../../../.admin-auth.json');
+
+// In-memory copy of the file credential: { username, hash } or null.
+let fileCredential = loadFileCredential();
+
+function loadFileCredential() {
+  try {
+    const raw = fs.readFileSync(ADMIN_AUTH_FILE, 'utf8');
+    const j = JSON.parse(raw);
+    if (j && typeof j.username === 'string' && typeof j.hash === 'string' && j.hash) {
+      return { username: j.username, hash: j.hash };
+    }
+  } catch { /* not set up yet */ }
+  return null;
+}
 
 const SESSION_TTL_MS = parseInt(
   process.env.ADMIN_SESSION_TTL_MS || String(8 * 60 * 60 * 1000), // 8 hours
@@ -110,8 +132,18 @@ function timingSafeStringEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
-/** Whether any admin credential is configured at all. */
+/** Whether any admin credential is configured (env var OR the first-run file). */
 function isConfigured() {
+  return Boolean(ADMIN_PASSWORD_HASH || ADMIN_PASSWORD || fileCredential);
+}
+
+/** True when NO credential exists yet — the dashboard is awaiting first-run setup. */
+function isSetupMode() {
+  return !isConfigured();
+}
+
+/** Whether a credential is provisioned via the env override (vs the first-run file). */
+function configuredViaEnv() {
   return Boolean(ADMIN_PASSWORD_HASH || ADMIN_PASSWORD);
 }
 
@@ -119,29 +151,61 @@ function usingPlaintextPassword() {
   return Boolean(!ADMIN_PASSWORD_HASH && ADMIN_PASSWORD);
 }
 
+/** The configured admin username (env override wins; else the file credential). */
+function currentUsername() {
+  if (configuredViaEnv()) return ADMIN_USERNAME;
+  if (fileCredential) return fileCredential.username;
+  return ADMIN_USERNAME;
+}
+
+/** Verify a hash string (Argon2id or legacy scrypt) against a password. */
+async function verifyHash(password, stored) {
+  if (!stored) return false;
+  if (stored.startsWith('$argon2')) return verifyArgon2Hash(password, stored);
+  if (stored.startsWith('scrypt$')) {
+    try { return verifyScryptHash(password, stored); } catch { return false; }
+  }
+  return false;
+}
+
 /** Verify a submitted username/password against the configured credentials. */
 async function verifyCredentials(username, password) {
   if (!isConfigured()) return false;
   if (typeof username !== 'string' || typeof password !== 'string') return false;
 
-  const userOk = timingSafeStringEqual(username, ADMIN_USERNAME);
-
+  // Env override takes precedence; otherwise the first-run file credential.
+  let expectedUser;
   let passOk = false;
-  if (ADMIN_PASSWORD_HASH) {
-    if (ADMIN_PASSWORD_HASH.startsWith('$argon2')) {
-      passOk = await verifyArgon2Hash(password, ADMIN_PASSWORD_HASH);
-    } else if (ADMIN_PASSWORD_HASH.startsWith('scrypt$')) {
-      try {
-        passOk = verifyScryptHash(password, ADMIN_PASSWORD_HASH);
-      } catch {
-        passOk = false;
-      }
-    }
-  } else if (ADMIN_PASSWORD) {
-    passOk = timingSafeStringEqual(password, ADMIN_PASSWORD);
+  if (configuredViaEnv()) {
+    expectedUser = ADMIN_USERNAME;
+    if (ADMIN_PASSWORD_HASH) passOk = await verifyHash(password, ADMIN_PASSWORD_HASH);
+    else passOk = timingSafeStringEqual(password, ADMIN_PASSWORD);
+  } else {
+    expectedUser = fileCredential.username;
+    passOk = await verifyHash(password, fileCredential.hash);
   }
 
+  const userOk = timingSafeStringEqual(username, expectedUser);
   return userOk && passOk;
+}
+
+/**
+ * First-run: hash a chosen password (Argon2id) and persist the HASH only to the
+ * auth file (chmod 600). Refuses if a credential already exists — re-setup must
+ * not be a back door to overwrite the password.
+ */
+async function setupCredential(username, password) {
+  if (isConfigured()) return { ok: false, error: 'Admin access is already configured' };
+  const user = (typeof username === 'string' && username.trim()) ? username.trim() : ADMIN_USERNAME;
+  if (typeof password !== 'string' || password.length < 8) {
+    return { ok: false, error: 'Password must be at least 8 characters' };
+  }
+  const hash = await hashPassword(password);
+  const payload = JSON.stringify({ username: user, hash, createdAt: new Date().toISOString() }, null, 2);
+  fs.writeFileSync(ADMIN_AUTH_FILE, payload, { mode: 0o600 });
+  try { fs.chmodSync(ADMIN_AUTH_FILE, 0o600); } catch { /* best effort on platforms without chmod */ }
+  fileCredential = { username: user, hash };
+  return { ok: true, username: user };
 }
 
 // ---------------------------------------------------------------------------
@@ -247,13 +311,11 @@ function wantsHtml(ctx) {
  * login page and returns 401 to API/JSON clients.
  */
 async function requireAuth(ctx, next) {
-  if (!isConfigured()) {
+  // No credential yet → send browsers to first-run setup; tell API clients.
+  if (isSetupMode()) {
+    if (wantsHtml(ctx)) { ctx.redirect('/admin/setup'); return; }
     ctx.status = 503;
-    ctx.body = {
-      error: 'Admin dashboard not configured',
-      message:
-        'Set ADMIN_PASSWORD_HASH (preferred) or ADMIN_PASSWORD in the environment to enable admin access.',
-    };
+    ctx.body = { error: 'Admin access not set up', setupUrl: '/admin/setup' };
     return;
   }
 
@@ -279,6 +341,10 @@ module.exports = {
   hashPassword,
   verifyCredentials,
   isConfigured,
+  isSetupMode,
+  configuredViaEnv,
+  setupCredential,
+  currentUsername,
   usingPlaintextPassword,
   createSession,
   destroySession,

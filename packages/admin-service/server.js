@@ -195,8 +195,12 @@ createBullBoard({
 // --- Public auth routes (no session required) ---------------------------------
 const LOGIN_HTML_PATH = __dirname + '/admin/public/login.html';
 
+const SETUP_HTML_PATH = __dirname + '/admin/public/setup.html';
+
 // Serve the login page.
 router.get('/admin/login', async (ctx) => {
+  // No credential configured yet → first-run setup.
+  if (sessionAuth.isSetupMode()) { ctx.redirect('/admin/setup'); return; }
   // Already authenticated? Skip straight to the dashboard.
   if (sessionAuth.getSessionFromCtx(ctx)) {
     ctx.redirect('/admin/dashboard');
@@ -204,6 +208,36 @@ router.get('/admin/login', async (ctx) => {
   }
   ctx.type = 'html';
   ctx.body = fs.createReadStream(LOGIN_HTML_PATH);
+});
+
+// First-run setup page (only when no credential exists yet).
+router.get('/admin/setup', async (ctx) => {
+  if (!sessionAuth.isSetupMode()) { ctx.redirect('/admin/login'); return; }
+  ctx.type = 'html';
+  ctx.body = fs.createReadStream(SETUP_HTML_PATH);
+});
+
+// First-run setup: set the admin password (server hashes with Argon2id, stores
+// hash only). Only available while no credential exists — not a password-reset.
+router.post('/admin/setup', async (ctx) => {
+  if (!sessionAuth.isSetupMode()) {
+    ctx.status = 409;
+    ctx.body = { error: 'Admin access is already configured' };
+    return;
+  }
+  const body = await readJsonBody(ctx);
+  const { username, password } = body || {};
+  const result = await sessionAuth.setupCredential(username, password);
+  if (!result.ok) {
+    ctx.status = 400;
+    ctx.body = { error: result.error };
+    return;
+  }
+  // Log them straight in.
+  const sid = sessionAuth.createSession(result.username);
+  sessionAuth.setSessionCookie(ctx, sid);
+  console.log(`🔐 Admin credential set via first-run setup (user "${result.username}") from ${ctx.ip} at ${new Date().toISOString()}`);
+  ctx.body = { ok: true };
 });
 
 // Verify credentials and start a session.
@@ -221,9 +255,9 @@ router.post('/admin/login', async (ctx) => {
     return;
   }
 
-  if (!ADMIN_PASSWORD_CONFIGURED) {
+  if (sessionAuth.isSetupMode()) {
     ctx.status = 503;
-    ctx.body = { error: 'Admin dashboard not configured' };
+    ctx.body = { error: 'Admin access not set up', setupUrl: '/admin/setup' };
     return;
   }
 
@@ -254,7 +288,7 @@ router.post('/admin/logout', async (ctx) => {
 });
 
 // --- Session gate: every other /admin route requires a valid session ----------
-const PUBLIC_ADMIN_PATHS = new Set(['/admin/login', '/admin/logout']);
+const PUBLIC_ADMIN_PATHS = new Set(['/admin/login', '/admin/logout', '/admin/setup']);
 app.use(async (ctx, next) => {
   if (!ctx.path.startsWith('/admin') || PUBLIC_ADMIN_PATHS.has(ctx.path)) {
     await next();
@@ -412,8 +446,8 @@ const server = app.listen(PORT, process.env.BIND_ADDRESS || '0.0.0.0', () => {
 ║                                                           ║
 ║  🔒 Authentication Required (session login)              ║
 ║      Login:    http://localhost:${PORT}/admin/login          ║
-║      Username: ${(process.env.ADMIN_USERNAME || 'admin').padEnd(43)}║
-║      Password: ${(ADMIN_PASSWORD_CONFIGURED ? 'configured' : 'NOT SET — dashboard disabled').padEnd(43)}║
+║      Username: ${sessionAuth.currentUsername().padEnd(43)}║
+║      Password: ${(ADMIN_PASSWORD_CONFIGURED ? 'configured' : 'AWAITING FIRST-RUN SETUP').padEnd(43)}║
 ║                                                           ║
 ║  Monitoring ${String(queues.length).padEnd(2)} BullMQ queues `+
   `(${uploadQueues.length} upload + ${paymentQueues.length} payment)`.padEnd(28)+`║
@@ -423,15 +457,16 @@ const server = app.listen(PORT, process.env.BIND_ADDRESS || '0.0.0.0', () => {
 
   if (!ADMIN_PASSWORD_CONFIGURED) {
     console.warn(`
-⚠️  WARNING: no admin credential configured — the dashboard is disabled.
-   Set ADMIN_PASSWORD_HASH (preferred) or ADMIN_PASSWORD in your .env file.
-   Generate a hash with:  yarn workspace @ar-io-bundler/admin-service hash-password
+🔐 First-run setup: no admin credential yet. Open the dashboard and set a
+   password at  http://localhost:${PORT}/admin/setup
+   (It is hashed with Argon2id and stored — hash only — at the auth file.
+    You can instead pre-set ADMIN_PASSWORD / ADMIN_PASSWORD_HASH in .env.)
     `);
   } else if (sessionAuth.usingPlaintextPassword()) {
     console.warn(`
-⚠️  ADMIN_PASSWORD is set in plaintext. Prefer an Argon2id hash:
-   yarn workspace @ar-io-bundler/admin-service hash-password
-   Then set ADMIN_PASSWORD_HASH and remove ADMIN_PASSWORD.
+ℹ️  ADMIN_PASSWORD is set in plaintext (fine, and consistent with your other
+   .env secrets). For hash-at-rest instead, leave it unset and set a password
+   via /admin/setup, or provide ADMIN_PASSWORD_HASH.
     `);
   }
   if (!process.env.ADMIN_SESSION_SECRET) {
