@@ -111,7 +111,10 @@ module.exports = {
       name: "upload-api",
       script: "./lib/index.js",
       cwd: pkg("upload-service"),
-      instances: process.env.API_INSTANCES || 2,
+      // upload-api is the CPU-bound path (per-item signature verification), so it
+      // scales independently of payment-service. Falls back to API_INSTANCES, then 2.
+      instances:
+        process.env.UPLOAD_API_INSTANCES || process.env.API_INSTANCES || 2,
       exec_mode: "cluster",
       env_file: envFile,
       env: {
