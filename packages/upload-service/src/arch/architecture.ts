@@ -39,7 +39,7 @@ import { X402Service, x402Networks } from "./x402Service";
 
 export interface Architecture {
   objectStore: ObjectStore;
-  // Second, HDD-backed object store mirroring served content. `undefined` unless
+  // Second, archive-backed object store mirroring served content. `undefined` unless
   // ARCHIVE_DATA_ITEM_BUCKET is set (single-MinIO deployments leave it off).
   archiveObjectStore?: ObjectStore;
   database: Database;
