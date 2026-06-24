@@ -57,10 +57,27 @@ const { initializeStatsCollector, getStats, lookupEntity, getHistory, getHealthW
 const app = new Koa();
 const router = new Router();
 
-// Key(s) used to sign the session cookie. Set ADMIN_SESSION_SECRET to keep
-// sessions valid across restarts; otherwise an ephemeral key is generated and
-// existing sessions are invalidated on every restart.
-const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// Key used to sign the session cookie — resolved so no dedicated secret is needed:
+//   1. ADMIN_SESSION_SECRET if explicitly set (override), else
+//   2. derive a stable key from PRIVATE_ROUTE_SECRET (already set + shared) via
+//      HMAC with a fixed label — not reversible to the base secret, and no
+//      marginal exposure (knowing PRIVATE_ROUTE_SECRET already means full
+//      inter-service compromise), else
+//   3. an ephemeral random key, only when neither is set.
+// NOTE: this only stabilizes the SIGNING key. The session store itself is
+// in-memory (see `sessions` in session.js), so admins re-login after a restart
+// regardless; a Redis-backed store would be needed for cross-restart sessions.
+function resolveSessionSecret() {
+  if (process.env.ADMIN_SESSION_SECRET) return process.env.ADMIN_SESSION_SECRET;
+  if (process.env.PRIVATE_ROUTE_SECRET) {
+    return crypto
+      .createHmac('sha256', process.env.PRIVATE_ROUTE_SECRET)
+      .update('ar-io-bundler:admin-session-cookie-key')
+      .digest('hex');
+  }
+  return crypto.randomBytes(32).toString('hex');
+}
+const SESSION_SECRET = resolveSessionSecret();
 app.keys = [SESSION_SECRET];
 
 const ADMIN_PASSWORD_CONFIGURED = sessionAuth.isConfigured();
@@ -469,10 +486,10 @@ const server = app.listen(PORT, process.env.BIND_ADDRESS || '0.0.0.0', () => {
    via /admin/setup, or provide ADMIN_PASSWORD_HASH.
     `);
   }
-  if (!process.env.ADMIN_SESSION_SECRET) {
+  if (!process.env.ADMIN_SESSION_SECRET && !process.env.PRIVATE_ROUTE_SECRET) {
     console.warn(
-      '⚠️  ADMIN_SESSION_SECRET not set — using an ephemeral key; ' +
-        'admin sessions will be invalidated on restart.'
+      '⚠️  Neither ADMIN_SESSION_SECRET nor PRIVATE_ROUTE_SECRET is set — using an ' +
+        'ephemeral cookie key; admin sessions will be invalidated on restart.'
     );
   }
 });

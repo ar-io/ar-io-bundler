@@ -501,13 +501,16 @@ surface.
 Steps:
 1. **DNS:** `admin.services.perma.online` A/AAAA → the bundler box.
 2. **Allowlist:** set the `allow … ; deny all;` lines in the admin `:443` block to your operator/VPN IPs.
-3. **`.env` on the box**, then restart `admin-dashboard` and `ufw deny 3002` from non-localhost:
+3. **`.env` on the box** — behind a proxy only ONE admin var is required:
    ```bash
-   BIND_ADDRESS=127.0.0.1        # :3002 binds loopback; only nginx reaches it (server.js:437)
-   ADMIN_COOKIE_SECURE=true      # Secure cookie (HTTPS only)
-   ADMIN_TRUST_PROXY=true        # real client IP from nginx X-Forwarded-For (lockout/audit)
-   ADMIN_SESSION_SECRET=<openssl rand -hex 32>   # stable across restarts
+   ADMIN_TRUST_PROXY=true   # REQUIRED behind nginx: read the real client IP from X-Forwarded-For
+                            # (lockout/audit). Off by default so a directly-reachable instance
+                            # can't be IP-spoofed to bypass the brute-force lockout.
    ```
+   The rest are already correct by default — do NOT set unless overriding: `ADMIN_COOKIE_SECURE`
+   defaults to Secure (HTTPS-only); `ADMIN_SESSION_SECRET` auto-derives from `PRIVATE_ROUTE_SECRET`.
+   `BIND_ADDRESS` is the **shared** bind you already set for upload/payment — admin binds the same
+   interface. Then restart `admin-dashboard` and firewall `:3002` (allow the router/localhost only).
 4. **Install config:** `cp infrastructure/nginx/snippets/* /etc/nginx/snippets/`; conf → `sites-available`
    → `sites-enabled`. Comment the admin `:443` block for now (its cert does not exist yet); leave the
    admin `:80` block active. `nginx -t && systemctl reload nginx`.
