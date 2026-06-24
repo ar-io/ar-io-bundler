@@ -311,42 +311,35 @@ Monitor the job with:
 ## Maintenance & Cleanup
 
 ### `cleanup-bundler-files.sh`
-**Cleans temporary and data files** based on retention policy.
+**Cleans the disposable TEMP scratch tree only** (`mtime`-based). It does **NOT**
+touch the durable upload data directory — that is cleaned exclusively by the
+database-aware `cleanup-fs` worker. See [CLEANUP_SETUP.md](./CLEANUP_SETUP.md) for
+the full two-mechanism picture.
+
+> ⚠️ Durable `raw_/metadata_` data backs signed receipts for paid uploads; a blind
+> `mtime` delete of it can make a receipted upload unfulfillable. This script is
+> deliberately scoped to `TEMP_DIR` to avoid that.
 
 **Configurable via `.env`:**
 ```bash
-TEMP_DIR=/path/to/temp                    # Default: upload-service/temp
-UPLOAD_SERVICE_DATA_DIR=/path/to/data     # Default: upload-service/upload-service-data
-CLEANUP_RETENTION_DAYS=90                 # Files older than this are deleted
+TEMP_DIR=/path/to/temp                    # Default: upload-service/temp (scratch only)
+CLEANUP_RETENTION_DAYS=90                 # Temp files older than this are deleted
 CLEANUP_DRY_RUN=false                     # Set to true to preview without deleting
 CLEANUP_LOG_DIR=/path/to/logs             # Default: ./logs
 ```
 
-**Features:**
-- Deletes files older than retention period (default 90 days)
-- Removes empty directories after cleanup
-- Logs all operations to `logs/cleanup-bundler-files.log`
-- Shows disk space before/after
-- Supports dry-run mode for testing
-
 **Usage:**
 ```bash
-./scripts/cleanup-bundler-files.sh  # Run cleanup
-
-# Dry run (preview only)
+# Dry run first (preview only)
 CLEANUP_DRY_RUN=true ./scripts/cleanup-bundler-files.sh
+
+./scripts/cleanup-bundler-files.sh  # Run cleanup
 ```
 
-**When to use:**
-- Set up as cron job for automatic cleanup
-- Manual cleanup before running out of disk space
-- Testing cleanup with dry-run before production
-
-**Recommended cron job:**
-```bash
-# Run cleanup weekly on Sunday at 2 AM
-0 2 * * 0 /path/to/ar-io-bundler/scripts/cleanup-bundler-files.sh
-```
+**Durable-data cleanup** is handled automatically by the in-process `cleanup-fs`
+scheduler (`CLEANUP_SCHEDULE_CRON`, tiered `FILESYSTEM_CLEANUP_DAYS` /
+`MINIO_CLEANUP_DAYS`, permanence-checked) — no cron needed. Trigger on demand with
+`node packages/upload-service/trigger-cleanup.js`.
 
 ---
 
