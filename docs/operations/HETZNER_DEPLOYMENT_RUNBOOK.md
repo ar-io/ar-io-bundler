@@ -488,29 +488,40 @@ TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-
 
 ### 14a. Admin portal + Bull Board over HTTPS (IP-restricted)
 
-The `admin-dashboard` PM2 process **is** both the portal *and* Bull Board (dashboard at `/admin/dashboard`,
-queues at `/admin/queues`) on **one** port (`:3002`), behind one session login — so a single TLS vhost
-covers everything. It controls financial queues (refunds) and recovery actions, so it is **never** open to
-the internet the way upload/payment are: it gets HTTPS **plus** an IP allowlist.
+The `admin-dashboard` process is both the portal **and** Bull Board (dashboard `/admin/dashboard`, queues
+`/admin/queues`) on one port (`:3002`) behind one login, so one TLS vhost covers both. It can trigger
+refunds and recovery actions, so it gets HTTPS **and** an IP allowlist — never the open-internet treatment
+upload/payment get.
 
-Config: **`infrastructure/nginx/snippets/bundler-loc-admin.conf`** + the `admin.services.perma.online`
-`server` block in `ar-io-bundler.conf` (`upstream bundler_admin → 127.0.0.1:3002`). It deliberately does
-**not** include `bundler-headers` (no `Access-Control-Allow-Origin *` on the admin surface) and sets strict
-headers (`X-Frame-Options: DENY`, `nosniff`, HSTS) instead. Edit the `allow`/`deny` lines to your operator
-IPs (`deny all` is the default).
+Config: the `admin.services.perma.online` server block in `infrastructure/nginx/ar-io-bundler.conf`
+(`upstream bundler_admin → 127.0.0.1:3002`) + `snippets/bundler-loc-admin.conf`. The snippet sets strict
+headers and, by design, omits `bundler-headers` so `Access-Control-Allow-Origin *` is never on the admin
+surface.
 
-Bundler-box prerequisites (so the Secure cookie + lockout work, and `:3002` is never public):
-```bash
-BIND_ADDRESS=127.0.0.1        # admin-service binds loopback; only nginx reaches :3002 (server.js:437)
-ADMIN_COOKIE_SECURE=true      # session cookie only sent over HTTPS
-ADMIN_TRUST_PROXY=true        # trust nginx X-Forwarded-For → real client IP for lockout/audit
-ADMIN_SESSION_SECRET=<openssl rand -hex 32>   # stable, so sessions survive restarts
-```
-Then `ufw deny 3002` from anything but localhost (belt-and-suspenders), and do the **first-run
-`/admin/setup` over the `https://admin.services.perma.online` URL** so the Secure cookie is set correctly.
-The session cookie is **host-only** (no `Domain` attribute), so it never leaks to sibling
-`*.services.perma.online` hosts. A wildcard `*.services.perma.online` cert covers the host (or issue
-per-host); if you use a DNS-01 wildcard you can delete the admin `:80` ACME/redirect block.
+Steps:
+1. **DNS:** `admin.services.perma.online` A/AAAA → the bundler box.
+2. **Allowlist:** set the `allow … ; deny all;` lines in the admin `:443` block to your operator/VPN IPs.
+3. **`.env` on the box**, then restart `admin-dashboard` and `ufw deny 3002` from non-localhost:
+   ```bash
+   BIND_ADDRESS=127.0.0.1        # :3002 binds loopback; only nginx reaches it (server.js:437)
+   ADMIN_COOKIE_SECURE=true      # Secure cookie (HTTPS only)
+   ADMIN_TRUST_PROXY=true        # real client IP from nginx X-Forwarded-For (lockout/audit)
+   ADMIN_SESSION_SECRET=<openssl rand -hex 32>   # stable across restarts
+   ```
+4. **Install config:** `cp infrastructure/nginx/snippets/* /etc/nginx/snippets/`; conf → `sites-available`
+   → `sites-enabled`. Comment the admin `:443` block for now (its cert does not exist yet); leave the
+   admin `:80` block active. `nginx -t && systemctl reload nginx`.
+5. **Per-host cert** (the `:80` block serves the challenge):
+   ```bash
+   certbot certonly --webroot -w /var/www/certbot -d admin.services.perma.online \
+     --deploy-hook "systemctl reload nginx"
+   ```
+6. **Enable TLS:** uncomment the admin `:443` block, `nginx -t && systemctl reload nginx`.
+7. **First run:** open `https://admin.services.perma.online/admin/setup` and set the admin password (hashed
+   server-side, stored as a hash only). Setup then closes.
+
+Notes: the session cookie is **host-only** (no `Domain`), so it never reaches sibling
+`*.services.perma.online` hosts. Renewal reuses the `:80` ACME block — keep port 80 reachable.
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 
