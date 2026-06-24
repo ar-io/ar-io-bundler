@@ -53,6 +53,7 @@ const { enqueue } = require(uploadServicePath + '/lib/arch/queues');
 const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
 const { initializeStatsCollector, getStats, lookupEntity, getHistory, getHealthWindowCached, sampleHistory, cleanup } = require("./admin/statsCollector");
+const { startAlerter, stopAlerter } = require("./admin/alerter");
 
 const app = new Koa();
 const router = new Router();
@@ -492,6 +493,10 @@ const server = app.listen(PORT, process.env.BIND_ADDRESS || '0.0.0.0', () => {
         'ephemeral cookie key; admin sessions will be invalidated on restart.'
     );
   }
+
+  // Start the Slack health alerter (opt-in via ALERTS_ENABLED=true).
+  // Monitors the same BullMQ queues plus PM2 services and infrastructure.
+  startAlerter(queues);
 });
 
 // Background trend sampler: record a history datapoint on a fixed cadence so the
@@ -513,6 +518,7 @@ if (HISTORY_SAMPLE_MS > 0) {
 process.on('SIGTERM', async () => {
   console.log('\n🛑 SIGTERM received, shutting down gracefully...');
   if (historyTimer) clearInterval(historyTimer);
+  stopAlerter();
   await cleanup();
   server.close(() => {
     console.log('✅ Server closed');
@@ -522,6 +528,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 SIGINT received, shutting down gracefully...');
+  stopAlerter();
   await cleanup();
   server.close(() => {
     console.log('✅ Server closed');

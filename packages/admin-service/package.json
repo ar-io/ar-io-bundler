@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "hash-password": "node scripts/hash-password.js"
+    "hash-password": "node scripts/hash-password.js",
+    "test:slack": "node admin/notifier/test-slack.js"
   },
   "dependencies": {
     "@bull-board/api": "^6.13.1",
