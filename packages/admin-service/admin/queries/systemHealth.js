@@ -328,15 +328,15 @@ async function getQueueHealth(queues) {
           ]);
 
           // Distinguish a live incident from stale cruft: BullMQ keeps failed
-          // jobs until cleaned, so a large `failed` may be months old. Sample the
-          // NEWEST failures (highest indices in the ascending-by-time set) and
-          // count how many landed in the last hour + how fresh the newest is.
+          // jobs until cleaned, so a large `failed` may be months old. BullMQ
+          // returns the failed list NEWEST-FIRST (index 0 = most recent), so the
+          // newest SAMPLE failures are getFailed(0, SAMPLE-1). Count how many
+          // landed in the last hour + how fresh the newest is.
+          const SAMPLE = 50;
           let recentFailed = 0;
           let newestFailedAgeSec = null;
           if (failed > 0) {
-            const SAMPLE = 50;
-            const start = Math.max(0, failed - SAMPLE);
-            const jobs = await queue.getFailed(start, failed - 1);
+            const jobs = await queue.getFailed(0, SAMPLE - 1);
             const now = Date.now();
             let newest = 0;
             for (const j of jobs) {
@@ -346,8 +346,6 @@ async function getQueueHealth(queues) {
               if (now - ts <= 3600 * 1000) recentFailed += 1;
             }
             if (newest) newestFailedAgeSec = Math.max(0, Math.round((now - newest) / 1000));
-            // recentFailed is capped at the sample size; flag it as a floor.
-            if (recentFailed === SAMPLE) recentFailed = SAMPLE; // ">=" semantics in UI
           }
 
           return {
