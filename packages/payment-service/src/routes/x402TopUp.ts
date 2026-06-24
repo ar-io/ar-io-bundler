@@ -28,6 +28,7 @@ import { x402PricingOracle } from "../pricing/x402PricingOracle";
 import { KoaContext } from "../server";
 import { ByteCount } from "../types/byteCount";
 import { W } from "../types/winston";
+import { sendX402TopUpSlackMessage } from "../utils/slack";
 import { X402PaymentRequiredResponse } from "../x402/x402Service";
 
 /**
@@ -315,6 +316,17 @@ export async function x402TopUpRoute(ctx: KoaContext, next: Next) {
       wincPaid,
       newBalance,
       paymentId: payment.id,
+    });
+
+    // Best-effort Slack notification (never delay/break the payment response).
+    void sendX402TopUpSlackMessage({
+      address,
+      payerAddress: authorization.from,
+      usdcAmount: authorization.value,
+      winstonCreditAmount: wincPaid,
+      network,
+      txHash: settlement.transactionHash!,
+      mode: "topup",
     });
 
     ctx.status = 200;
