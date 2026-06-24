@@ -663,3 +663,22 @@ table td .copyable-id {
 .spark { border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; }
 .spark-title { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
 .spark canvas { height: 90px !important; }
+
+/* Window selector (segmented control) */
+.window-selector { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+.window-selector button { border: 0; background: var(--card-bg); color: var(--text-secondary); padding: 6px 16px; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); }
+.window-selector button:last-child { border-right: 0; }
+.window-selector button:hover { background: var(--bg-color); }
+.window-selector button.active { background: var(--primary-color); color: #fff; }
+
+/* Windowed health verdict banner */
+.window-verdict { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border-radius: 10px; border-left: 6px solid var(--sev-info); background: var(--bg-color); }
+.window-verdict.ok { border-left-color: var(--sev-ok); background: #f0fdf4; }
+.window-verdict.warn { border-left-color: var(--sev-warn); background: #fffaf0; }
+.window-verdict.critical { border-left-color: var(--sev-critical); background: #fef2f2; }
+.window-verdict.info { border-left-color: var(--sev-info); }
+.window-verdict-icon { font-size: 28px; }
+.window-verdict-text { font-size: 19px; font-weight: 700; }
+.window-verdict-sub { font-size: 13px; color: var(--text-secondary); }
+.window-rate { margin-left: auto; text-align: right; font-size: 30px; font-weight: 700; line-height: 1; }
+.window-rate span { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-top: 2px; }

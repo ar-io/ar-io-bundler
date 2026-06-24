@@ -52,7 +52,7 @@ const { enqueue } = require(uploadServicePath + '/lib/arch/queues');
 
 const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
-const { initializeStatsCollector, getStats, lookupEntity, getHistory, sampleHistory, cleanup } = require("./admin/statsCollector");
+const { initializeStatsCollector, getStats, lookupEntity, getHistory, getHealthWindowCached, sampleHistory, cleanup } = require("./admin/statsCollector");
 
 const app = new Koa();
 const router = new Router();
@@ -276,6 +276,17 @@ router.get('/admin/stats', statsRateLimiter, async (ctx) => {
       error: 'Failed to fetch statistics',
       message: error.message
     };
+  }
+});
+
+// Windowed pipeline health (1h / 24h / 7d).
+router.get('/admin/health-window', statsRateLimiter, async (ctx) => {
+  const window = ['1h', '24h', '7d'].includes(ctx.query.window) ? ctx.query.window : '24h';
+  try {
+    ctx.body = await getHealthWindowCached(window);
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { error: 'health-window failed', message: error.message };
   }
 });
 

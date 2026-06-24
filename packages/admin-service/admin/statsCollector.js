@@ -30,6 +30,7 @@ const { getSystemHealth, getQueueHealth } = require('./queries/systemHealth');
 const { getPipelineStats } = require('./queries/pipelineStats');
 const { getWalletStats } = require('./queries/walletStats');
 const { getThroughputStats } = require('./queries/throughputStats');
+const { getHealthWindow, WINDOWS } = require('./queries/healthWindow');
 const { computeHealthRollup } = require('./healthRollup');
 const Redis = require('ioredis');
 const Knex = require('knex');
@@ -536,7 +537,7 @@ async function lookupEntity(q) {
 }
 
 const HISTORY_KEY = 'admin:history:v1';
-const HISTORY_MAX = 1500;        // ~24h at ~1/min
+const HISTORY_MAX = 11000;        // ~7 days at ~1/min (worst case); ~each point is tiny
 const HISTORY_MIN_GAP_MS = 55000; // don't record denser than ~1/min
 
 /**
@@ -604,6 +605,27 @@ async function sampleHistory(queues) {
 }
 
 /**
+ * Windowed pipeline health (1h/24h/7d), cached per window.
+ */
+async function getHealthWindowCached(windowKey = '24h') {
+  const key = WINDOWS[windowKey] ? windowKey : '24h';
+  const cacheKey = `admin:healthwindow:${key}`;
+  if (cacheRedis) {
+    try {
+      const cached = await cacheRedis.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch (e) { /* fall through to compute */ }
+  }
+  const result = await getHealthWindow(uploadDb, key);
+  if (cacheRedis) {
+    try {
+      await cacheRedis.setex(cacheKey, key === '7d' ? 120 : 30, JSON.stringify(result));
+    } catch (e) { /* best effort */ }
+  }
+  return result;
+}
+
+/**
  * Return trend datapoints (oldest→newest) within the last `hours`.
  */
 async function getHistory(hours = 24) {
@@ -627,6 +649,7 @@ module.exports = {
   invalidateCache,
   lookupEntity,
   getHistory,
+  getHealthWindowCached,
   recordHistoryPoint,
   sampleHistory,
   cleanup

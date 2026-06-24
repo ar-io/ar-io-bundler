@@ -51,6 +51,19 @@
       <!-- Aggregate Status Banner -->
       <div id="status-banner" class="status-banner"></div>
 
+      <!-- Windowed pipeline health (good/bad over 1h/24h/7d) -->
+      <section class="section">
+        <div class="section-head">
+          <h2>Pipeline Health</h2>
+          <div class="window-selector" id="window-selector">
+            <button type="button" data-window="1h" onclick="selectWindow('1h')">1h</button>
+            <button type="button" data-window="24h" class="active" onclick="selectWindow('24h')">24h</button>
+            <button type="button" data-window="7d" onclick="selectWindow('7d')">7d</button>
+          </div>
+        </div>
+        <div id="window-health"></div>
+      </section>
+
       <!-- Lookup -->
       <section class="section lookup-section">
         <div class="lookup-bar">
@@ -86,9 +99,9 @@
         </section>
       </div>
 
-      <!-- Trends (24h sparklines) -->
+      <!-- Trends (window-driven sparklines) -->
       <section class="section">
-        <h2>Trends (24h)</h2>
+        <h2 id="trends-title">Trends (24h)</h2>
         <div id="trends-empty" class="muted" style="display:none;">Collecting data — trends appear as samples accumulate.</div>
         <div class="spark-grid">
           <div class="spark"><div class="spark-title">Backlog (unbundled)</div><canvas id="spark-backlog"></canvas></div>

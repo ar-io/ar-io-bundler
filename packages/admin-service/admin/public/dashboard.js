@@ -15,12 +15,85 @@ let networkChart = null;
 let cryptoTokenChart = null;
 const sparkCharts = {};
 
+// Selected time window for the health panel + trends.
+let currentWindow = '24h';
+const WINDOW_HOURS = { '1h': 1, '24h': 24, '7d': 168 };
+const WINDOW_LABEL = { '1h': 'last hour', '24h': 'last 24h', '7d': 'last 7 days' };
+
 /**
- * Fetch trend history and render sparklines.
+ * Switch the time window (1h/24h/7d) — drives the health panel and the trends.
+ */
+function selectWindow(w) {
+  if (!WINDOW_HOURS[w]) return;
+  currentWindow = w;
+  document.querySelectorAll('#window-selector button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.window === w);
+  });
+  refreshWindow();
+}
+
+/** Refresh both the windowed-health panel and the trend sparklines. */
+function refreshWindow() {
+  fetchWindowHealth();
+  fetchHistory();
+}
+
+/**
+ * Fetch + render the windowed pipeline-health panel.
+ */
+async function fetchWindowHealth() {
+  const el = document.getElementById('window-health');
+  if (!el) return;
+  try {
+    const res = await fetch(`/admin/health-window?window=${currentWindow}`, { headers: { 'Accept': 'application/json' } });
+    if (res.status === 401) { window.location.href = '/admin/login'; return; }
+    if (!res.ok) return;
+    renderWindowHealth(await res.json());
+  } catch (err) {
+    el.innerHTML = '<span class="muted">Health unavailable</span>';
+  }
+}
+
+function renderWindowHealth(d) {
+  const el = document.getElementById('window-health');
+  const verdict = d.verdict || 'idle';
+  const map = {
+    healthy: { cls: 'ok', icon: '✅', text: 'Healthy' },
+    degraded: { cls: 'warn', icon: '⚠️', text: 'Degraded' },
+    critical: { cls: 'critical', icon: '🚨', text: 'Problems' },
+    idle: { cls: 'info', icon: '😴', text: 'Idle (no activity)' },
+  };
+  const v = map[verdict] || map.idle;
+  const failed = (d.itemsFailed || 0) + (d.bundlesFailed || 0);
+  const rate = d.successRate == null ? '—' : `${d.successRate}%`;
+  const lat = d.latencyP50Sec != null ? ` · median ${fmtDur(d.latencyP50Sec)} to permanent` : '';
+
+  el.innerHTML = `
+    <div class="window-verdict ${v.cls}">
+      <span class="window-verdict-icon">${v.icon}</span>
+      <div>
+        <div class="window-verdict-text">${v.text}</div>
+        <div class="window-verdict-sub">pipeline over the ${WINDOW_LABEL[d.window] || d.window}${lat}</div>
+      </div>
+      <div class="window-rate">${rate}<span>success</span></div>
+    </div>
+    <div class="atrisk-grid" style="margin-top:14px;">
+      ${metricCard('Uploads accepted', (d.arrivals || 0).toLocaleString(), 'arrived in window', 'info')}
+      ${metricCard('Items → permanent', (d.itemsPermanent || 0).toLocaleString(), fmtBytes(d.bytesPermanent), 'ok')}
+      ${metricCard('Bundles → permanent', (d.bundlesPermanent || 0).toLocaleString(), 'confirmed on Arweave', 'ok')}
+      ${metricCard('Failed', failed.toLocaleString(), `${(d.itemsFailed||0).toLocaleString()} items · ${(d.bundlesFailed||0).toLocaleString()} bundles`, failed > 0 ? 'warn' : 'ok')}
+    </div>`;
+}
+
+/**
+ * Fetch trend history (scaled to the selected window) and render sparklines.
  */
 async function fetchHistory() {
+  const hours = WINDOW_HOURS[currentWindow] || 24;
+  const title = document.getElementById('trends-title');
+  if (title) title.textContent = `Trends (${currentWindow})`;
   try {
-    const res = await fetch('/admin/history?hours=24', { headers: { 'Accept': 'application/json' } });
+    const res = await fetch(`/admin/history?hours=${hours}`, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) return;
     const data = await res.json();
     renderSparklines(data.points || []);
@@ -142,8 +215,8 @@ async function fetchStats() {
     // Update last refresh time
     updateLastRefresh(stats.timestamp, stats._cached, stats._cacheAge);
 
-    // Trends (separate, non-blocking)
-    fetchHistory();
+    // Windowed health + trends (separate, non-blocking)
+    refreshWindow();
 
   } catch (err) {
     console.error('Failed to fetch stats:', err);
