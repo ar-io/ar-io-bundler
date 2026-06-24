@@ -46,7 +46,7 @@
  */
 
 const { getStats } = require("./statsCollector");
-const { sendAlert, sendSlackMessage, isConfigured } = require("./notifier/slack");
+const { sendAlert, sendSlackMessage, sendHeartbeat, isConfigured } = require("./notifier/slack");
 
 // Raw datastore liveness the rollup doesn't check (down => CRITICAL).
 const INFRA_LABELS = {
@@ -123,14 +123,15 @@ function issueKey(area, message) {
  */
 function collectIssues(stats) {
   const current = new Map();
-  const add = (key, severity, title, detail, minConsecutive) => {
-    if (!current.has(key)) current.set(key, { severity, title, detail, minConsecutive });
+  const add = (key, severity, title, detail, minConsecutive, area) => {
+    if (!current.has(key)) current.set(key, { severity, title, detail, minConsecutive, area });
   };
 
   const system = stats.system || {};
 
   // 1) PRIMARY: the dashboard's own rollup verdict (fires immediately — these
-  //    are already aged conditions, so they can't flap on a restart).
+  //    are already aged conditions, so they can't flap on a restart). The area
+  //    goes in the alert footer, so it's not repeated in the detail.
   const health = stats.health || {};
   for (const issue of health.issues || []) {
     const severity = issue.severity === "critical" ? "critical" : "warning";
@@ -138,8 +139,9 @@ function collectIssues(stats) {
       issueKey(`rollup:${issue.area}`, issue.message),
       severity,
       issue.message,
-      `area: ${issue.area}`,
-      1
+      undefined,
+      1,
+      issue.area
     );
   }
 
@@ -153,7 +155,8 @@ function collectIssues(stats) {
         "critical",
         `${label} is unreachable`,
         comp.error ? `Error: ${comp.error}` : undefined,
-        config.failuresBeforeFiring
+        config.failuresBeforeFiring,
+        "infra"
       );
     }
   }
@@ -175,7 +178,8 @@ function collectIssues(stats) {
         svc
           ? `uptime: ${svc.uptime} · restarts: ${svc.restarts} · mem: ${svc.memory}`
           : "Process not found in PM2 list.",
-        config.failuresBeforeFiring
+        config.failuresBeforeFiring,
+        "service"
       );
     }
   }
@@ -199,13 +203,14 @@ async function evaluate(stats) {
     st.severity = iss.severity;
     st.title = iss.title;
     st.detail = iss.detail;
+    st.area = iss.area;
     tracked.set(key, st);
 
     if (!st.firing) {
       if (st.hits >= (iss.minConsecutive || 1)) {
         st.firing = true;
         st.lastNotified = t;
-        await sendAlert({ severity: iss.severity, title: iss.title, detail: iss.detail });
+        await sendAlert({ severity: iss.severity, title: iss.title, detail: iss.detail, area: iss.area });
       }
       continue; // still debouncing
     }
@@ -219,6 +224,7 @@ async function evaluate(stats) {
         severity: iss.severity,
         title: `Still: ${iss.title}`,
         detail: iss.detail,
+        area: iss.area,
       });
     }
   }
@@ -228,7 +234,7 @@ async function evaluate(stats) {
   for (const [key, st] of tracked) {
     if (!current.has(key)) {
       if (st.firing) {
-        await sendAlert({ severity: "recovered", title: `Resolved: ${st.title}` });
+        await sendAlert({ severity: "recovered", title: `Resolved: ${st.title}`, area: st.area });
       }
       tracked.delete(key);
     }
@@ -245,18 +251,11 @@ async function maybeHeartbeat(stats) {
   lastHeartbeatDay = day;
 
   const health = stats.health || {};
-  const status = health.status || "unknown";
-  const emoji =
-    status === "critical"
-      ? ":red_circle:"
-      : status === "degraded"
-        ? ":large_yellow_circle:"
-        : ":large_green_circle:";
+  const status = health.status || "ok";
   const open = (health.issues || []).length;
 
-  const lines = [
-    `${emoji} *Daily health check* — status: *${status}*, ${open} open issue(s).`,
-  ];
+  // Digest lines (the envelope renders the status header + color/env label).
+  const lines = [`${open} open issue(s).`];
   const wallet = stats.wallet || {};
   if (wallet.balanceAr != null) lines.push(`Bundle wallet: ${wallet.balanceAr} AR`);
   const uploadsToday = stats.uploads && stats.uploads.today;
@@ -275,10 +274,7 @@ async function maybeHeartbeat(stats) {
     );
   }
 
-  await sendSlackMessage({
-    message: lines.join("\n"),
-    icon_emoji: emoji,
-  });
+  await sendHeartbeat({ status, detail: lines.join("\n") });
 }
 
 async function tick() {

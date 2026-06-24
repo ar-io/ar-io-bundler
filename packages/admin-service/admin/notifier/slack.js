@@ -19,18 +19,33 @@
  * Slack notifier (admin-service)
  *
  * A small, self-contained Slack sender for ops alerts. Uses the Slack Web API
- * (chat.postMessage) with a bot token (SLACK_OAUTH_TOKEN) so a single
- * credential can route to multiple channels by channel ID. This mirrors the
- * pattern already used by packages/payment-service/src/utils/slack.ts.
+ * (chat.postMessage) with a bot token (SLACK_OAUTH_TOKEN) so a single credential
+ * routes to multiple channels by ID. Mirrors packages/payment-service/src/utils/
+ * slack.ts — and the two intentionally produce the SAME standardized envelope so
+ * every Slack message (ops alert, heartbeat, payment notification) looks alike.
  *
- * Required bot scope: chat:write. The bot must be invited to each target
- * channel (/invite @YourBot) or posting will fail with not_in_channel.
+ * Standard envelope (what a devops admin sees):
+ *   ▌<emoji> <SEVERITY> · `<env label>`         ← colored attachment bar by severity
+ *   ▌*<title>*                                    ← the what
+ *   ▌<detail>                                     ← context: counts, ages, errors
+ *   ▌🔎 <Dashboard>  ·  area: <area>              ← where to look (footer)
  *
- * All sends are best-effort: failures are logged and swallowed so alerting can
- * never take down the admin service.
+ * Required bot scope: chat:write (+ chat:write.customize for the name/emoji). The
+ * bot must be invited to each channel or posting fails with not_in_channel.
+ *
+ * Best-effort: failures are logged and swallowed so alerting can never take down
+ * the admin service.
  */
 
 const SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage";
+
+// Deployment label stamped on EVERY message so an admin always knows the source
+// (e.g. "bundler-prod" vs "bundler-dev"). Shared with the payment service via the
+// root .env. Falls back to NODE_ENV, then a generic name.
+const ENV_LABEL =
+  process.env.ALERT_ENV_LABEL || process.env.NODE_ENV || "ar-io-bundler";
+// Optional "where to look" link shown in the footer (e.g. the public dashboard).
+const DASHBOARD_URL = process.env.ADMIN_DASHBOARD_URL || "";
 
 const channels = {
   // Ops/health alerts (service down, infra down, queue failures).
@@ -39,18 +54,44 @@ const channels = {
   topUp: process.env.SLACK_TURBO_TOP_UP_CHANNEL_ID,
 };
 
+// Severity → emoji, header label, and attachment bar color.
+const SEVERITY = {
+  critical: { emoji: ":red_circle:", label: "CRITICAL", color: "#D00000" },
+  warning: { emoji: ":large_yellow_circle:", label: "WARNING", color: "#E6A100" },
+  recovered: { emoji: ":large_green_circle:", label: "RESOLVED", color: "#2EB67D" },
+  info: { emoji: ":information_source:", label: "INFO", color: "#2D9CDB" },
+};
+
 function isConfigured() {
   return Boolean(process.env.SLACK_OAUTH_TOKEN);
 }
 
 /**
- * Post a Block Kit message to Slack.
- *
- * @param {object} opts
- * @param {string|Array} opts.message  mrkdwn string, OR a pre-built blocks array
- * @param {string} [opts.channel]      channel ID (defaults to the alert channel)
- * @param {string} [opts.username]
- * @param {string} [opts.icon_emoji]
+ * Build the standard colored-attachment envelope.
+ * @returns {object} a Slack attachment ({color, blocks})
+ */
+function buildEnvelope({ emoji, label, color, title, detail, area }) {
+  let body = `${emoji} *${label}* · \`${ENV_LABEL}\``;
+  if (title) body += `\n*${title}*`;
+  if (detail) body += `\n${detail}`;
+
+  const blocks = [{ type: "section", text: { type: "mrkdwn", text: body } }];
+
+  const footer = [];
+  if (DASHBOARD_URL) footer.push(`🔎 <${DASHBOARD_URL}|Dashboard>`);
+  if (area) footer.push(`area: ${area}`);
+  if (footer.length) {
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: footer.join("  ·  ") }],
+    });
+  }
+  return { color, blocks };
+}
+
+/**
+ * Post to Slack. Pass `attachments` for the standard colored envelope, or
+ * `message` (mrkdwn string / blocks array) for a plain message.
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
 async function sendSlackMessage({
@@ -58,6 +99,7 @@ async function sendSlackMessage({
   channel = channels.alert,
   username = "Bundler Alerts",
   icon_emoji = ":rotating_light:",
+  attachments,
 } = {}) {
   const oAuthToken = process.env.SLACK_OAUTH_TOKEN;
   if (!oAuthToken) {
@@ -69,9 +111,14 @@ async function sendSlackMessage({
     return { ok: false, error: "missing_channel" };
   }
 
-  const blocks = Array.isArray(message)
-    ? message
-    : [{ type: "section", text: { type: "mrkdwn", text: message } }];
+  const payload = { channel, username, icon_emoji };
+  if (attachments) {
+    payload.attachments = attachments;
+  } else {
+    payload.blocks = Array.isArray(message)
+      ? message
+      : [{ type: "section", text: { type: "mrkdwn", text: message } }];
+  }
 
   try {
     const res = await fetch(SLACK_POST_MESSAGE_URL, {
@@ -81,7 +128,7 @@ async function sendSlackMessage({
         "Content-Type": "application/json",
         Authorization: `Bearer ${oAuthToken}`,
       },
-      body: JSON.stringify({ channel, blocks, username, icon_emoji }),
+      body: JSON.stringify(payload),
     });
     // Slack returns HTTP 200 with {ok:false,error:"..."} on logical failures
     // (bad token, not_in_channel, channel_not_found) — inspect the body.
@@ -98,38 +145,59 @@ async function sendSlackMessage({
   }
 }
 
-const SEVERITY = {
-  critical: { emoji: ":red_circle:", label: "CRITICAL" },
-  warning: { emoji: ":large_yellow_circle:", label: "WARNING" },
-  recovered: { emoji: ":large_green_circle:", label: "RECOVERED" },
-  info: { emoji: ":information_source:", label: "INFO" },
-};
-
 /**
- * Send a structured ops alert to the alert channel.
+ * Send a standardized ops alert to the alert channel.
  *
  * @param {object} opts
  * @param {"critical"|"warning"|"recovered"|"info"} opts.severity
- * @param {string} opts.title    short headline
- * @param {string} [opts.detail] optional body / context
+ * @param {string} opts.title    short headline (the "what")
+ * @param {string} [opts.detail] context (counts, ages, error)
+ * @param {string} [opts.area]   subsystem (infra, service, pipeline, payments…)
  */
-async function sendAlert({ severity = "warning", title, detail } = {}) {
+async function sendAlert({ severity = "warning", title, detail, area } = {}) {
   const sev = SEVERITY[severity] || SEVERITY.warning;
-  let text = `${sev.emoji} *[${sev.label}] ${title}*`;
-  if (detail) {
-    text += `\n${detail}`;
-  }
   return sendSlackMessage({
-    message: text,
     channel: channels.alert,
     icon_emoji: sev.emoji,
+    attachments: [buildEnvelope({ ...sev, title, detail, area })],
+  });
+}
+
+/**
+ * Send the daily heartbeat in the same envelope, colored by overall status.
+ * @param {object} opts
+ * @param {"ok"|"degraded"|"critical"} opts.status
+ * @param {string} [opts.detail] digest lines
+ */
+async function sendHeartbeat({ status = "ok", detail } = {}) {
+  const map = {
+    critical: SEVERITY.critical,
+    degraded: SEVERITY.warning,
+    ok: SEVERITY.recovered,
+  };
+  const sev = map[status] || SEVERITY.recovered;
+  return sendSlackMessage({
+    channel: channels.alert,
+    icon_emoji: sev.emoji,
+    attachments: [
+      buildEnvelope({
+        emoji: sev.emoji,
+        label: "DAILY CHECK",
+        color: sev.color,
+        title: `Status: ${status}`,
+        detail,
+      }),
+    ],
   });
 }
 
 module.exports = {
   sendSlackMessage,
   sendAlert,
+  sendHeartbeat,
+  buildEnvelope,
   isConfigured,
   channels,
   SEVERITY,
+  ENV_LABEL,
 };
