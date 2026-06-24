@@ -585,9 +585,12 @@ export async function reclaimBundleFromSsd({
  *     HDD copy is confirmed.
  *
  * The archive HEAD gate is the critical safety guard: we NEVER delete the SSD
- * copy until the HDD copy is confirmed (the gateway reads only the HDD). If any
- * copy for a bundle isn't on the HDD yet, that bundle is deferred (the cursor is
- * not advanced past it) so it's retried on the next run.
+ * copy until the HDD copy is confirmed (the gateway reads only the HDD). If a
+ * copy for a bundle isn't on the HDD yet, that bundle is deferred: the persisted
+ * cursor parks at the first such hole so it's retried next run, but the scan
+ * still continues past it and reclaims newer bundles — one missed copy (e.g. a
+ * best-effort archive-copy enqueue that was permanently dropped) therefore can't
+ * starve reclamation for the whole tail and fill the SSD.
  */
 async function cleanupSsdAfterArchive({
   logger,
@@ -605,9 +608,20 @@ async function cleanupSsdAfterArchive({
   ).toISOString();
 
   const stored = await getConfigValue(ARCHIVE_SSD_CURSOR_KEY);
-  let cursor: ArchiveCleanupCursor = stored
+  const startCursor: ArchiveCleanupCursor = stored
     ? JSON.parse(stored)
     : { permanentDate: "1970-01-01T00:00:00.000Z", bundleId: undefined };
+
+  // Two cursors so one deferred bundle can't starve newer ones:
+  //  - scanCursor advances over EVERY bundle examined (drives pagination), so we
+  //    keep reclaiming later bundles even after a deferral.
+  //  - persistCursor is the last CONTIGUOUS reclaimed bundle; it stops advancing
+  //    at the first deferral (the "hole") and is what we persist, so the hole is
+  //    retried next run while the tail still gets reclaimed this run.
+  let scanCursor: ArchiveCleanupCursor = { ...startCursor };
+  let persistCursor: ArchiveCleanupCursor = { ...startCursor };
+  let holeSeen = false;
+  let persistAdvanced = false;
 
   let bundlesSwept = 0;
   let payloadsDeleted = 0;
@@ -616,7 +630,7 @@ async function cleanupSsdAfterArchive({
   let deferredBundles = 0;
 
   logger.info("Archive SSD cleanup started", {
-    cursor,
+    cursor: startCursor,
     graceCutoff,
     grace_days: SSD_CLEANUP_GRACE_DAYS,
   });
@@ -637,13 +651,13 @@ async function cleanupSsdAfterArchive({
         void this.where(
           columnNames.permanentDate,
           ">",
-          cursor.permanentDate
+          scanCursor.permanentDate
         ).orWhere(function () {
           void this.where(
             columnNames.permanentDate,
             "=",
-            cursor.permanentDate
-          ).andWhere(columnNames.bundleId, ">", cursor.bundleId ?? "");
+            scanCursor.permanentDate
+          ).andWhere(columnNames.bundleId, ">", scanCursor.bundleId ?? "");
         });
       })
       .orderBy(columnNames.permanentDate)
@@ -651,9 +665,6 @@ async function cleanupSsdAfterArchive({
       .limit(PERMANENT_BUNDLE_BATCH_SIZE);
 
     if (bundles.length === 0) break;
-
-    let advanced = false;
-    let deferred = false;
 
     for (const bundle of bundles) {
       const items: { data_item_id: string }[] = await knexClient(
@@ -675,29 +686,42 @@ async function cleanupSsdAfterArchive({
       if (result.txDeleted) txDeleted++;
       rawDeleted += result.rawDeleted;
 
-      if (result.deferred) {
-        // A HDD copy wasn't confirmed; don't advance the cursor past this bundle
-        // so it's retried next run (head-of-line wait for the archive copy).
-        deferredBundles++;
-        deferred = true;
-        break;
-      }
-
-      bundlesSwept++;
-      cursor = {
+      // Always advance the scan position so we keep examining newer bundles.
+      scanCursor = {
         permanentDate: bundle.permanent_date,
         bundleId: bundle.bundle_id,
       };
-      advanced = true;
+
+      if (result.deferred) {
+        // A HDD copy wasn't confirmed yet. Mark the hole so the persisted cursor
+        // parks here (retried next run), but DO NOT stop — a single deferred
+        // bundle (e.g. a best-effort archive-copy enqueue that was permanently
+        // missed) must not block reclamation of every newer bundle and let the
+        // SSD fill. We keep scanning and reclaiming the rest of the tail.
+        deferredBundles++;
+        holeSeen = true;
+        continue;
+      }
+
+      bundlesSwept++;
+      // Only advance the persisted cursor while no hole has been seen, so it
+      // stays at the first unresolved deferral.
+      if (!holeSeen) {
+        persistCursor = {
+          permanentDate: bundle.permanent_date,
+          bundleId: bundle.bundle_id,
+        };
+        persistAdvanced = true;
+      }
     }
 
-    if (advanced) {
-      await setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(cursor));
+    if (persistAdvanced) {
+      await setConfigValue(ARCHIVE_SSD_CURSOR_KEY, JSON.stringify(persistCursor));
     }
 
-    // Stop on a deferral (head-of-line: wait for the HDD copy) or when the page
-    // wasn't full (nothing more to scan this run).
-    if (deferred || bundles.length < PERMANENT_BUNDLE_BATCH_SIZE) break;
+    // Stop only when the page wasn't full (tail exhausted). Deferrals no longer
+    // halt the scan.
+    if (bundles.length < PERMANENT_BUNDLE_BATCH_SIZE) break;
   }
 
   logger.info("✅ Archive SSD cleanup complete", {
@@ -705,8 +729,12 @@ async function cleanupSsdAfterArchive({
     payloadsDeleted,
     txDeleted,
     rawDeleted,
+    // deferredBundles > 0 means some bundles' HDD copies weren't confirmed yet;
+    // the persisted cursor parks at the first such hole and is retried next run
+    // (newer bundles were still reclaimed this run — no head-of-line stall).
     deferredBundles,
-    cursor,
+    persistedCursor: persistCursor,
+    scannedThrough: scanCursor,
   });
 }
 
