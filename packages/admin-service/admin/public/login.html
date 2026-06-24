@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR.IO Bundler Admin · Sign in</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --accent:#3b82f6; --text:#e2e8f0; --muted:#94a3b8; --danger:#ef4444; --border:#334155; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      background:radial-gradient(1200px 600px at 50% -10%, #1e293b 0%, var(--bg) 60%); color:var(--text); }
+    .card { width:100%; max-width:380px; background:var(--card); border:1px solid var(--border);
+      border-radius:14px; padding:32px; box-shadow:0 20px 50px rgba(0,0,0,.45); }
+    .brand { text-align:center; margin-bottom:24px; }
+    .brand h1 { font-size:20px; margin:0 0 4px; }
+    .brand p { margin:0; color:var(--muted); font-size:13px; }
+    label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
+    input { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border);
+      background:#0f172a; color:var(--text); font-size:14px; }
+    input:focus { outline:none; border-color:var(--accent); }
+    button { width:100%; margin-top:22px; padding:12px; border:0; border-radius:8px; cursor:pointer;
+      background:var(--accent); color:#fff; font-size:15px; font-weight:600; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .error { display:none; margin-top:16px; padding:10px 12px; border-radius:8px;
+      background:rgba(239,68,68,.12); border:1px solid var(--danger); color:#fecaca; font-size:13px; }
+    .foot { margin-top:18px; text-align:center; color:var(--muted); font-size:12px; }
+  </style>
+</head>
+<body>
+  <form class="card" id="login-form" autocomplete="off">
+    <div class="brand">
+      <h1>🚀 AR.IO Bundler Admin</h1>
+      <p>Sign in to continue</p>
+    </div>
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button id="submit" type="submit">Sign in</button>
+    <div class="error" id="error"></div>
+    <div class="foot">Authorized access only · activity is logged</div>
+  </form>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const errorEl = document.getElementById('error');
+    const submitBtn = document.getElementById('submit');
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.style.display = 'none';
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+
+      try {
+        const res = await fetch('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+
+        if (res.ok) {
+          window.location.href = '/admin/dashboard';
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          showError(data.message || 'Too many attempts. Try again later.');
+        } else {
+          showError(data.error || 'Invalid username or password.');
+        }
+      } catch (err) {
+        showError('Network error. Please try again.');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign in';
+      }
+    });
+  </script>
+</body>
+</html>

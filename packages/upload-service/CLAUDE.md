@@ -182,9 +182,21 @@ and the default-off ones leave behavior unchanged until flipped on.
 
 Design decisions:
 - **Seeding is separate from surface 3.** Seeding always targets a real Arweave
-  node (`ARWEAVE_UPLOAD_NODE`) so on-chain landing never depends on the gateway
-  supporting `/chunk` or being healthy. Surface 3 is an *additional* push to the
-  read gateway's `/chunk` cache (`ARWEAVE_GATEWAY`); it never affects seeding.
+  node so on-chain landing never depends on the gateway supporting `/chunk` or
+  being healthy. Surface 3 is an *additional* push to the read gateway's
+  `/chunk` cache (`ARWEAVE_GATEWAY`); it never affects seeding.
+- **Multi-distributor chunk seeding with failover (`seedChunksWithFailover`,
+  `src/arweaveJs.ts`).** `CHUNK_POST_NODE_URLS` (comma-separated) is a list of
+  dedicated AR.IO chunk-distributor nodes — each does its own multi-tip
+  broadcast, matching the prod `upload.ardrive.io` topology. Seeding tries nodes
+  in random-start order (load spread), returns on the first success, and throws
+  only if **all** fail (→ `seed-bundle` BullMQ retry / `redrive-posted`
+  recovery). One Arweave client is built per node; the payload is re-streamed
+  (fresh `Readable`) per attempt while chunks are prepared once. Unset →
+  `[ARWEAVE_UPLOAD_NODE]` (single-node, byte-for-byte the old behavior). Use the
+  distributors' **private** IPs. Per-node metric:
+  `chunk_seed_post_total{endpoint,result}`. TX-header posting is unrelated and
+  still flows through `ARWEAVE_GATEWAYS` / `MultiGatewayArweaveGateway`.
 - **Surface 2 URL hardening.** The endpoint is read from explicit
   `OPTIMISTIC_TX_BRIDGE_URL` first, falling back to deriving it from
   `OPTICAL_BRIDGE_URL` (`…/queue-data-item` → `…/queue-optimistic-tx`). If neither

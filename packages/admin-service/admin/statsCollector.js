@@ -267,14 +267,21 @@ function getEmptyPaymentStats() {
       byMode: {}
     },
     topUps: {
-      totalCount: 0,
-      totalUSDC: '0.000000',
-      averageTopUp: '0.000000'
+      total: { count: 0, winc: '0', ar: '0.000000' },
+      byProvider: {},
+      fiatByCurrency: {}
     },
-    freeUploads: {
-      count: 0,
-      byAddress: []
+    cryptoTopUps: {
+      total: { count: 0, winc: '0', ar: '0.000000' },
+      byToken: {}
     },
+    balances: {
+      totalWinc: '0',
+      totalAr: '0.000000',
+      usersWithBalance: 0,
+      totalUsers: 0
+    },
+    recentTopUps: [],
     recentPayments: []
   };
 }

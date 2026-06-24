@@ -12,6 +12,7 @@
 let signatureChart = null;
 let paymentModeChart = null;
 let networkChart = null;
+let cryptoTokenChart = null;
 
 /**
  * Fetch stats from API and update dashboard
@@ -32,7 +33,15 @@ async function fetchStats() {
   error.style.display = 'none';
 
   try {
-    const response = await fetch('/admin/stats');
+    const response = await fetch('/admin/stats', {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.status === 401) {
+      // Session expired or missing — send the user to the login page.
+      window.location.href = '/admin/login';
+      return;
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -49,8 +58,10 @@ async function fetchStats() {
     updateOverviewCards(stats);
     updateCharts(stats);
     updateQueueStatus(stats.system.queues);
+    updateTopupProviderTable(stats.payments?.topUps || {});
     updateTopUploaders(stats.uploads.topUploaders);
     updateRecentUploads(stats.uploads.recentUploads);
+    updateRecentTopups(stats.payments?.recentTopUps || []);
     updateRecentTraditionalPayments(stats.payments?.recentPayments || []);
     updateRecentX402Payments(stats.x402Payments?.recentPayments || []);
     updateRecentBundles(stats.bundles?.recentPermanent || []);
@@ -131,13 +142,19 @@ function updateOverviewCards(stats) {
   document.getElementById('users-today').textContent =
     `${stats.uploads.today.uniqueUploaders} today`;
 
-  // Traditional payments (from payment_service - x402_payment_transaction table)
-  const traditionalTotal = stats.payments?.x402Payments?.totalUSDC || '0.000000';
-  const traditionalCount = stats.payments?.x402Payments?.totalCount || 0;
-  document.getElementById('traditional-total').textContent =
-    `$${parseFloat(traditionalTotal).toLocaleString()}`;
-  document.getElementById('traditional-count').textContent =
-    `${traditionalCount.toLocaleString()} payments`;
+  // Credit top-ups (Stripe + crypto, from payment_service.payment_receipt)
+  const topUp = stats.payments?.topUps?.total || { count: 0, ar: '0.000000' };
+  document.getElementById('topup-total').textContent =
+    `${parseFloat(topUp.ar).toLocaleString(undefined, { maximumFractionDigits: 4 })} AR`;
+  document.getElementById('topup-count').textContent =
+    `${(topUp.count || 0).toLocaleString()} top-ups credited`;
+
+  // Outstanding credit balances (from payment_service.user)
+  const balances = stats.payments?.balances || { totalAr: '0.000000', usersWithBalance: 0 };
+  document.getElementById('balance-total').textContent =
+    `${parseFloat(balances.totalAr).toLocaleString(undefined, { maximumFractionDigits: 4 })} AR`;
+  document.getElementById('balance-users').textContent =
+    `${(balances.usersWithBalance || 0).toLocaleString()} wallets with credit`;
 
   // x402 payments (from upload_service - x402_payments table)
   const x402Total = stats.x402Payments?.total?.totalUSDC || '0.000000';
@@ -153,8 +170,61 @@ function updateOverviewCards(stats) {
  */
 function updateCharts(stats) {
   updateSignatureChart(stats.uploads.bySignatureType);
+  updateCryptoTokenChart(stats.payments?.cryptoTopUps?.byToken || {});
   updatePaymentTypeChart(stats.payments?.x402Payments?.byMode || {});
   updateNetworkChart(stats.x402Payments?.byNetwork || {});
+}
+
+/**
+ * Update crypto top-ups by token chart (Doughnut)
+ */
+function updateCryptoTokenChart(byToken) {
+  const ctx = document.getElementById('crypto-token-chart').getContext('2d');
+
+  const data = Object.entries(byToken).map(([token, d]) => ({
+    label: token,
+    value: d.count
+  }));
+
+  if (data.length === 0) {
+    data.push({ label: 'No Data', value: 1 });
+  }
+
+  const chartData = {
+    labels: data.map(d => d.label),
+    datasets: [{
+      data: data.map(d => d.value),
+      backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'],
+      borderWidth: 2,
+      borderColor: '#ffffff'
+    }]
+  };
+
+  const config = {
+    type: 'doughnut',
+    data: chartData,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 16, font: { size: 13 } } },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const label = context.label || '';
+              const value = context.parsed || 0;
+              return `${label}: ${value.toLocaleString()} top-ups`;
+            }
+          }
+        }
+      }
+    }
+  };
+
+  if (cryptoTokenChart) {
+    cryptoTokenChart.destroy();
+  }
+  cryptoTokenChart = new Chart(ctx, config);
 }
 
 /**
@@ -487,13 +557,88 @@ function updateRecentUploads(uploads) {
 }
 
 /**
+ * Update credit top-ups by provider table (from payment_service.payment_receipt)
+ */
+function updateTopupProviderTable(topUps) {
+  const table = document.getElementById('topup-provider-table');
+  const byProvider = topUps.byProvider || {};
+  const fiatByCurrency = topUps.fiatByCurrency || {};
+  const providers = Object.entries(byProvider);
+
+  if (providers.length === 0) {
+    table.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 40px; color: var(--text-secondary);">No top-ups yet</td></tr>';
+    return;
+  }
+
+  // Show fiat totals (e.g. USD) as a hint next to the credits.
+  const fiatSummary = Object.entries(fiatByCurrency)
+    .map(([cur, d]) => `${parseFloat(d.amount).toLocaleString()} ${cur.toUpperCase()}`)
+    .join(', ');
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th style="text-align: right;">Top-ups</th>
+        <th style="text-align: right;">Credits (AR)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${providers.map(([provider, d]) => `
+        <tr>
+          <td><span class="badge">${escapeHtml(provider)}</span></td>
+          <td style="text-align: right;">${(d.count || 0).toLocaleString()}</td>
+          <td style="text-align: right;">${parseFloat(d.ar).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+        </tr>
+      `).join('')}
+      ${fiatSummary ? `<tr><td colspan="3" style="color: var(--text-secondary); font-size: 13px;">Fiat received: ${escapeHtml(fiatSummary)}</td></tr>` : ''}
+    </tbody>
+  `;
+}
+
+/**
+ * Update recent credit top-ups table (Stripe + crypto, from payment_service)
+ */
+function updateRecentTopups(topUps) {
+  const table = document.getElementById('recent-topups-table');
+
+  if (!topUps || topUps.length === 0) {
+    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent top-ups</td></tr>';
+    return;
+  }
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th>Address</th>
+        <th style="text-align: right;">Amount</th>
+        <th style="text-align: right;">Credits (AR)</th>
+        <th>Time</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${topUps.map(t => `
+        <tr>
+          <td><span class="badge">${escapeHtml(t.provider || 'N/A')}</span></td>
+          <td>${makeCopyable(t.address, null, 'address')}</td>
+          <td style="text-align: right;">${escapeHtml(String(t.amount))}</td>
+          <td style="text-align: right;">${parseFloat(t.credits).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+          <td>${formatTime(t.timestamp)}</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+}
+
+/**
  * Update recent traditional payments table (from payment_service)
  */
 function updateRecentTraditionalPayments(payments) {
   const table = document.getElementById('recent-traditional-payments-table');
 
   if (!payments || payments.length === 0) {
-    table.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent traditional payments</td></tr>';
+    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent payments</td></tr>';
     return;
   }
 
@@ -528,7 +673,7 @@ function updateRecentX402Payments(payments) {
   const table = document.getElementById('recent-x402-payments-table');
 
   if (!payments || payments.length === 0) {
-    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent x402 payments</td></tr>';
+    table.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent x402 payments</td></tr>';
     return;
   }
 
@@ -565,7 +710,7 @@ function updateRecentBundles(bundles) {
   const table = document.getElementById('recent-bundles-table');
 
   if (!bundles || bundles.length === 0) {
-    table.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent bundles</td></tr>';
+    table.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">No recent bundles</td></tr>';
     return;
   }
 
@@ -619,7 +764,7 @@ function formatServiceName(name) {
     'upload-api': 'Upload API',
     'upload-workers': 'Upload Workers',
     'payment-workers': 'Payment Workers',
-    'bull-board': 'Admin Dashboard',
+    'admin-dashboard': 'Admin Dashboard',
     'postgresUpload': 'PostgreSQL (Upload)',
     'postgresPayment': 'PostgreSQL (Payment)',
     'redisCache': 'Redis Cache',
@@ -745,6 +890,19 @@ function formatTime(timestamp) {
   if (hours > 0) return `${hours}h ago`;
   if (minutes > 0) return `${minutes}m ago`;
   return `${seconds}s ago`;
+}
+
+/**
+ * End the admin session and return to the login page.
+ */
+async function logout() {
+  try {
+    await fetch('/admin/logout', { method: 'POST' });
+  } catch (err) {
+    // Even if the request fails, send the user to the login page.
+    console.error('Logout request failed:', err);
+  }
+  window.location.href = '/admin/login';
 }
 
 // Initial load

@@ -23,10 +23,11 @@
  * - System statistics dashboard (/admin/dashboard)
  * - Stats API endpoint (/admin/stats)
  *
- * Authentication: Basic Auth (ADMIN_USERNAME / ADMIN_PASSWORD)
+ * Authentication: session login (ADMIN_USERNAME + ADMIN_PASSWORD_HASH).
+ *   Sign in at /admin/login; a signed httpOnly session cookie gates all routes.
  *
  * Run with: node server.js
- * Access at: http://localhost:3002/admin/dashboard
+ * Access at: http://localhost:3002/admin/login
  */
 
 // Load environment variables from root .env file
@@ -40,18 +41,51 @@ const Koa = require("koa");
 const Router = require("@koa/router");
 const serve = require("koa-static");
 const mount = require("koa-mount");
+const fs = require("fs");
+const crypto = require("crypto");
 
 // Import from upload-service (constants and queue config)
 const uploadServicePath = require('path').join(__dirname, '../upload-service');
 const { jobLabels } = require(uploadServicePath + '/lib/constants');
 const { getQueue } = require(uploadServicePath + '/lib/arch/queues/config');
 
-const { authenticateAdmin } = require("./admin/middleware/authentication");
+const sessionAuth = require("./admin/middleware/session");
 const { statsRateLimiter } = require("./admin/middleware/rateLimit");
 const { initializeStatsCollector, getStats, cleanup } = require("./admin/statsCollector");
 
 const app = new Koa();
 const router = new Router();
+
+// Key(s) used to sign the session cookie. Set ADMIN_SESSION_SECRET to keep
+// sessions valid across restarts; otherwise an ephemeral key is generated and
+// existing sessions are invalidated on every restart.
+const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+app.keys = [SESSION_SECRET];
+
+const ADMIN_PASSWORD_CONFIGURED = sessionAuth.isConfigured();
+
+// Trust the X-Forwarded-* headers from the reverse proxy / tunnel so ctx.ip is
+// the real client (used for brute-force lockout and audit logging).
+app.proxy = process.env.ADMIN_TRUST_PROXY === 'true';
+
+/** Read and JSON-parse a request body without pulling in a body-parser dep. */
+function readJsonBody(ctx) {
+  return new Promise((resolve) => {
+    let data = '';
+    ctx.req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 1e6) data = data.slice(0, 1e6); // guard against oversized bodies
+    });
+    ctx.req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch {
+        resolve({});
+      }
+    });
+    ctx.req.on('error', () => resolve({}));
+  });
+}
 
 // Initialize stats collector with database connections
 const config = {
@@ -77,20 +111,40 @@ initializeStatsCollector(config);
 const serverAdapter = new KoaAdapter();
 serverAdapter.setBasePath("/admin/queues");
 
-// Upload service queues (11 queues)
-const uploadQueues = [
+// Upload service queues — listed in bundle-pipeline order for a readable board.
+// NOTE: this is validated against jobLabels below so it can never silently drift
+// when a new queue is added to the upload service.
+const uploadQueueLabels = [
+  jobLabels.newDataItem,
   jobLabels.planBundle,
   jobLabels.prepareBundle,
   jobLabels.postBundle,
   jobLabels.seedBundle,
   jobLabels.verifyBundle,
-  jobLabels.putOffsets,
-  jobLabels.newDataItem,
   jobLabels.opticalPost,
+  jobLabels.putOffsets,
   jobLabels.unbundleBdi,
   jobLabels.finalizeUpload,
   jobLabels.cleanupFs,
-].map((label) => new BullMQAdapter(getQueue(label)));
+  jobLabels.redrivePosted,
+  jobLabels.refundBalance,
+];
+
+// Drift guard: every queue defined by the upload service must be on the board.
+const missingQueues = Object.values(jobLabels).filter(
+  (label) => !uploadQueueLabels.includes(label)
+);
+if (missingQueues.length > 0) {
+  console.warn(
+    `⚠️  Bull Board is missing upload queues not listed here: ${missingQueues.join(", ")}. ` +
+      `Add them to uploadQueueLabels in server.js.`
+  );
+  uploadQueueLabels.push(...missingQueues);
+}
+
+const uploadQueues = uploadQueueLabels.map(
+  (label) => new BullMQAdapter(getQueue(label))
+);
 
 // Payment service queues (2 queues)
 const paymentRedisConfig = {
@@ -112,13 +166,75 @@ createBullBoard({
   serverAdapter,
 });
 
-// Apply authentication to ALL /admin routes
-app.use(async (ctx, next) => {
-  if (ctx.path.startsWith('/admin')) {
-    await authenticateAdmin(ctx, next);
-  } else {
-    await next();
+// --- Public auth routes (no session required) ---------------------------------
+const LOGIN_HTML_PATH = __dirname + '/admin/public/login.html';
+
+// Serve the login page.
+router.get('/admin/login', async (ctx) => {
+  // Already authenticated? Skip straight to the dashboard.
+  if (sessionAuth.getSessionFromCtx(ctx)) {
+    ctx.redirect('/admin/dashboard');
+    return;
   }
+  ctx.type = 'html';
+  ctx.body = fs.createReadStream(LOGIN_HTML_PATH);
+});
+
+// Verify credentials and start a session.
+router.post('/admin/login', async (ctx) => {
+  const ip = ctx.ip;
+
+  const lock = sessionAuth.lockStatus(ip);
+  if (lock.locked) {
+    ctx.status = 429;
+    ctx.set('Retry-After', String(lock.retryAfterSec));
+    ctx.body = {
+      error: 'Too many failed attempts',
+      message: `Account temporarily locked. Try again in ${lock.retryAfterSec}s.`,
+    };
+    return;
+  }
+
+  if (!ADMIN_PASSWORD_CONFIGURED) {
+    ctx.status = 503;
+    ctx.body = { error: 'Admin dashboard not configured' };
+    return;
+  }
+
+  const body = await readJsonBody(ctx);
+  const { username, password } = body || {};
+
+  if (await sessionAuth.verifyCredentials(username, password)) {
+    sessionAuth.clearFailures(ip);
+    const sid = sessionAuth.createSession(username);
+    sessionAuth.setSessionCookie(ctx, sid);
+    console.log(`✅ Admin login: ${username} from ${ip} at ${new Date().toISOString()}`);
+    ctx.body = { ok: true };
+    return;
+  }
+
+  sessionAuth.recordFailure(ip);
+  console.warn(`Failed admin login attempt from ${ip} at ${new Date().toISOString()}`);
+  ctx.status = 401;
+  ctx.body = { error: 'Invalid username or password' };
+});
+
+// End the session.
+router.post('/admin/logout', async (ctx) => {
+  const sid = ctx.cookies.get(sessionAuth.COOKIE_NAME, { signed: true });
+  sessionAuth.destroySession(sid);
+  sessionAuth.clearSessionCookie(ctx);
+  ctx.body = { ok: true };
+});
+
+// --- Session gate: every other /admin route requires a valid session ----------
+const PUBLIC_ADMIN_PATHS = new Set(['/admin/login', '/admin/logout']);
+app.use(async (ctx, next) => {
+  if (!ctx.path.startsWith('/admin') || PUBLIC_ADMIN_PATHS.has(ctx.path)) {
+    await next();
+    return;
+  }
+  await sessionAuth.requireAuth(ctx, next);
 });
 
 // Admin stats API endpoint with rate limiting
@@ -174,33 +290,35 @@ const server = app.listen(PORT, () => {
 ║  📈 Queues:     http://localhost:${PORT}/admin/queues         ║
 ║  🔌 Stats API:  http://localhost:${PORT}/admin/stats          ║
 ║                                                           ║
-║  🔒 Authentication Required (Basic Auth)                  ║
-║      Username: ${process.env.ADMIN_USERNAME || 'admin'}                                        ║
-║      Password: ${process.env.ADMIN_PASSWORD ? '***' + process.env.ADMIN_PASSWORD.slice(-4) : 'NOT SET'}                                       ║
+║  🔒 Authentication Required (session login)              ║
+║      Login:    http://localhost:${PORT}/admin/login          ║
+║      Username: ${(process.env.ADMIN_USERNAME || 'admin').padEnd(43)}║
+║      Password: ${(ADMIN_PASSWORD_CONFIGURED ? 'configured' : 'NOT SET — dashboard disabled').padEnd(43)}║
 ║                                                           ║
-║  Monitoring ${queues.length} BullMQ queues:                          ║
-║                                                           ║
-║  📦 Upload Service (11 queues):                           ║
-║  • plan-bundle        • prepare-bundle                    ║
-║  • post-bundle        • seed-bundle                       ║
-║  • verify-bundle      • put-offsets                       ║
-║  • new-data-item      • optical-post                      ║
-║  • unbundle-bdi       • finalize-upload                   ║
-║  • cleanup-fs                                             ║
-║                                                           ║
-║  💳 Payment Service (2 queues):                           ║
-║  • payment-pending-tx                                     ║
-║  • payment-admin-credit                                   ║
+║  Monitoring ${String(queues.length).padEnd(2)} BullMQ queues `+
+  `(${uploadQueues.length} upload + ${paymentQueues.length} payment)`.padEnd(28)+`║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
   `);
 
-  if (!process.env.ADMIN_PASSWORD) {
+  if (!ADMIN_PASSWORD_CONFIGURED) {
     console.warn(`
-⚠️  WARNING: ADMIN_PASSWORD not set!
-   Set ADMIN_PASSWORD in your .env file to enable admin dashboard access.
-   Example: ADMIN_PASSWORD=$(openssl rand -hex 32)
+⚠️  WARNING: no admin credential configured — the dashboard is disabled.
+   Set ADMIN_PASSWORD_HASH (preferred) or ADMIN_PASSWORD in your .env file.
+   Generate a hash with:  yarn workspace @ar-io-bundler/admin-service hash-password
     `);
+  } else if (sessionAuth.usingPlaintextPassword()) {
+    console.warn(`
+⚠️  ADMIN_PASSWORD is set in plaintext. Prefer an Argon2id hash:
+   yarn workspace @ar-io-bundler/admin-service hash-password
+   Then set ADMIN_PASSWORD_HASH and remove ADMIN_PASSWORD.
+    `);
+  }
+  if (!process.env.ADMIN_SESSION_SECRET) {
+    console.warn(
+      '⚠️  ADMIN_SESSION_SECRET not set — using an ephemeral key; ' +
+        'admin sessions will be invalidated on restart.'
+    );
   }
 });
 
