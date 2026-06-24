@@ -33,6 +33,7 @@ import { knex as knexFactory } from "knex";
 import { getWriterConfig } from "../arch/db/knexConfig";
 import { TurboPaymentService } from "../arch/payment";
 import {
+  ArchiveCopyMessage,
   EnqueuedNewDataItem,
   EnqueuedOffsetsBatch,
   EnqueueFinalizeUpload,
@@ -42,6 +43,7 @@ import {
 import { jobLabels } from "../constants";
 import { ChunkHeader } from "../types/types";
 import { W } from "../types/winston";
+import { archiveCopyHandler } from "../jobs/archive-copy";
 import { broadcastChunkHandler } from "../jobs/broadcast-chunks";
 import { handler as cleanupFsHandler } from "../jobs/cleanup-fs";
 import { finalizeMultipartUpload } from "../routes/multiPartUploads";
@@ -264,6 +266,27 @@ const broadcastChunksWorker = createWorker<ChunkHeader>(
   }
 );
 
+// Archive Copy Worker — mirrors one served object (raw-data-item or
+// bundle-payload) from the primary (SSD) MinIO to the archive (HDD) MinIO.
+// Inert (handler no-ops) unless ARCHIVE_DATA_ITEM_BUCKET is set. Copies are
+// small/independent and I/O-bound, so a modest concurrency is fine.
+const archiveCopyWorker = createWorker<ArchiveCopyMessage>(
+  jobLabels.archiveCopy,
+  async (job: Job<ArchiveCopyMessage>) => {
+    await archiveCopyHandler(job.data, {
+      objectStore: defaultArchitecture.objectStore,
+      archiveObjectStore: defaultArchitecture.archiveObjectStore,
+    });
+  },
+  {
+    // `|| 3` (not `?? `) so a malformed env (NaN from parseInt) also falls back
+    // to the default instead of passing NaN through to the BullMQ worker.
+    concurrency:
+      Number.parseInt(process.env.ARCHIVE_COPY_WORKER_CONCURRENCY ?? "", 10) ||
+      3,
+  }
+);
+
 const allWorkers = [
   planWorker,
   prepareWorker,
@@ -279,6 +302,7 @@ const allWorkers = [
   redrivePostedWorker,
   refundBalanceWorker,
   broadcastChunksWorker,
+  archiveCopyWorker,
 ];
 
 setupGracefulShutdown(allWorkers, logger);

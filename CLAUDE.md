@@ -131,7 +131,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (14 queues)
+- Asynchronous job processing via BullMQ (15 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
@@ -187,10 +187,10 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 14 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "14 queues"):
+BullMQ with 15 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "15 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`, `archive-copy`
 
 **Per-chunk seed broadcast (`broadcast-chunks`):** `seed-bundle` no longer uploads a bundle's chunks to a single node. It prepares each chunk, stages the bytes in the object store (`chunks/{data_root}/{offset}`), and enqueues **one `broadcast-chunks` job per chunk**. The `broadcast-chunks` worker POSTs each chunk to **one of several AR.IO chunk-distributor nodes** (`AR_IO_NODE_URLS`, shuffled, per-node retry + failover); each distributor performs its own multi-tip broadcast, so reaching one healthy node lands the chunk. Unset `AR_IO_NODE_URLS` → falls back to the single `ARWEAVE_UPLOAD_NODE` (unchanged single-node behavior). One job per chunk = independent retry + parallelism (not a whole-bundle re-seed on a single chunk failure). Metric: `chunk_seed_post_total{endpoint,result}`. The TX header is posted separately via `ARWEAVE_GATEWAYS` (unrelated to chunk seeding).
 
@@ -248,6 +248,16 @@ Data Age      Filesystem    MinIO      Storage
 ```
 
 Configure via `FILESYSTEM_CLEANUP_DAYS=7` and `MINIO_CLEANUP_DAYS=90`.
+
+**Optional two-tier MinIO (SSD hot + HDD archive)**: gated on `ARCHIVE_*` env
+(default OFF → unchanged single-MinIO behavior). When enabled, a second
+HDD-backed MinIO mirrors served content (raw data items + bundle payloads) via
+the `archive-copy` queue and takes all gateway reads, while the SSD MinIO is
+reserved for the bundling pipeline. The SSD copies are then reclaimed
+**post-permanence** (HEAD-gated on the confirmed HDD copy) instead of on the
+90-day rule, and the HDD enforces a native 90-day MinIO ILM expiry. Infra lives
+in `docker-compose.hdd.yml` (override). See
+`docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
 
 **Cleanup is scheduled in-process** alongside bundle planning (see the job-scheduler note above): the `upload-workers` process registers the `cleanup-fs` schedule (`CLEANUP_SCHEDULE_CRON`, default `0 2 * * *`) at startup. `cron-trigger-cleanup.sh` / `trigger-cleanup.js` remain as manual on-demand triggers — no crontab entry required.
 

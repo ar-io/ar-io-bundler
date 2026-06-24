@@ -46,7 +46,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 **Enterprise Features:**
 - ✅ **Microservice Architecture** - Separate payment and upload services
 - ✅ **Horizontal Scaling** - PM2 cluster mode for APIs
-- ✅ **Async Job Processing** - 14 BullMQ queues for fulfillment pipeline
+- ✅ **Async Job Processing** - 15 BullMQ queues for fulfillment pipeline
 - ✅ **Circuit Breakers** - Resilience against service failures
 - ✅ **Comprehensive Monitoring** - Prometheus metrics, Winston logging, OpenTelemetry tracing
 - ✅ **Multi-Region Support** - PostgreSQL, Redis, MinIO S3-compatible storage
@@ -97,7 +97,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 │  │                    Infrastructure Layer                               │  │
 │  │                                                                       │  │
 │  │  PostgreSQL (2 DBs)  •  Redis (Cache + Queues)  •  MinIO (S3)       │  │
-│  │  BullMQ (14 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
+│  │  BullMQ (15 Queues)  •  PM2 (5 Processes)       •  Docker Compose    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │                                      │                                       │
@@ -123,7 +123,7 @@ AR.IO Bundler is a **production-grade ANS-104 data bundling platform** that brid
 - **Database:** `upload_service` (PostgreSQL)
 - **API Port:** 3001
 - **Workers:** 14 asynchronous job processors
-- **Queues:** 14 BullMQ queues
+- **Queues:** 15 BullMQ queues
 
 **Communication Pattern:** Upload Service → Payment Service (HTTP REST with JWT authentication)
 
@@ -1102,7 +1102,7 @@ SKIP_BALANCE_CHECKS=false  # Development only, bypasses all checks
 4. **upload-workers** (Fork, 1 instance) **CRITICAL**
    - Mode: Fork (MUST be 1 to avoid duplicate job execution)
    - Script: `./packages/upload-service/lib/workers/allWorkers.js`
-   - Workers: 14 BullMQ workers
+   - Workers: 15 BullMQ workers
    - Kill timeout: 30 seconds (graceful shutdown)
 
 5. **admin-dashboard** (Fork, 1 instance)
@@ -1192,7 +1192,7 @@ yarn db:migrate:make NAME # Create new migration
 
 **14 Total Queues:**
 
-**Upload Service (14 queues)** — labels per `jobLabels` in `packages/upload-service/src/constants.ts`:
+**Upload Service (15 queues)** — labels per `jobLabels` in `packages/upload-service/src/constants.ts`:
 1. `plan-bundle` - Bundle planning (concurrency: 1)
 2. `prepare-bundle` - Bundle assembly (concurrency: 3)
 3. `post-bundle` - Arweave posting (concurrency: 2)

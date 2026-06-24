@@ -34,6 +34,7 @@ export const QUEUE_NAMES = {
   [jobLabels.redrivePosted]: "upload-redrive-posted",
   [jobLabels.refundBalance]: "upload-refund-balance",
   [jobLabels.broadcastChunks]: "upload-broadcast-chunks",
+  [jobLabels.archiveCopy]: "upload-archive-copy",
 } as const;
 
 const defaultQueueOptions: QueueOptions = {

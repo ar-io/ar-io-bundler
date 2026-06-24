@@ -196,7 +196,7 @@ Purpose: BullMQ job queues
 Healthcheck: redis-cli -p 6381 ping
 ```
 
-Dedicated Redis instance for all BullMQ queues (14 queues total).
+Dedicated Redis instance for all BullMQ queues (15 queues total).
 
 #### MinIO
 ```yaml
@@ -243,7 +243,7 @@ Located in `infrastructure/pm2/ecosystem.config.js`:
       name: "upload-workers",
       instances: WORKER_INSTANCES || 1,
       exec_mode: "fork",
-      script: "./lib/workers/allWorkers.js"   // 14 BullMQ queues
+      script: "./lib/workers/allWorkers.js"   // 15 BullMQ queues
     },
     {
       name: "admin-dashboard",   // admin stats + embedded Bull Board
@@ -606,7 +606,7 @@ Handles all data upload operations including:
 - Block height tracking
 
 **Workers** (`src/workers/allWorkers.ts`):
-- 14 BullMQ workers processing async jobs
+- 15 BullMQ workers processing async jobs
 - Each worker handles specific job type
 - Graceful shutdown support
 
@@ -867,6 +867,39 @@ BACKUP_DATA_ITEM_BUCKET=backup-data-items
 - **Primary**: `raw-data-items` bucket
 - **Backup**: `backup-data-items` bucket (optional)
 - **Redundancy**: MinIO can be configured with erasure coding
+
+### Two-Tier MinIO (SSD hot + HDD archive) — optional, opt-in
+
+Gated entirely on `ARCHIVE_*` env. **Unset (the default) = single-MinIO behavior is
+byte-for-byte unchanged.** When enabled, a **second, HDD-backed MinIO** mirrors served
+content and takes **all AR.IO gateway reads**, so the small/fast SSD MinIO is reserved
+for the ingest → bundle → post → seed → verify pipeline and is never exposed to the
+gateway.
+
+- **Archive copy (async):** a BullMQ `archive-copy` job (one per object, concurrency
+  `ARCHIVE_COPY_WORKER_CONCURRENCY`, default 3) streams each `raw-data-item/{id}` and
+  each `bundle-payload/{planId}` from SSD → HDD. It is enqueued from the `new-data-item`
+  handler (single uploads), the multipart-finalize path, and `prepare.ts` (bundle
+  payloads). This is the 15th BullMQ queue (was 14).
+- **Post-permanence SSD sweep:** once a bundle is permanent **and** its HDD copy is
+  HEAD-confirmed, `cleanup-fs` deletes the SSD copies (`raw-data-item/{id}`,
+  `bundle-payload/{planId}`, `bundle/{txid}`) to reclaim the small SSD quickly. When
+  archive is enabled this replaces the 90-day MinIO retention rule; the filesystem
+  7-day tier is unchanged. The HEAD-gate against the archive store is the critical
+  safety guard — the SSD copy is never deleted until the HDD copy is confirmed present.
+- **HDD retention:** 90 days (`ARCHIVE_RETENTION_DAYS`, default 90) via a native MinIO
+  ILM expiry rule installed by `minio-init-hdd`.
+- **Gateway reads:** the gateway's S3 `AWS_ENDPOINT` points at the HDD MinIO (port 9002)
+  with the SSD MinIO removed from its retrieval sources. A brief pre-replication window
+  falls through to the gateway's other retrieval methods (acceptable for an optimistic
+  cache).
+
+Key env (all distinct from the SSD `S3_*` vars; `ARCHIVE_BUCKET_REGION` **must** differ
+from `S3_REGION`/`DATA_ITEM_BUCKET_REGION` or the archive client clobbers the SSD
+client): `ARCHIVE_DATA_ITEM_BUCKET`, `ARCHIVE_S3_ENDPOINT`, `ARCHIVE_S3_ACCESS_KEY_ID`,
+`ARCHIVE_S3_SECRET_ACCESS_KEY`, `ARCHIVE_S3_FORCE_PATH_STYLE`, `ARCHIVE_BUCKET_REGION`,
+`ARCHIVE_COPY_WORKER_CONCURRENCY`, `ARCHIVE_RETENTION_DAYS`, `SSD_CLEANUP_GRACE_DAYS`,
+`ARCHIVE_MINIO_DATA_PATH`. See `docs/architecture/TWO_TIER_MINIO_SSD_HDD.md`.
 
 ### PostgreSQL Offset Storage
 
@@ -2441,7 +2474,7 @@ This system has been completely migrated from AWS to open-source infrastructure.
 - Batch size increased from 25 (DynamoDB limit) to 500 (PostgreSQL batch insert)
 
 **Queue Migration**:
-- SQS queues → BullMQ queues (14 queues)
+- SQS queues → BullMQ queues (15 queues)
 - Lambda handlers → Worker functions in `src/workers/`
 - Message format preserved for compatibility
 - Job concurrency configurable per worker

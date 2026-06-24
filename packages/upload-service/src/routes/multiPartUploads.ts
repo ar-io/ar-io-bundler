@@ -72,11 +72,13 @@ import { extractClientIp } from "../utils/ipRateLimitCache";
 import {
   completeMultipartUpload,
   createMultipartUpload,
+  dataItemPrefix,
   getMultiPartUploadByteCount,
   getMultipartUploadObject,
   getMultipartUploadParts,
   getRawDataItem,
   getRawDataItemByteCount,
+  isArchiveEnabled,
   moveFinalizedMultipartObject,
   rawDataItemObjectExists,
   uploadPart,
@@ -1498,6 +1500,19 @@ export async function finalizeMPUWithDataItemInfo({
     // Attach skip feature to logger for log parsing in final receipt log statement
     fnLogger = fnLogger.child({ skipOpticalPost: true });
     fnLogger.debug("Skipped optical posting.");
+  }
+
+  // Two-tier MinIO: mirror this multipart-finalized raw data item to the archive
+  // (HDD) store. The multipart-finalize path does NOT funnel through the
+  // `new-data-item` queue (it inserts directly below), so it needs its own
+  // archive-copy enqueue. The raw object was moved into place above, so it
+  // exists. Best-effort — a failed enqueue must not fail finalization.
+  if (isArchiveEnabled()) {
+    void enqueue(jobLabels.archiveCopy, {
+      key: `${dataItemPrefix}/${dataItemInfo.dataItemId}`,
+    }).catch((error) => {
+      fnLogger.error("Error enqueuing archive-copy for data item", { error });
+    });
   }
 
   // Enqueue data item for unbundling if it appears to be a BDI
