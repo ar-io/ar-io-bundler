@@ -480,10 +480,37 @@ per-path routing test.) The three prod hostnames (mirrors the proven perma.onlin
 - **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
   and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST
   body parsing — learned the hard way).
-- Bull Board (`:3002`), MinIO console (`:9001`), Prometheus (`:9090`) get **no public server block**.
+- Admin portal + Bull Board (`:3002`) get an **IP-restricted** TLS block (§14a) — the only admin surface
+  exposed over HTTPS. MinIO console (`:9001`) and Prometheus (`:9090`) stay tunnel-only (no server block).
 
 TLS terminates at nginx (the bundler sees plain HTTP) → the bundler trusts `X-Forwarded-Proto`, so
 **`UPLOAD_SERVICE_PUBLIC_URL` stays the public `https://` URL** (x402 depends on it).
+
+### 14a. Admin portal + Bull Board over HTTPS (IP-restricted)
+
+The `admin-dashboard` PM2 process **is** both the portal *and* Bull Board (dashboard at `/admin/dashboard`,
+queues at `/admin/queues`) on **one** port (`:3002`), behind one session login — so a single TLS vhost
+covers everything. It controls financial queues (refunds) and recovery actions, so it is **never** open to
+the internet the way upload/payment are: it gets HTTPS **plus** an IP allowlist.
+
+Config: **`infrastructure/nginx/snippets/bundler-loc-admin.conf`** + the `admin.services.perma.online`
+`server` block in `ar-io-bundler.conf` (`upstream bundler_admin → 127.0.0.1:3002`). It deliberately does
+**not** include `bundler-headers` (no `Access-Control-Allow-Origin *` on the admin surface) and sets strict
+headers (`X-Frame-Options: DENY`, `nosniff`, HSTS) instead. Edit the `allow`/`deny` lines to your operator
+IPs (`deny all` is the default).
+
+Bundler-box prerequisites (so the Secure cookie + lockout work, and `:3002` is never public):
+```bash
+BIND_ADDRESS=127.0.0.1        # admin-service binds loopback; only nginx reaches :3002 (server.js:437)
+ADMIN_COOKIE_SECURE=true      # session cookie only sent over HTTPS
+ADMIN_TRUST_PROXY=true        # trust nginx X-Forwarded-For → real client IP for lockout/audit
+ADMIN_SESSION_SECRET=<openssl rand -hex 32>   # stable, so sessions survive restarts
+```
+Then `ufw deny 3002` from anything but localhost (belt-and-suspenders), and do the **first-run
+`/admin/setup` over the `https://admin.services.perma.online` URL** so the Secure cookie is set correctly.
+The session cookie is **host-only** (no `Domain` attribute), so it never leaks to sibling
+`*.services.perma.online` hosts. A wildcard `*.services.perma.online` cert covers the host (or issue
+per-host); if you use a DNS-01 wildcard you can delete the admin `:80` ACME/redirect block.
 
 ### TLS certificates — Let's Encrypt (free, auto-renewing)
 
