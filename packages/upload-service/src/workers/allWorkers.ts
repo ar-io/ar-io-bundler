@@ -40,7 +40,9 @@ import {
   upsertRepeatable,
 } from "../arch/queues";
 import { jobLabels } from "../constants";
+import { ChunkHeader } from "../types/types";
 import { W } from "../types/winston";
+import { broadcastChunkHandler } from "../jobs/broadcast-chunks";
 import { handler as cleanupFsHandler } from "../jobs/cleanup-fs";
 import { finalizeMultipartUpload } from "../routes/multiPartUploads";
 import { UnbundleBDIMessageBody, unbundleBDIBatchHandler } from "../jobs/unbundle-bdi";
@@ -244,6 +246,24 @@ const refundBalanceWorker = createWorker<RefundBalanceMessage>(
   { concurrency: 3 }
 );
 
+// Broadcast Chunks Worker — posts one staged chunk to an AR.IO distributor node
+// (shuffle + failover). One job per chunk, so failures retry per-chunk. Higher
+// concurrency than the bundle workers: chunks are small, independent, I/O-bound.
+const broadcastChunksWorker = createWorker<ChunkHeader>(
+  jobLabels.broadcastChunks,
+  async (job: Job<ChunkHeader>) => {
+    await broadcastChunkHandler(job.data, {
+      objectStore: defaultArchitecture.objectStore,
+    });
+  },
+  {
+    concurrency: parseInt(
+      process.env.BROADCAST_CHUNKS_WORKER_CONCURRENCY || "10",
+      10
+    ),
+  }
+);
+
 const allWorkers = [
   planWorker,
   prepareWorker,
@@ -258,6 +278,7 @@ const allWorkers = [
   cleanupWorker,
   redrivePostedWorker,
   refundBalanceWorker,
+  broadcastChunksWorker,
 ];
 
 setupGracefulShutdown(allWorkers, logger);

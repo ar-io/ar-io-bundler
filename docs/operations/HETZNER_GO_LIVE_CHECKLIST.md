@@ -93,8 +93,11 @@
 - [ ] **Auth/inter-service:** `PRIVATE_ROUTE_SECRET`, `JWT_SECRET`, `PAYMENT_SERVICE_BASE_URL=localhost:4001` (no protocol).
 - [ ] **PM2 scale:** `API_INSTANCES` ≈ ½ cores (e.g. 4 on an 8-core), `WORKER_INSTANCES=1`. Bump
       `PREPARE/POST/VERIFY_WORKER_CONCURRENCY` for the core count; **leave `PLAN_WORKER_CONCURRENCY=1`** (overlap guard).
-- [ ] **🔴 `ARWEAVE_UPLOAD_NODE`** = your gateway **core** (`http://localhost:4000`) — this posts bundles to Arweave
-      **for real** (costs AR). Do **not** point it at the `:4555` test sink in prod. *(→ §13.4 for the direct-to-core rationale.)*
+- [ ] **🔴 `AR_IO_NODE_URLS`** = your dedicated AR.IO chunk-distributor nodes (comma-separated **private IPs**, `/chunk` on `:3000`,
+      e.g. `http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000`) — the `broadcast-chunks` worker POSTs each chunk here
+      (shuffle + failover); each distributor lands it on Arweave tip nodes **for real**. Confirm each is reachable + **not** in `ARWEAVE_POST_DRY_RUN=true`.
+- [ ] **`ARWEAVE_UPLOAD_NODE`** = the single-node **fallback** if `AR_IO_NODE_URLS` is unset — your gateway **core** (`http://localhost:4000`).
+      Do **not** point it at the `:4555` test sink in prod. *(→ §13.4 for the direct-to-core rationale.)*
 - [ ] **Reads/pricing:** `ARWEAVE_GATEWAY` / `PUBLIC_ACCESS_GATEWAY` → your gateway (`:3000`), **never arweave.net**.
 - [ ] **`PRICE_ORACLE_GATEWAY_URL`** → your own gateway `/price` (default arweave.net **429s under load** → "Pricing Oracle Unavailable").
 - [ ] **Optical bridging:** `OPTICAL_BRIDGING_ENABLED=true`, `OPTICAL_BRIDGE_URL=http://<gw1>:4000/ar-io/admin/queue-data-item`,

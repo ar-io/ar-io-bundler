@@ -400,7 +400,7 @@ app.on('error', (err, ctx) => {
 
 const PORT = process.env.BULL_BOARD_PORT || 3002;
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, process.env.BIND_ADDRESS || '0.0.0.0', () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║         AR.IO Bundler - Admin Dashboard                  ║

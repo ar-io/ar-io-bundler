@@ -1,141 +1,100 @@
-# Cleanup Scripts Setup Guide
+# Cleanup Setup Guide
 
-This directory contains scripts for cleaning up temporary files and bundler data in the AR.IO Bundler.
+The AR.IO Bundler has **two distinct things to clean**, with **two different
+mechanisms**. They are complementary — not alternatives — so it matters which one
+touches which storage.
 
-## Available Cleanup Methods
+| Storage | What lives there | Cleaned by |
+|---------|------------------|------------|
+| **Durable upload data** (`FS_DATA_PATH` / `UPLOAD_SERVICE_DATA_DIR`, default `packages/upload-service/upload-service-data`) | `raw_`/`metadata_` copies that back a **signed receipt** for a paid upload | the **database-aware `cleanup-fs` worker** ONLY |
+| **Temp scratch** (`TEMP_DIR`, default `packages/upload-service/temp`) | disposable bundle-assembly working files (`bundle/`, `header/`, `multipart-uploads/`, …), reconstructed from the object store on retry | `scripts/cleanup-bundler-files.sh` |
 
-### 1. Bash-Based Direct Cleanup (`cleanup-bundler-files.sh`)
-Directly deletes old files from temp and data directories without requiring workers to be running.
+> ⚠️ **Never blind-delete the durable data directory.** `raw_/metadata_` files there
+> back already-issued receipts for paid uploads that may not yet be finalized on
+> Arweave. A plain `find -mtime -delete` over that path can make a paid, receipted
+> upload **unfulfillable** (manual recovery / refunds). Durable data is deleted
+> ONLY by the `cleanup-fs` worker, which removes a data item's files **after its
+> bundle reaches `permanent_bundle`** (and honors `CLEANUP_REQUIRE_PERMANENT_BUNDLE`).
 
-**When to use:**
-- Manual cleanup runs
-- System maintenance
-- When workers are offline
-- Quick ad-hoc cleanup
+## 1. Durable upload data → the `cleanup-fs` worker (database-aware)
 
-**Setup:**
+This is the production cleanup path and needs **no cron setup** — the
+`upload-workers` process registers an in-process BullMQ scheduler at startup that
+runs `cleanup-fs` on `CLEANUP_SCHEDULE_CRON` (default daily at 02:00). It is tiered
+and permanence-checked:
+
+```
+Data age                                   Filesystem        MinIO/S3
+0 .. FILESYSTEM_CLEANUP_DAYS (7)           keep              keep
+FILESYSTEM_CLEANUP_DAYS .. MINIO_CLEANUP_DAYS (90)   DELETE  keep
+beyond MINIO_CLEANUP_DAYS (90)             DELETE            DELETE
+```
+
+Configure in `.env`:
+
 ```bash
-# Make executable (already done)
-chmod +x /home/vilenarios/ar-io-bundler/scripts/cleanup-bundler-files.sh
+FILESYSTEM_CLEANUP_DAYS=7
+MINIO_CLEANUP_DAYS=90
+CLEANUP_SCHEDULE_CRON="0 2 * * *"   # set "" to disable
+CLEANUP_REQUIRE_PERMANENT_BUNDLE=true   # don't delete the only off-chain copy pre-permanence
+```
 
-# Run manually
-cd /home/vilenarios/ar-io-bundler
-./scripts/cleanup-bundler-files.sh
+To trigger it on demand (e.g. while debugging), enqueue a job to the same worker
+queue — it stays database-aware:
 
-# Run in dry-run mode first (recommended)
+```bash
+cd packages/upload-service
+node trigger-cleanup.js        # or ./cron-trigger-cleanup.sh (manual triggers only)
+```
+
+Verify via Bull Board (`http://localhost:3002/admin/queues`, the `upload-cleanup-fs`
+queue) or `pm2 logs upload-workers | grep cleanup`.
+
+## 2. Temp scratch → `cleanup-bundler-files.sh` (mtime only, TEMP_DIR only)
+
+For the disposable bundle-assembly scratch tree only. It does a simple
+`find -mtime +N -delete` and is **deliberately scoped to `TEMP_DIR`** — it does
+NOT touch the durable data directory.
+
+```bash
+# Dry run first (preview, deletes nothing)
 CLEANUP_DRY_RUN=true ./scripts/cleanup-bundler-files.sh
 
-# Add to crontab for automated daily cleanup at 2 AM
-(crontab -l 2>/dev/null | grep -v "cleanup-bundler-files" ; echo "0 2 * * * /home/vilenarios/ar-io-bundler/scripts/cleanup-bundler-files.sh >> /tmp/cleanup-bundler-files-cron.log 2>&1") | crontab -
+# Run it
+./scripts/cleanup-bundler-files.sh
 ```
 
-### 2. BullMQ Worker Cleanup (`trigger-cleanup.js`)
-Enqueues a cleanup job to the BullMQ queue, processed by the existing `cleanup-fs` worker.
-
-**When to use:**
-- When workers are running
-- For database-aware cleanup (queries permanent_bundle table)
-- For integrated cleanup as part of the worker pipeline
-- When you want job tracking via Bull Board
-
-**Setup:**
-```bash
-# Make executable (already done)
-chmod +x /home/vilenarios/ar-io-bundler/packages/upload-service/trigger-cleanup.js
-
-# Run manually
-cd /home/vilenarios/ar-io-bundler/packages/upload-service
-node trigger-cleanup.js
-
-# Add to crontab for automated daily cleanup at 2 AM
-# NOTE: cron's PATH usually lacks `node` (esp. with nvm). Pass NODE_BIN so the job runs;
-# without it the cleanup fails silently. Find the path with `command -v node`.
-(crontab -l 2>/dev/null | grep -v "cron-trigger-cleanup" ; echo "0 2 * * * NODE_BIN=$(command -v node) /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh >> /tmp/cleanup-fs-cron.log 2>&1") | crontab -
-```
-
-## Configuration
-
-Edit `/home/vilenarios/ar-io-bundler/.env` to configure cleanup behavior:
+Configure in `.env`:
 
 ```bash
-# How many days to keep files before cleanup (default: 90)
-CLEANUP_RETENTION_DAYS=90
-
-# Directory paths (usually no need to change)
-TEMP_DIR=/home/vilenarios/ar-io-bundler/packages/upload-service/temp
-UPLOAD_SERVICE_DATA_DIR=/home/vilenarios/ar-io-bundler/packages/upload-service/upload-service-data
-
-# Log directory for cleanup script
-CLEANUP_LOG_DIR=/home/vilenarios/ar-io-bundler/logs
-
-# Set to 'true' to test cleanup without actually deleting files
+TEMP_DIR=/path/to/ar-io-bundler/packages/upload-service/temp
+CLEANUP_RETENTION_DAYS=90    # temp files older than this are deleted
+CLEANUP_LOG_DIR=/path/to/ar-io-bundler/logs
 CLEANUP_DRY_RUN=false
 ```
 
-## Verification
+If you want it scheduled, a daily cron is fine since it only touches scratch:
 
-### Check Cron Jobs
 ```bash
-crontab -l | grep cleanup
+0 3 * * * /path/to/ar-io-bundler/scripts/cleanup-bundler-files.sh >> /tmp/cleanup-bundler-files-cron.log 2>&1
 ```
 
-### Monitor Logs
-```bash
-# Bash cleanup logs
-tail -f /home/vilenarios/ar-io-bundler/logs/cleanup-bundler-files.log
-tail -f /tmp/cleanup-bundler-files-cron.log
+## Recommendation
 
-# BullMQ worker logs
-tail -f /tmp/cleanup-fs-cron.log
-pm2 logs upload-workers | grep cleanup
-```
-
-### View Bull Board Queue Status
-Open http://localhost:3002/admin/queues and check the `upload-cleanup-fs` queue.
-
-## Recommendations
-
-**For most users:** Use the **Bash-based cleanup** (`cleanup-bundler-files.sh`) scheduled daily:
-- Simpler and more reliable
-- Doesn't depend on workers being running
-- Direct file deletion with detailed logging
-- Configurable via .env
-
-**For advanced users:** Use the **BullMQ worker cleanup** if you want:
-- Database-aware cleanup
-- Integration with worker pipeline
-- Job tracking and monitoring via Bull Board
+- **Durable data:** rely on the in-process `cleanup-fs` scheduler (#1). It is the
+  only thing that should delete `raw_/metadata_` files, and it does so only for
+  permanent bundles. Don't replace it with a blind filesystem delete.
+- **Temp scratch:** optionally schedule `cleanup-bundler-files.sh` (#2). It is safe
+  because it only touches reconstructible scratch under `TEMP_DIR`.
 
 ## Troubleshooting
 
-### Cron not running?
 ```bash
-# Check cron service is running
-sudo systemctl status cron
+# cleanup-fs worker / scheduler
+pm2 logs upload-workers | grep cleanup
+pm2 logs upload-workers | grep "job schedulers"   # confirm the scheduler registered
 
-# Check cron logs
-grep CRON /var/log/syslog | tail -20
+# temp janitor
+tail -f /home/vilenarios/ar-io-bundler/logs/cleanup-bundler-files.log
+CLEANUP_DRY_RUN=true ./scripts/cleanup-bundler-files.sh   # preview before deleting
 ```
-
-### Permission errors?
-```bash
-# Ensure scripts are executable
-chmod +x /home/vilenarios/ar-io-bundler/scripts/cleanup-bundler-files.sh
-chmod +x /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-cleanup.sh
-chmod +x /home/vilenarios/ar-io-bundler/packages/upload-service/trigger-cleanup.js
-```
-
-### Test dry-run first
-```bash
-# Always test with dry-run before real cleanup
-CLEANUP_DRY_RUN=true ./scripts/cleanup-bundler-files.sh
-```
-
-## Existing Cron Jobs
-
-You already have the bundle planning cron job running:
-```bash
-*/5 * * * * /home/vilenarios/ar-io-bundler/packages/upload-service/cron-trigger-plan.sh
-```
-
-Add cleanup to run daily at 2 AM to avoid conflicts.

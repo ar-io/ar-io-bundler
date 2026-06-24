@@ -31,11 +31,14 @@ import { octetStreamContentType } from "../constants";
 import logger from "../logger";
 import { PlanId } from "../types/dbTypes";
 import {
+  Base64String,
   ByteCount,
+  ChunkHeader,
   PayloadInfo,
   TransactionId,
   UploadId,
 } from "../types/types";
+import { toB64Url } from "./base64";
 import { streamToBuffer } from "./streamToBuffer";
 
 export const dataItemPrefix =
@@ -44,6 +47,41 @@ const multiPartPrefix = process.env.MULTIPART_S3_PREFIX ?? "multipart-uploads";
 const bundlePayloadPrefix =
   process.env.BUNDLE_PAYLOAD_S3_PREFIX ?? "bundle-payload";
 const bundleTxPrefix = process.env.BUNDLE_TX_S3_PREFIX ?? "bundle";
+// Per-chunk bytes staged here for the broadcast-chunks queue, keyed by
+// `{data_root}/{offset}` (the broadcast job carries only the ChunkHeader).
+const chunksPrefix = process.env.CHUNKS_S3_PREFIX ?? "chunks";
+
+const chunkObjectStoreKey = (header: ChunkHeader): string =>
+  `${chunksPrefix}/${header.data_root}/${header.offset}`;
+
+/** Stage one chunk's raw bytes for the broadcast-chunks worker to pick up. */
+export function putChunkIntoObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader,
+  chunkStream: Readable
+): Promise<void> {
+  return objectStore.putObject(chunkObjectStoreKey(header), chunkStream, {
+    contentType: octetStreamContentType,
+    contentLength: +header.chunkByteLength,
+  });
+}
+
+/** Load a staged chunk's bytes (base64url) for posting to an AR.IO node. */
+export async function getChunkFromObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader
+): Promise<Base64String> {
+  const { readable } = await objectStore.getObject(chunkObjectStoreKey(header));
+  return toB64Url(await streamToBuffer(readable, +header.chunkByteLength));
+}
+
+/** Remove a staged chunk once it has been broadcast (best-effort cleanup). */
+export function deleteChunkFromObjectStore(
+  objectStore: ObjectStore,
+  header: ChunkHeader
+): Promise<void> {
+  return objectStore.deleteObject(chunkObjectStoreKey(header));
+}
 
 let s3ObjectStore: S3ObjectStore | undefined;
 

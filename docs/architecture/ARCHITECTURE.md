@@ -82,9 +82,13 @@ diverge** — these are recorded choices, not gaps:
   own gateway to avoid public-endpoint rate limits.
 - **Not adopted (intentional — x402-primary, fewer-chains posture):** cross-chain
   signed-request funding (PE-6013), USDC-on-EVM funding gateways (PE-7482),
-  base-bridged $ARIO (PE-8763), broadcast-chunks (PE-8879/8967, AWS node-fleet),
+  base-bridged $ARIO (PE-8763),
   turbo-gateway.com host-swap + SSM optical keys, `$U` mint tags, DynamoDB RCU
   autoscaling.
+- **Adopted from upstream (de-AWS port):** per-chunk broadcast (PE-8879/8967) — the
+  `broadcast-chunks` BullMQ queue broadcasts each chunk to `AR_IO_NODE_URLS`
+  distributor nodes (shuffle + failover), replacing the original AWS node-fleet
+  design.
 - **Platform:** Node 22+ (required — `@ar.io/sdk` v4 is ESM-only), TypeScript 5.
 - **Open decision:** `usd_equiv` is *computed* on crypto funding but not persisted
   (PE-8705) — adopt only if USD-denominated crypto-funding accounting is needed.
@@ -192,7 +196,7 @@ Purpose: BullMQ job queues
 Healthcheck: redis-cli -p 6381 ping
 ```
 
-Dedicated Redis instance for all BullMQ queues (12 queues total).
+Dedicated Redis instance for all BullMQ queues (14 queues total).
 
 #### MinIO
 ```yaml
@@ -239,7 +243,7 @@ Located in `infrastructure/pm2/ecosystem.config.js`:
       name: "upload-workers",
       instances: WORKER_INSTANCES || 1,
       exec_mode: "fork",
-      script: "./lib/workers/allWorkers.js"   // 12 BullMQ queues
+      script: "./lib/workers/allWorkers.js"   // 14 BullMQ queues
     },
     {
       name: "admin-dashboard",   // admin stats + embedded Bull Board
@@ -602,7 +606,7 @@ Handles all data upload operations including:
 - Block height tracking
 
 **Workers** (`src/workers/allWorkers.ts`):
-- 12 BullMQ workers processing async jobs
+- 14 BullMQ workers processing async jobs
 - Each worker handles specific job type
 - Graceful shutdown support
 
@@ -744,6 +748,9 @@ export const jobLabels = {
   verifyBundle: "verify-bundle",
   cleanupFs: "cleanup-fs",
   putOffsets: "put-offsets",
+  redrivePosted: "redrive-posted",
+  refundBalance: "refund-balance",
+  broadcastChunks: "broadcast-chunks",
 } as const;
 ```
 
@@ -764,6 +771,9 @@ Located in `packages/upload-service/src/workers/allWorkers.ts`:
 | `unbundleWorker` | `unbundle-bdi` | 2 | Unbundle nested BDIs |
 | `finalizeWorker` | `finalize-upload` | 3 | Finalize multipart uploads |
 | `cleanupWorker` | `cleanup-fs` | 1 | Clean temporary files |
+| `redrivePostedWorker` | `redrive-posted` | 1 | Re-drive bundles stranded in `posted_bundle` |
+| `refundBalanceWorker` | `refund-balance` | 3 | Durable balance-refund retry |
+| `broadcastChunksWorker` | `broadcast-chunks` | `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10) | Broadcast each chunk to an AR.IO distributor (`AR_IO_NODE_URLS`, shuffle + failover) |
 
 ### Job Flow
 
@@ -771,7 +781,9 @@ Located in `packages/upload-service/src/workers/allWorkers.ts`:
 ```
 POST /v1/tx
   ↓
-newDataItem → planBundle → prepareBundle → postBundle → verifyBundle
+newDataItem → planBundle → prepareBundle → postBundle → seedBundle → verifyBundle
+                                                            ↓
+                                          broadcastChunks (per-chunk fan-out → AR_IO_NODE_URLS)
                                               ↓
                                           opticalPost (parallel)
                                               ↓
@@ -2429,7 +2441,7 @@ This system has been completely migrated from AWS to open-source infrastructure.
 - Batch size increased from 25 (DynamoDB limit) to 500 (PostgreSQL batch insert)
 
 **Queue Migration**:
-- SQS queues → BullMQ queues (12 queues)
+- SQS queues → BullMQ queues (14 queues)
 - Lambda handlers → Worker functions in `src/workers/`
 - Message format preserved for compatibility
 - Job concurrency configurable per worker

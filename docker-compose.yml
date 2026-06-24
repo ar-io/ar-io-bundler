@@ -81,7 +81,10 @@ services:
       MINIO_DOMAIN: ar-io-bundler-minio
     command: server /data --console-address ":9001"
     volumes:
-      - minio-data:/data
+      # Default: named volume. Prod with bulk storage should bind-mount a dedicated
+      # disk by setting MINIO_DATA_PATH (e.g. MINIO_DATA_PATH=/mnt/minio on an HDD) —
+      # a named volume otherwise lands on the OS disk.
+      - ${MINIO_DATA_PATH:-minio-data}:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -118,7 +121,7 @@ volumes:
   postgres-data:
   redis-cache-data:
   redis-queues-data:
-  minio-data:
+  minio-data:   # used only when MINIO_DATA_PATH is unset (dev/default)
 
 networks:
   ar-io-network:

@@ -233,10 +233,11 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 - **Auth:** `PRIVATE_ROUTE_SECRET`, `JWT_SECRET` (both set, matching across services).
 - **Inter-service:** `PAYMENT_SERVICE_BASE_URL=localhost:4001` (NO protocol), `PAYMENT_SERVICE_PROTOCOL=http`.
 - **Gateway/optical:** `ARWEAVE_GATEWAY`, `PUBLIC_ACCESS_GATEWAY` → your own gateway (NOT arweave.net).
-  `ARWEAVE_UPLOAD_NODE` is the node that posts bundles/chunks to the Arweave network — point it at your own
-  gateway (e.g. `https://vilenarios.com`), which distributes chunks to Arweave tip nodes. (AR.IO gateways
-  don't serve `/chunk` directly, so this is the one path that ultimately reaches the network.) Goal: **no
-  arweave.net anywhere** — reads/pricing/tx via the local gateway, posting via your gateway.
+  `AR_IO_NODE_URLS` (comma-separated) are the dedicated AR.IO chunk-distributor nodes the `broadcast-chunks`
+  worker POSTs chunks to (shuffle + failover); each distributes chunks to Arweave tip nodes. Use private IPs
+  (`/chunk` on `:3000`). If unset, chunk seeding falls back to the single `ARWEAVE_UPLOAD_NODE` — point that
+  at your own gateway core (e.g. `http://localhost:4000`). Goal: **no
+  arweave.net anywhere** — reads/pricing/tx via the local gateway, chunk seeding via your distributors.
   `OPTICAL_BRIDGING_ENABLED=true`,
   `OPTICAL_BRIDGE_URL=http://<gateway>:4000/ar-io/admin/queue-data-item`, `AR_IO_ADMIN_KEY`,
   `OPTIONAL_OPTICAL_BRIDGE_URLS` (second gateway). ⚠️ replace the dev LAN IP `<GATEWAY_PRIVATE_IP>` with the
@@ -357,8 +358,11 @@ interval. Confirm registration after deploy with
 `pm2 logs upload-workers | grep "job schedulers"`. **Teardown:** schedulers persist in
 Redis — to stop one, set its `*_SCHEDULE_CRON` to `""` and restart, or
 `getQueue(label).removeJobScheduler(id)`. The `cron-trigger-*.sh` scripts remain as
-manual on-demand triggers. Confirm the cleanup vars (§7) are set, and pick **one** cleanup
-mechanism (the internal scheduler over the bash `cleanup-bundler-files.sh`).
+manual on-demand triggers. Confirm the cleanup vars (§7) are set. **Durable** upload
+data is cleaned ONLY by the database-aware internal `cleanup-fs` scheduler (it deletes
+`raw_/metadata_` files only after a bundle is `permanent_bundle`). `scripts/cleanup-bundler-files.sh`
+is a TEMP-scratch-only janitor — never point it at the durable data dir; a blind mtime
+delete there can drop a paid, receipted-but-unfinalized upload. See `scripts/CLEANUP_SETUP.md`.
 
 🛑 **The verify cron still applies** (`scripts/trigger-verify.sh` is not part of the
 internal scheduler). It runs via crontab and is still subject to the stripped-PATH
@@ -385,9 +389,12 @@ Three wires (see `README.md` §Vertical Integration for the full detail):
    S3 creds, and prioritize MinIO in `ON_DEMAND_RETRIEVAL_ORDER=s3,trusted-gateways,ar-io-network,chunks-offset-aware,tx-data`.
    - **Same host:** `docker network connect <bundler-network> <gateway-core-container>`, restart gateway core.
    - **Different host (two baremetal gateways):** route the MinIO aliases to the bundler's private address on each gateway (DNS or `/etc/hosts`).
-4. **Bundle seeding (TX headers + chunks) →** `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
-   - **Why direct-to-core:4000:** in non-dry-run mode envoy routes `POST /tx` to `trusted_arweave_nodes` (upstream Arweave), *bypassing core* — so seeding via the public/nginx path silently disables the gateway's **optimistic TX indexing** (`OPTIMISTIC_TX_INDEXING_ENABLED=true`). Direct-to-core hits core's own `POST /tx` handler, which optimistically indexes **and** broadcasts. (`POST /chunk` reaches core either way, but direct also skips TLS/nginx/rate-limit/x402 overhead.)
-   - **Reads/anchor stay on `ARWEAVE_GATEWAY` (`:3000`)** — the split is intentional: reads/`/tx_anchor`/price via the read gateway, POST seeding via core.
+4. **Bundle seeding (chunks) →** `AR_IO_NODE_URLS` (comma-separated). The `broadcast-chunks` worker POSTs each chunk to **one of** these dedicated AR.IO chunk-distributor nodes (shuffle + per-node retry + failover); each distributor fans the chunk out to Arweave tip nodes, so reaching one healthy node lands it. Use the distributors' **private IPs** — chunk POSTs are plaintext; `/chunk` is served on the gateway/envoy port (`:3000`). Example: `AR_IO_NODE_URLS=http://10.83.0.7:3000,http://10.83.0.13:3000,http://10.83.0.14:3000`.
+   - **Single-node fallback:** if `AR_IO_NODE_URLS` is **unset**, chunk seeding falls back to the single `ARWEAVE_UPLOAD_NODE=http://localhost:4000` — post **directly to gateway core**, NOT the public domain and NOT envoy `:3000`.
+   - **Why direct-to-core:4000 (fallback path):** the fallback carries **chunks only** (`POST /chunk`) — core accepts + caches them optimistically, and going direct skips TLS/nginx/rate-limit/x402 overhead. This is purely a chunk-delivery endpoint.
+   - **The TX header is posted separately — NOT via this path.** `postBundleTx` posts the bundle tx (and the best-effort optimistic-tx side-channel) via `ARWEAVE_GATEWAY`/`ARWEAVE_GATEWAYS`, so the gateway's **optimistic TX indexing** does **not** depend on the chunk-seeding endpoint. Don't debug a "tx not indexed" issue by changing `AR_IO_NODE_URLS`/`ARWEAVE_UPLOAD_NODE` — that's the gateway/`ARWEAVE_GATEWAY` side. (`ArweaveInterface.postTx`/`arweaveJsUpload` is a legacy unused path.)
+   - **Tunables:** `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10), `CHUNK_POST_MAX_TRIES` (3), `CHUNK_POST_RETRY_DELAY_MS` (2000), `CHUNK_POST_TIMEOUT_MS` (60000). After `seed-bundle` runs, the actual delivery shows on the **`broadcast-chunks`** queue; a backlog there = a distributor is unreachable (`chunk_seed_post_total{result="failure"}`).
+   - **Reads/anchor/tx-header stay on `ARWEAVE_GATEWAY` (`:3000`)** — the split is intentional: reads/`/tx_anchor`/price **and the bundle-tx POST** via the read gateway; only the chunk `POST /chunk` goes to `AR_IO_NODE_URLS` (or the core fallback).
    - **Cutover caveat:** `localhost:4000` works because core publishes `0.0.0.0:4000` and the bundler runs on-host (PM2). If the bundler is containerized on `ar-io-network`, change this to `http://<gateway-core-container>:4000` (inside a container `localhost` is the bundler itself, not core).
    - The bundler's chunk posts appear to core as the **docker bridge gateway IP** (~`172.18.0.1`), an internal/cutover-stable address — relevant to the allowlist below.
 

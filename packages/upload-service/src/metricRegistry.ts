@@ -356,6 +356,15 @@ export class MetricRegistry {
     },
   });
 
+  // Per-node result of broadcasting a single chunk to an AR.IO distributor node
+  // (AR_IO_NODE_URLS failover, broadcast-chunks queue). result="success" = node
+  // accepted the chunk; result="failure" = errored, failed over to the next.
+  public static chunkSeedPost = MetricRegistry.createCounter({
+    name: "chunk_seed_post_total",
+    help: "Count of single-chunk broadcasts to AR.IO distributor nodes by result",
+    labelNames: ["endpoint", "result"],
+  });
+
   private constructor() {
     this.registry = new promClient.Registry();
   }

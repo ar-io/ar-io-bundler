@@ -17,7 +17,7 @@ This document lists all infrastructure components and how they're managed by our
    
 3. **Redis Queues** (port 6381)
    - Container: `ar-io-bundler-redis-queues`
-   - Used for: BullMQ job queues (12 queues)
+   - Used for: BullMQ job queues (14 queues)
    - Healthcheck: `redis-cli -p 6381 ping`
    
 4. **MinIO** (ports 9000-9001)
@@ -64,13 +64,13 @@ All PM2 services are managed by the root-level `ecosystem.config.js` file, which
    - Process name: `upload-workers`
    - Instances: 1 (fork mode - IMPORTANT: must be single instance)
    - Script: `packages/upload-service/lib/workers/allWorkers.js`
-   - Handles 12 BullMQ job queues
+   - Handles 14 BullMQ job queues
 
 5. **Admin Dashboard** (port 3002)
    - Process name: `admin-dashboard`
    - Instances: 1 (fork mode)
    - Script: `packages/admin-service/server.js`
-   - Admin stats dashboard with embedded Bull Board for monitoring all 12 BullMQ queues
+   - Admin stats dashboard with embedded Bull Board for monitoring all 14 BullMQ queues
    - Access at: http://localhost:3002/admin/queues
 
 ## Script Coverage

@@ -89,7 +89,7 @@ docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d upload_service -t -A -F$'\t' -
   || echo 'pg query failed'
 
 section "BullMQ queue depth (redis-queues :6381 — failed>0 or a climbing wait = stuck stage)"
-QUEUES="upload-new-data-item upload-plan-bundle upload-prepare-bundle upload-post-bundle upload-seed-bundle upload-verify-bundle upload-optical-post upload-put-offsets upload-finalize-upload upload-unbundle-bdi upload-cleanup-fs upload-redrive-posted payment-pending-tx"
+QUEUES="upload-new-data-item upload-plan-bundle upload-prepare-bundle upload-post-bundle upload-seed-bundle upload-verify-bundle upload-broadcast-chunks upload-optical-post upload-put-offsets upload-finalize-upload upload-unbundle-bdi upload-cleanup-fs upload-redrive-posted upload-refund-balance payment-pending-tx payment-admin-credit"
 printf '%-26s %8s %8s %8s\n' queue wait active failed
 for q in $QUEUES; do
   w="$(docker exec "$RQ_CONTAINER" redis-cli -p 6381 LLEN "bull:$q:wait" 2>/dev/null)"
@@ -111,9 +111,9 @@ for s in "plan:upload-plan-bundle" "cleanup:upload-cleanup-fs" "redrive-posted:u
   fi
 done
 # The ONLY legitimate crontab entry is the optional verify trigger; plan/cleanup/redrive must NOT be in crontab (they would double-fire).
-crontab -l 2>/dev/null | grep -q 'trigger-plan\|trigger-cleanup' \
-  && echo 'crontab : ⚠ has a plan/cleanup trigger — REMOVE it (double-fires with the in-process scheduler)' \
-  || echo 'crontab : clean (no stale plan/cleanup cron) ✓'
+crontab -l 2>/dev/null | grep -q 'trigger-plan\|trigger-cleanup\|trigger-redrive\|redrive-posted' \
+  && echo 'crontab : ⚠ has a plan/cleanup/redrive trigger — REMOVE it (double-fires with the in-process scheduler)' \
+  || echo 'crontab : clean (no stale plan/cleanup/redrive cron) ✓'
 
 section "gateway wiring (optical bridge + reads)"
 gw_arweave="$(printf '%s' "$(curl -sf -m5 "$UPLOAD_URL/v1/info" 2>/dev/null)" | grep -oE '"arweave":"[^"]*"' | head -1 | cut -d'"' -f4)"
