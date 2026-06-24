@@ -43,8 +43,14 @@ if [ "$STOP_DOCKER" = true ]; then
   echo ""
   echo "🐳 Stopping Docker infrastructure..."
   cd "$PROJECT_ROOT"
-  if docker compose ps | grep -q "Up"; then
-    docker compose down
+  # Two-tier MinIO: include the HDD archive override so `down` also removes minio-hdd
+  # (otherwise it lingers as an orphan). No-op on SSD-only boxes (ARCHIVE_* unset).
+  ARCHIVE_COMPOSE=""
+  if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
+    ARCHIVE_COMPOSE="-f docker-compose.yml -f docker-compose.hdd.yml"
+  fi
+  if docker compose $ARCHIVE_COMPOSE ps | grep -q "Up"; then
+    docker compose $ARCHIVE_COMPOSE down
     echo -e "${GREEN}✓${NC} Docker infrastructure stopped"
   else
     echo -e "${YELLOW}⚠️${NC}  Docker infrastructure not running"

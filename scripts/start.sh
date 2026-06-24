@@ -28,13 +28,21 @@ if ! docker ps | grep -q ar-io-bundler-postgres; then
   echo -e "${YELLOW}⚠️  Infrastructure not running${NC}"
   echo "   Starting Docker containers..."
   cd "$PROJECT_ROOT"
-  docker compose up -d postgres redis-cache redis-queues minio
+  # Two-tier MinIO: include the HDD archive override when ARCHIVE_DATA_ITEM_BUCKET is
+  # set in .env (otherwise minio-hdd is an unknown service). SSD-only dev boxes that
+  # leave ARCHIVE_* unset are unchanged.
+  ARCHIVE_COMPOSE=""; ARCHIVE_SVC=""
+  if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
+    ARCHIVE_COMPOSE="-f docker-compose.yml -f docker-compose.hdd.yml"; ARCHIVE_SVC="minio-hdd"
+  fi
+  docker compose $ARCHIVE_COMPOSE up -d postgres redis-cache redis-queues minio $ARCHIVE_SVC
   echo "   Waiting for services to be ready..."
   sleep 5
 
-  # Initialize MinIO buckets (one-time setup)
+  # Initialize MinIO buckets (one-time setup; also the HDD archive bucket when enabled)
   echo "   Initializing MinIO buckets..."
-  docker compose up minio-init
+  docker compose $ARCHIVE_COMPOSE up minio-init
+  [ -n "$ARCHIVE_SVC" ] && docker compose $ARCHIVE_COMPOSE up minio-init-hdd
 
   # Run database migrations (using yarn instead of Docker)
   echo "   Running database migrations..."
