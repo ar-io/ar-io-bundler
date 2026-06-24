@@ -15,7 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import { expect } from "chai";
-import { stub, SinonStub } from "sinon";
+import { stub, SinonStub, useFakeTimers } from "sinon";
 import axios from "axios";
 
 import { W } from "../types";
@@ -86,6 +86,49 @@ describe("X402PricingOracle", () => {
         expect.fail("Should have thrown error");
       } catch (error: any) {
         expect(error.message).to.include("Failed to fetch AR price");
+      }
+    });
+
+    // Regression: the stale fallback must be BOUNDED. After a prior successful
+    // fetch, a CoinGecko failure may reuse the cached price only within
+    // MAX_STALE_AR_PRICE_MS; past that the oracle must fail closed rather than
+    // pricing payments off an arbitrarily old AR/USD value.
+    it("reuses a stale cached price when CoinGecko fails but it is within the stale cap", async () => {
+      const clock = useFakeTimers({ now: 1_000_000, toFake: ["Date"] });
+      try {
+        axiosStub.resolves({ data: { arweave: { usd: 25.5 } } });
+        expect(await (oracle as any).getARPriceInUSD()).to.equal(25.5); // seed
+
+        // Past the 5-min fresh window, well within the 1h stale cap.
+        clock.tick(10 * 60 * 1000);
+        axiosStub.rejects(new Error("Request failed with status code 500"));
+
+        expect(await (oracle as any).getARPriceInUSD()).to.equal(25.5);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it("fails closed (throws) when the cached price is older than the stale cap", async () => {
+      const clock = useFakeTimers({ now: 1_000_000, toFake: ["Date"] });
+      try {
+        axiosStub.resolves({ data: { arweave: { usd: 25.5 } } });
+        await (oracle as any).getARPriceInUSD(); // seed
+
+        // Beyond the 1h stale cap.
+        clock.tick(2 * 60 * 60 * 1000);
+        axiosStub.rejects(new Error("Request failed with status code 500"));
+
+        try {
+          await (oracle as any).getARPriceInUSD();
+          expect.fail(
+            "Should have thrown — cached price too stale to price payments"
+          );
+        } catch (error: any) {
+          expect(error.message).to.include("too stale");
+        }
+      } finally {
+        clock.restore();
       }
     });
   });
