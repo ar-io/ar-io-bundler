@@ -34,6 +34,7 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+import { publicUrlForRequest } from "../utils/publicUrl";
 import {
   RawBodyTooLargeError,
   bufferRequestBodyWithLimit,
@@ -216,13 +217,30 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     usdcAmountRequired,
   });
 
-  // Build payment requirements for verification
-  const uploadServicePublicUrl = process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
+  // Build payment requirements for verification. Resource must match the 402
+  // quote's resource (same request host → same value via publicUrlForRequest).
+  const uploadServicePublicUrl = publicUrlForRequest(ctx);
   const networkConfig = ctx.state.x402Service.getNetworkConfig(paymentPayload.network);
 
   if (!networkConfig) {
     return errorResponse(ctx, {
       errorMessage: `Network ${paymentPayload.network} is not configured`,
+      status: 400,
+    });
+  }
+
+  // SECURITY: reject DISABLED networks before verify/settle. getNetworkConfig()
+  // returns disabled configs too (e.g. base-sepolia testnet, off by default), so
+  // without this an attacker could settle a disabled-testnet USDC authorization
+  // and receive a server-signed data item + queued storage work. Mirrors the
+  // payment-service x402 routes' isNetworkEnabled() gate.
+  if (!ctx.state.x402Service.isNetworkEnabled(paymentPayload.network)) {
+    logger.warn("Rejected x402 upload on a disabled network", {
+      network: paymentPayload.network,
+      enabledNetworks: ctx.state.x402Service.getEnabledNetworks(),
+    });
+    return errorResponse(ctx, {
+      errorMessage: `Network ${paymentPayload.network} is not enabled`,
       status: 400,
     });
   }
@@ -592,14 +610,41 @@ async function send402PaymentRequired(
     usdcAmountRequired,
   });
 
-  // Build absolute URL for the resource (required by x402 facilitator)
-  // IMPORTANT: Must match UPLOAD_SERVICE_PUBLIC_URL to ensure consistency with payment settlement
-  const uploadServicePublicUrl =
-    process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
-  const resourceUrl = `${uploadServicePublicUrl}/v1/tx`;
+  // Build absolute URL for the resource (required by x402 facilitator).
+  // IMPORTANT: the 402 quote and the settle step must build this identically;
+  // both derive from the same request host via publicUrlForRequest, so they stay
+  // consistent for payment settlement.
+  const resourceUrl = `${publicUrlForRequest(ctx)}/v1/tx`;
+
+  // Choose the network to quote. SECURITY: never advertise a DISABLED network —
+  // the paid path rejects disabled networks, and a testnet (base-sepolia, off by
+  // default) must not be quotable in production. Prefer the configured network if
+  // enabled, else fall back to the first enabled network, else refuse.
+  let network = process.env.X402_NETWORK || "base-sepolia";
+  if (!ctx.state.x402Service.isNetworkEnabled(network)) {
+    const enabledNetworks = ctx.state.x402Service.getEnabledNetworks();
+    if (enabledNetworks.length === 0) {
+      // Payment is required but no x402 network is enabled, so we cannot hand
+      // back payment requirements. The signal is still 402 Payment Required, NOT
+      // 503: the service is up, the client just can't pay via x402 here. Mirrors
+      // the signed path's convention (dataItemPost.ts respondPaymentRequired).
+      logger.error("x402 quote requested but no x402 network is enabled", { configured: network });
+      ctx.status = 402;
+      ctx.set("X-Payment-Required", "x402-1");
+      ctx.body = {
+        error: "Payment required",
+        message: "x402 payments are not currently available on this bundler.",
+      };
+      return;
+    }
+    logger.warn("Configured X402_NETWORK is not enabled; quoting first enabled network instead", {
+      configured: network,
+      using: enabledNetworks[0],
+    });
+    network = enabledNetworks[0];
+  }
 
   // Get network config for correct USDC address
-  const network = process.env.X402_NETWORK || "base-sepolia";
   const networkConfig = ctx.state.x402Service.getNetworkConfig(network);
   const usdcAddress = networkConfig?.usdcAddress || process.env.USDC_CONTRACT_ADDRESS || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 

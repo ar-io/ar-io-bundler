@@ -1,0 +1,28 @@
+{
+  "_comment": "Named canary/perf targets. Each has a bundler `upload` URL, a `gateway` URL (where optical access + GraphQL + tx status are observed), and an `env` label stamped on Slack/Prometheus output. Override any field on the CLI with --upload-url / --gateway-url / --env-label. Fill in `prod` with your real deployment URLs.",
+  "dev": {
+    "upload": "http://localhost:3001",
+    "gateway": "http://localhost:3000",
+    "env": "bundler-dev"
+  },
+  "prod": {
+    "upload": "https://upload.services.ar.io",
+    "gateway": "https://turbo-gateway.com",
+    "env": "bundler-prod",
+    "dns": "8.8.8.8",
+    "_note": "ar.io mainnet/prod bundler. Upload = upload.services.ar.io (resolves cleanly); public gateway = turbo-gateway.com (a real AR.IO gateway; advertised by the bundler's /v1/info). `dns: 8.8.8.8` required: Optimum sinkholes turbo-gateway.com to 167.206.x (their ASN); Google DNS returns real Hetzner IP 49.13.45.141. ⚠️ As of 2026-06-25 the fast canary FAILS at accept: /v1/info advertises freeUploadLimitBytes 107520 but the free tier is NOT honored (ALLOW_ARFS_DATA is not 'true' on prod), so a tiny upload from a non-allowlisted wallet falls to the payment path and returns 503 'Failed to generate payment requirements' (prod's internal x402 price route errors). FIX: set ALLOW_ARFS_DATA=true on prod upload-service (matches ar-io.dev) → canary goes green with no wallet; OR allowlist a canary address; OR pass a funded --signer-jwk."
+  },
+  "legacy": {
+    "upload": "https://upload.ardrive.io",
+    "gateway": "https://turbo-gateway.com",
+    "env": "ardrive-legacy",
+    "_note": "Upstream ArDrive Turbo prod. Same API surface (this repo is a fork). Tiny items use the free path; deep runs that mine a bundle spend on the ArDrive wallet, not yours."
+  },
+  "ario": {
+    "upload": "https://upload.services.ar-io.dev",
+    "gateway": "https://ar-io.dev",
+    "env": "ar-io-dev",
+    "dns": "8.8.8.8",
+    "_note": "ar.io dev/testnet. Upload = upload.services.ar-io.dev; public gateway = ar-io.dev (apex; `/ar-io/info` + `/graphql` are the gateway API). NOTE arweave.ar-io.dev is the WEBSITE, not the gateway. The bundler /v1/info advertises a private vSwitch gateway (10.83.0.2:3000) this box can't reach — read from the public ar-io.dev instead. freeUploadLimitBytes ~105KB so tiny items upload free (no signer). `dns: 8.8.8.8` required: Optimum sinkholes *.ar-io.dev to 167.206.x (their own ASN); Google DNS returns the real Hetzner IPs."
+  }
+}

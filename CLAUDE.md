@@ -131,7 +131,7 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Upload Service** (`packages/upload-service/`):
 - Single and multipart data item uploads (up to 10GB)
-- Asynchronous job processing via BullMQ (15 queues)
+- Asynchronous job processing via BullMQ (16 queues)
 - ANS-104 bundle creation and Arweave posting
 - AR.IO Gateway optimistic caching (optical posting)
 
@@ -188,10 +188,10 @@ Distinct from the signed x402 path (`src/routes/dataItemPost.ts`). Clients POST 
 
 ### Asynchronous Job Processing
 
-BullMQ with 15 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "15 queues"):
+BullMQ with 16 queues for bundle fulfillment. Queue names (`jobLabels` in `src/constants.ts`) and worker concurrencies are defined in `src/workers/allWorkers.ts` (the `allWorkers` array — the source of truth for "16 queues"):
 
 **Core bundle flow**: `new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle`
-**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`, `archive-copy`
+**Parallel/other queues**: `optical-post`, `put-offsets`, `cleanup-fs`, `finalize-upload`, `unbundle-bdi`, `redrive-posted`, `refund-balance`, `broadcast-chunks`, `archive-copy`, `ensure-partitions`
 
 **Per-chunk seed broadcast (`broadcast-chunks`):** `seed-bundle` no longer uploads a bundle's chunks to a single node. It prepares each chunk, stages the bytes in the object store (`chunks/{data_root}/{offset}`), and enqueues **one `broadcast-chunks` job per chunk**. The `broadcast-chunks` worker POSTs each chunk to **one of several AR.IO chunk-distributor nodes** (`AR_IO_NODE_URLS`, shuffled, per-node retry + failover); each distributor performs its own multi-tip broadcast, so reaching one healthy node lands the chunk. Unset `AR_IO_NODE_URLS` → falls back to the single `ARWEAVE_UPLOAD_NODE` (unchanged single-node behavior). One job per chunk = independent retry + parallelism (not a whole-bundle re-seed on a single chunk failure). Metric: `chunk_seed_post_total{endpoint,result}`. The TX header is posted separately via `ARWEAVE_GATEWAYS` (unrelated to chunk seeding).
 
@@ -208,11 +208,13 @@ BullMQ with 15 queues for bundle fulfillment. Queue names (`jobLabels` in `src/c
 **Bundle planning is scheduled in-process (no cron needed)**: the always-running
 `upload-workers` process registers BullMQ job schedulers at startup
 (`src/workers/allWorkers.ts`) — `plan-bundle` every 5 min, `cleanup-fs` daily
-at 02:00, and `redrive-posted` every 10 min. This replaced the old external
+at 02:00, `redrive-posted` every 10 min, and `ensure-partitions` daily at 03:00
+(pre-creates upcoming `permanent_data_items` half-month partitions so live rows
+never fall into the DEFAULT partition). This replaced the old external
 `cron-trigger-*.sh` crons (which were a silent-failure footgun: a cron never
 added to crontab, or one that couldn't find `node` on cron's minimal PATH, meant
 nothing ever bundled). The schedules are env-tunable and disable-able:
-- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`), `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+- `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`), `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`), `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`), `ENSURE_PARTITIONS_SCHEDULE_CRON` (default `0 3 * * *`)
 - Set any to `""` to disable that schedule.
 - BullMQ dedupes each schedule by id in the shared queue Redis, so exactly one
   job fires per interval even if workers ever run multi-instance/multi-box.

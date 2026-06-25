@@ -135,7 +135,7 @@ The fulfillment pipeline runs as BullMQ workers (Redis), defined in
 mode, single instance). Queue names are the `jobLabels` in `src/constants.ts`.
 Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 
-**15 queues** (the `allWorkers` array is the source of truth):
+**16 queues** (the `allWorkers` array is the source of truth):
 
 | Queue (`jobLabel`) | Handler (`src/jobs/`) | Concurrency |
 |--------------------|-----------------------|-------------|
@@ -154,6 +154,7 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
 | `refund-balance`   | `allWorkers.ts` (`TurboPaymentService.refundBalanceForData`) | 3 |
 | `broadcast-chunks` | `broadcast-chunks.ts` | `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10) |
 | `archive-copy`     | `archive-copy.ts`     | `ARCHIVE_COPY_WORKER_CONCURRENCY` (3) — inert unless `ARCHIVE_DATA_ITEM_BUCKET` set |
+| `ensure-partitions` | `ensurePartitions.ts` | 1 — scheduled DDL; pre-creates upcoming `permanent_data_items` half-month partitions |
 
 **Core bundle flow:** `new-data-item → plan-bundle → prepare-bundle → post-bundle
 → seed-bundle → verify-bundle`. `optical-post`, `put-offsets`, `finalize-upload`,
@@ -209,11 +210,12 @@ Design decisions:
   latency to the on-chain post.
 
 **Internal job schedulers (no cron needed):** at startup the worker process
-(`src/workers/allWorkers.ts`) registers three BullMQ job schedulers via
+(`src/workers/allWorkers.ts`) registers four BullMQ job schedulers via
 `upsertRepeatable()` (`src/arch/queues.ts`):
 - `plan-bundle` — `PLAN_SCHEDULE_CRON` (default `*/5 * * * *`)
 - `cleanup-fs` — `CLEANUP_SCHEDULE_CRON` (default `0 2 * * *`)
 - `redrive-posted` — `POSTED_REDRIVE_SCHEDULE_CRON` (default `*/10 * * * *`)
+- `ensure-partitions` — `ENSURE_PARTITIONS_SCHEDULE_CRON` (default `0 3 * * *`); pre-creates upcoming `permanent_data_items` half-month partitions (`PARTITION_MONTHS_AHEAD`, default 12) so live rows never fall into the DEFAULT partition
 
 **`posted_bundle` recovery (`redrive-posted.ts`):** the bundle pipeline's one
 dead-end was `posted_bundle` — a bundle whose tx header posted but whose

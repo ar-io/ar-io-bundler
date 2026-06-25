@@ -17,7 +17,7 @@
 import { Next } from "koa";
 
 import {
-  freeUploadLimitBytes,
+  advertisedFreeUploadLimitBytes,
   publicAccessGatewayUrl,
   receiptVersion,
 } from "../constants";
@@ -45,7 +45,7 @@ export async function rootResponse(ctx: KoaContext, next: Next) {
     },
     gateway: gateways[0], // Primary gateway
     gateways: gateways, // All gateways
-    freeUploadLimitBytes: freeUploadLimitBytes,
+    freeUploadLimitBytes: advertisedFreeUploadLimitBytes,
   };
   return next();
 }

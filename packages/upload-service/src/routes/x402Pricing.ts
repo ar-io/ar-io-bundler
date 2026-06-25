@@ -20,6 +20,7 @@ import { KoaContext } from "../server";
 import { errorResponse } from "../utils/common";
 import { estimateDataItemSize } from "../utils/createDataItem";
 import { getValidTokens, parseToken } from "../utils/parseToken";
+import { publicUrlForRequest } from "../utils/publicUrl";
 import {
   MINIMUM_USDC_PRICE,
   applyX402FeeAndFloor,
@@ -133,10 +134,10 @@ export async function x402DataItemPricing(
       minimumEnforced: usdcAmountRequired === MINIMUM_USDC_PRICE,
     });
 
-    // Build absolute URL for the resource (required by x402 facilitator)
-    const uploadServicePublicUrl =
-      process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
-    const resourceUrl = `${uploadServicePublicUrl}/v1/x402/upload/signed`;
+    // Build absolute URL for the resource (required by x402 facilitator).
+    // Echo the request's own public hostname (allowlist-gated) so a box serving
+    // multiple hostnames quotes each its correct resource. See publicUrlForRequest.
+    const resourceUrl = `${publicUrlForRequest(ctx)}/v1/x402/upload/signed`;
 
     // USDC address from network config
     const usdcAddress = networkConfig.usdcAddress;
@@ -391,10 +392,10 @@ export async function x402RawDataPricing(
       minimumEnforced: usdcAmountRequired === MINIMUM_USDC_PRICE,
     });
 
-    // Build absolute URL for the resource (required by x402 facilitator)
-    const uploadServicePublicUrl =
-      process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
-    const resourceUrl = `${uploadServicePublicUrl}/v1/x402/upload/unsigned`;
+    // Build absolute URL for the resource (required by x402 facilitator).
+    // Echo the request's own public hostname (allowlist-gated) so a box serving
+    // multiple hostnames quotes each its correct resource. See publicUrlForRequest.
+    const resourceUrl = `${publicUrlForRequest(ctx)}/v1/x402/upload/unsigned`;
 
     // USDC address from network config
     const usdcAddress = networkConfig.usdcAddress;

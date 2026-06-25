@@ -19,6 +19,7 @@ import getRawBody from "raw-body";
 import { Stripe } from "stripe";
 
 import { KoaContext } from "../../server";
+import { resolveBodyParserLimits } from "../../utils/bodyLimits";
 import { handleDisputeCreatedEvent } from "./eventHandlers/disputeCreatedEventHandler";
 import { handlePaymentSuccessEvent } from "./eventHandlers/paymentSuccessEventHandler";
 
@@ -34,7 +35,30 @@ export async function stripeRoute(ctx: KoaContext, next: Next) {
 
   // get the webhook signature and raw body for verification
   const sig = ctx.request.headers["stripe-signature"] as string;
-  const rawBody = await getRawBody(ctx.req);
+
+  // SECURITY: this route bypasses the global koa-bodyParser (the raw body is
+  // reserved for signature verification via ctx.disableBodyParser), so the
+  // global pre-auth body-size limit does NOT apply here. Cap the raw read at the
+  // same jsonLimit (a Stripe event is the largest legitimate payload, a few
+  // hundred KB) so an unauthenticated client can't force unbounded buffering on
+  // this public endpoint before signature verification. raw-body throws 413 when
+  // the limit is exceeded.
+  let rawBody: Buffer;
+  try {
+    rawBody = await getRawBody(ctx.req, {
+      length: ctx.request.length,
+      limit: resolveBodyParserLimits().jsonLimit,
+    });
+  } catch (err: unknown) {
+    const status = (err as { status?: number })?.status === 413 ? 413 : 400;
+    logger.warn("Rejected Stripe webhook body before signature verification", {
+      status,
+      contentLength: ctx.request.length,
+    });
+    ctx.status = status;
+    ctx.response.body = status === 413 ? "Payload Too Large" : "Webhook Error!";
+    return next();
+  }
 
   let event;
 

@@ -570,11 +570,17 @@ surface.
 Steps:
 1. **DNS:** `admin.services.perma.online` A/AAAA → the bundler box.
 2. **Allowlist:** set the `allow … ; deny all;` lines in the admin `:443` block to your operator/VPN IPs.
-3. **`.env` on the box** — behind a proxy only ONE admin var is required:
+3. **`.env` on the box** — behind a proxy these admin vars apply:
    ```bash
    ADMIN_TRUST_PROXY=true   # REQUIRED behind nginx: read the real client IP from X-Forwarded-For
                             # (lockout/audit). Off by default so a directly-reachable instance
                             # can't be IP-spoofed to bypass the brute-force lockout.
+   ADMIN_SETUP_TOKEN=<openssl rand -hex 32>
+                            # REQUIRED for first-run setup behind a proxy. First-run setup is
+                            # loopback-only by default; ADMIN_TRUST_PROXY=true makes every client
+                            # look loopback, so the unauthenticated setup form is gated behind this
+                            # token (present it via the `x-admin-setup-token` header). Alternatively
+                            # pre-provision ADMIN_PASSWORD_HASH and skip first-run setup entirely.
    ```
    The rest are already correct by default — do NOT set unless overriding: `ADMIN_COOKIE_SECURE`
    defaults to Secure (HTTPS-only); `ADMIN_SESSION_SECRET` auto-derives from `PRIVATE_ROUTE_SECRET`.
@@ -589,8 +595,17 @@ Steps:
      --deploy-hook "systemctl reload nginx"
    ```
 6. **Enable TLS:** uncomment the admin `:443` block, `nginx -t && systemctl reload nginx`.
-7. **First run:** open `https://admin.services.perma.online/admin/setup` and set the admin password (hashed
-   server-side, stored as a hash only). Setup then closes.
+7. **First run:** because the dashboard is behind nginx (`ADMIN_TRUST_PROXY=true`), the unauthenticated
+   first-run setup form is gated — supply the `ADMIN_SETUP_TOKEN` from step 3 with the request, e.g.:
+   ```bash
+   curl -sS -X POST https://admin.services.perma.online/admin/setup \
+     -H "x-admin-setup-token: $ADMIN_SETUP_TOKEN" -H 'content-type: application/json' \
+     -d '{"username":"admin","password":"<a-strong-password>"}'
+   ```
+   The password is hashed server-side (Argon2id) and stored as a hash only; setup then closes. To skip
+   first-run setup entirely, pre-set `ADMIN_PASSWORD_HASH`; otherwise use the token path above (with
+   `ADMIN_TRUST_PROXY=true` the loopback/SSH-tunnel path is NOT accepted — the token is required). Then
+   sign in at `https://admin.services.perma.online/admin/login`.
 
 Notes: the session cookie is **host-only** (no `Domain`), so it never reaches sibling
 `*.services.perma.online` hosts. Renewal reuses the `:80` ACME block — keep port 80 reachable.
@@ -638,12 +653,13 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 
 ## 16. Backups
 
-- **Postgres (both DBs):** scheduled `pg_dump payment_service` + `pg_dump upload_service` to off-box storage.
-- **MinIO:** `mc mirror` the `raw-data-items` (and backup) buckets to off-box/object storage; the 90-day
-  retention means cold data only exists here until it's permanent on Arweave — back up until verified permanent.
-- **Wallets + `.env`:** encrypted, off-box. Losing `wallet.json` loses the posting identity.
+**Full procedure: `docs/operations/BACKUP_RESTORE.md`** — measured sizing, the encrypted `restic` setup +
+systemd timer, the pgBackRest/WAL scale path with PITR, and the restore drill. Summary:
 
-⚠️ No executable backup procedure exists in the repo today — author one as part of this deploy.
+- **Tier 1 — money + identity (tiny, frequent, off-box):** `payment_service` DB + `wallet.json`/`rawWallet.json` + `.env`, encrypted. Losing `wallet.json` loses the posting identity.
+- **Tier 2 — bulk, chain-reconstructible:** `upload_service` DB — `restic` nightly to start, pgBackRest/WAL incremental at scale.
+- **MinIO object bytes: do NOT back up** — permanent data is on Arweave; in-flight is re-uploadable (mirroring 1–2 TB/mo is wasteful).
+- **Capacity:** at scale `permanent_data_items` + its indexes outgrow the SSD in ~1.5–2 yr — plan partition archival (detach old half-month partitions), not just larger backups.
 
 ---
 
