@@ -996,15 +996,41 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 
 The `admin-dashboard` process ships an **opt-in Slack alerter** that mirrors the
 dashboard's health rollup — so Slack alerts match exactly what the dashboard
-shows (pipeline/wallet/payments/storage/schedulers/recent queue failures), plus
-raw Postgres/Redis/process-down liveness. It is **high-signal/low-noise**: each
-issue alerts once, reminds at most every `ALERT_REMINDER_MS` while it persists,
-and sends a single ✅ resolved message when it clears.
+shows — plus raw Postgres/Redis/process-down liveness. It uses a Slack **bot
+token** (`chat.postMessage`), not an incoming webhook, so one credential routes
+every message to channels by ID. **The bot must be invited to each channel**
+(`/invite @YourBot`) or posts fail with `not_in_channel`.
 
-It uses a Slack **bot token** (`chat.postMessage`), not an incoming webhook, so
-one credential routes both ops alerts and payment notifications to different
-channels by ID. **The bot must be invited to each channel** (`/invite @YourBot`)
-or posts fail with `not_in_channel`.
+**Message format (standardized envelope).** Every Slack message — ops alerts,
+the daily heartbeat, and payment notifications — uses one colored Slack
+attachment so they're instantly scannable:
+
+```
+▌🔴 CRITICAL · bundler-prod
+▌*PostgreSQL (upload_service) is unreachable*
+▌Error: ECONNREFUSED 127.0.0.1:5432
+▌🔎 Dashboard  ·  area: infra
+```
+
+- **Colored bar** by severity: 🔴 critical, 🟡 warning, 🟢 resolved/ok, 🔵 info.
+- **Deployment label** (`ALERT_ENV_LABEL`) on every message so you always know
+  *which* bundler it's from (e.g. `bundler-prod` vs `bundler-dev`).
+- **Footer**: an optional dashboard link (`ADMIN_DASHBOARD_URL`) + the subsystem
+  `area`.
+
+**Noise control (high-signal / low-noise).**
+- **Debounce**: liveness issues (Postgres/Redis/process down) must fail
+  `ALERT_FAILURES_BEFORE_FIRING` consecutive checks before firing, so a partial
+  restart (`pm2 restart upload-workers`) never pages. Rollup issues are already
+  age-based, so they fire on first detection.
+- **Boot grace** (`ALERT_STARTUP_GRACE_MS`): no evaluation right after start, so
+  a full stack restart settles before anything is judged.
+- **Tiered reminders**: an ongoing **critical** re-pings every `ALERT_REMINDER_MS`
+  (30 min); a **warning** only every `ALERT_WARNING_REMINDER_MS` (4 h) — lingering
+  low-severity issues don't nag. A single ✅ resolved message is sent when it clears.
+- **Daily heartbeat** (`ALERT_HEARTBEAT_HOUR`, default 09:00 local): a once-a-day
+  all-clear/digest (status, open issues, wallet AR, uploads today, bundle counts)
+  so silence is trustworthy — you know the alerter is alive. Set to `""` to disable.
 
 **Setup:**
 1. Create a Slack app with the `chat:write` (and `chat:write.customize`) bot
@@ -1015,14 +1041,21 @@ or posts fail with `not_in_channel`.
 
 ```bash
 SLACK_OAUTH_TOKEN=xoxb-...            # shared by alerter + payment notifications
-SLACK_ALERT_CHANNEL_ID=C0...          # ops/health alerts
+SLACK_ALERT_CHANNEL_ID=C0...          # ops/health alerts (also money-safety alerts)
 ALERTS_ENABLED=true                   # master switch (default off)
-# Optional tuning:
-ALERT_CHECK_INTERVAL_MS=60000         # how often to evaluate (default 60s)
-ALERT_REMINDER_MS=1800000             # re-alert cadence while still bad (default 30m)
+ALERT_ENV_LABEL=bundler-prod          # deployment label on every message
+ADMIN_DASHBOARD_URL=                  # optional: dashboard link in the footer
+# Optional tuning (defaults shown):
+ALERT_CHECK_INTERVAL_MS=60000         # how often to evaluate (60s)
+ALERT_REMINDER_MS=1800000             # critical re-alert cadence (30m)
+ALERT_WARNING_REMINDER_MS=14400000    # warning re-alert cadence (4h)
+ALERT_FAILURES_BEFORE_FIRING=2        # consecutive bad checks before a liveness alert
+ALERT_STARTUP_GRACE_MS=120000         # quiet window after boot (2m)
+ALERT_HEARTBEAT_HOUR=9                # daily digest hour, server-local ("" disables)
+ALERT_STARTUP_PING=false              # per-restart "online" ping (off; heartbeat covers it)
 ```
 
-Alert **thresholds** are the dashboard rollup's — tuned via the same
+Issue **thresholds** are the dashboard rollup's — tuned via the same
 `ADMIN_*` / `POSTED_*` vars the dashboard uses, not separate alert knobs.
 
 **Verify delivery** before relying on it:
@@ -1032,19 +1065,31 @@ node packages/admin-service/admin/notifier/test-slack.js both
 Posts a test message to the alert and top-up channels and prints the exact Slack
 result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 
-> **Payment top-up notifications** reuse the same bot token. Set
+> **Payment notifications** reuse the same bot token. Set
 > `SLACK_TURBO_TOP_UP_CHANNEL_ID` and both crypto and x402 (USDC) top-ups post to
-> that channel automatically (skipped only when `NODE_ENV=dev`). Stripe payments
-> notify via Stripe directly. See the **Payments & Credits** section.
+> that channel automatically (skipped only when `NODE_ENV=dev`). **Money-safety
+> alerts** raised by the payment service — an admin-credit-tool failure, or a
+> Stripe payment that was charged but could be **neither credited nor refunded**
+> (manual refund required) — post to the **alert channel** as CRITICAL. Stripe's
+> own success/refund receipts come from Stripe directly.
 
-**Recommended alerts (what the built-in alerter already covers):**
-1. **Service down** - Health check failure
-2. **Queue backlog** - >1000 jobs pending
-3. **Failed uploads** - Error rate >5%
-4. **Database errors** - Connection failures
-5. **Disk space** - <10% free
-6. **Worker failures** - Worker restarts >5/hour
-7. **Bundle posting failures** - >10% failure rate
+**What the alerter actually covers** (the live rollup signals — not a generic list):
+- **Services/infra down**: any expected PM2 process missing/unhealthy; Postgres
+  (×2), Redis (×2), MinIO unreachable.
+- **Pipeline / data-safety**: unbundled backlog aging; bundles stuck posted
+  (seeding failing); failed bundles; **bundles seeded but not reaching permanent**
+  (verify pileup); the `plan-bundle` scheduler not registered.
+- **Money-safety**: bundle wallet empty/low; crypto payments uncredited & aging;
+  **x402-paid uploads not finalized**; failed crypto payments; the payment-service
+  money-path criticals above.
+- **Storage**: MinIO down; disk ≥80% (warn) / ≥90% (crit).
+- **Queues**: recent (last-hour) failure rate ≥10 (warn) / ≥50 (crit), with the
+  **offending queues named** (e.g. `optical-post: 9, verify-bundle: 5`) — this is
+  how optical-post/broadcast-chunks failures (no DB signal) surface.
+
+> Not yet alerted (known follow-ups): chargebacks/failed-top-up-quotes counts,
+> DB connection-pool saturation, Redis memory pressure, RAW-signer wallet health,
+> and a direct gateway/optical reachability probe.
 
 **Example: external uptime monitoring (complements the Slack alerter)**
 ```bash

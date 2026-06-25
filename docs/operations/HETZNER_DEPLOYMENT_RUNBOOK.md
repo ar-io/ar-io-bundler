@@ -271,13 +271,17 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
 - **Prod basics:** `NODE_ENV=production`, `REQUEST_TIMEOUT_MS=600000` (10 GiB uploads), worker concurrencies,
   `API_INSTANCES`/`WORKER_INSTANCES`, `RATE_LIMIT_*`, `OTEL_*`, `PROMETHEUS_PORT=9090`.
 - **Slack notifications (optional but recommended):** one Slack **bot token** (`chat.postMessage`, not a
-  webhook) drives both ops alerts and payment notifications. Set `SLACK_OAUTH_TOKEN` (xoxb), then:
+  webhook) drives ops alerts, the daily heartbeat, and payment notifications — all in one standardized
+  colored, deployment-labeled envelope. Set `SLACK_OAUTH_TOKEN` (xoxb), then:
   `SLACK_ALERT_CHANNEL_ID` + `ALERTS_ENABLED=true` for the admin-dashboard **health alerter** (mirrors the
-  dashboard health rollup; tune with `ALERT_CHECK_INTERVAL_MS`/`ALERT_REMINDER_MS`), and
-  `SLACK_TURBO_TOP_UP_CHANNEL_ID` for **top-up notifications** (crypto + x402 USDC). ⚠️ **invite the bot to each
-  channel** (`/invite @YourBot`) or posts fail with `not_in_channel`. Verify with
+  dashboard health rollup + money-safety alerts), and `SLACK_TURBO_TOP_UP_CHANNEL_ID` for **top-up
+  notifications** (crypto + x402 USDC). 🔴 **Set `ALERT_ENV_LABEL=bundler-prod`** so every alert is tagged with
+  the deployment (critical when dev + prod share a workspace). Optional: `ADMIN_DASHBOARD_URL` (footer link),
+  and tuning `ALERT_REMINDER_MS`(crit 30m)/`ALERT_WARNING_REMINDER_MS`(warn 4h)/`ALERT_FAILURES_BEFORE_FIRING`
+  (anti-flap)/`ALERT_STARTUP_GRACE_MS`/`ALERT_HEARTBEAT_HOUR`(daily digest, default 09:00). ⚠️ **invite the bot
+  to each channel** (`/invite @YourBot`) or posts fail with `not_in_channel`. Verify with
   `node packages/admin-service/admin/notifier/test-slack.js both` before go-live. (Top-ups are skipped only when
-  `NODE_ENV=dev`, so prod posts them automatically; Stripe notifies via Stripe directly.)
+  `NODE_ENV=dev`, so prod posts them automatically; Stripe's own receipts come from Stripe directly.)
 - **Vertical-integration + pricing vars (from backport lanes — defaults preserve old behavior):**
   - `PRICE_ORACLE_GATEWAY_URL` — Arweave byte-price oracle gateway (Lane 3; default `https://arweave.net/price`).
     **Set this to your own gateway** (e.g. `http://localhost:3000/price` / `https://turbo-gateway.com/price`).

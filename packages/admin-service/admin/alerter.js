@@ -46,7 +46,7 @@
  */
 
 const { getStats } = require("./statsCollector");
-const { sendAlert, sendSlackMessage, sendHeartbeat, isConfigured } = require("./notifier/slack");
+const { sendAlert, sendHeartbeat, isConfigured } = require("./notifier/slack");
 
 // Raw datastore liveness the rollup doesn't check (down => CRITICAL).
 const INFRA_LABELS = {
@@ -320,11 +320,13 @@ function startAlerter(queues = []) {
     )}m · heartbeat ${config.heartbeatHour === null ? "off" : config.heartbeatHour + ":00"})`
   );
   // Per-restart startup ping is OFF by default (noisy on restarts); the daily
-  // heartbeat is the trustworthy "alerter is alive" signal instead.
+  // heartbeat is the trustworthy "alerter is alive" signal instead. Uses the
+  // standard envelope for consistency with every other alert.
   if (config.startupPing) {
-    sendSlackMessage({
-      message: `:satellite: *Bundler health alerter online* — mirroring the admin dashboard health rollup.`,
-      icon_emoji: ":satellite:",
+    sendAlert({
+      severity: "info",
+      title: "Health alerter online",
+      detail: "Mirroring the admin dashboard health rollup.",
     }).catch(() => {});
   }
 

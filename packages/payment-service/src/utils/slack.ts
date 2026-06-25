@@ -32,6 +32,17 @@ export const slackChannels = {
   admin: process.env.SLACK_TURBO_ADMIN_CHANNEL_ID,
   topUp: process.env.SLACK_TURBO_TOP_UP_CHANNEL_ID,
   arnsBuys: process.env.SLACK_TURBO_ARNS_BUYS_CHANNEL_ID,
+  // Ops/health alert channel (same one the admin-service alerter posts to) so a
+  // devops admin sees money-safety alerts alongside infra alerts.
+  alert: process.env.SLACK_ALERT_CHANNEL_ID,
+};
+
+// Severity → emoji / header label / attachment bar color (matches the admin
+// notifier palette) for operational alerts raised from the payment service.
+const ALERT_SEVERITY = {
+  critical: { emoji: ":red_circle:", label: "CRITICAL", color: "#D00000" },
+  warning: { emoji: ":large_yellow_circle:", label: "WARNING", color: "#E6A100" },
+  info: { emoji: ":information_source:", label: "INFO", color: "#2D9CDB" },
 };
 
 // Deployment label stamped on every message so an admin always knows the source
@@ -114,6 +125,30 @@ export const sendSlackMessage = async ({
   } catch (error) {
     globalLogger.error(`slack message delivery failed`, error);
   }
+};
+
+/**
+ * Send a standardized operational alert from the payment service (same colored
+ * envelope + deployment label as the admin-service alerter). Defaults to the ops
+ * alert channel so money-safety alerts land alongside infra alerts.
+ */
+export const sendAdminAlert = async ({
+  severity = "warning",
+  title,
+  detail,
+  channel,
+}: {
+  severity?: "critical" | "warning" | "info";
+  title: string;
+  detail?: string;
+  channel?: string;
+}) => {
+  const sev = ALERT_SEVERITY[severity] ?? ALERT_SEVERITY.warning;
+  return sendSlackMessage({
+    channel: channel ?? slackChannels.alert ?? slackChannels.admin,
+    icon_emoji: sev.emoji,
+    attachments: [buildEnvelope({ ...sev, title, detail })],
+  });
 };
 
 export const sendCryptoFundSlackMessage = async ({

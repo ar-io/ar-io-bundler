@@ -24,7 +24,7 @@ import { MetricRegistry } from "../metricRegistry";
 import { AdminCreditJobData } from "../queues/producers";
 import { createRedisConnection } from "../queues/config";
 import { isValidUserAddress } from "../utils/base64";
-import { sendSlackMessage } from "../utils/slack";
+import { sendAdminAlert } from "../utils/slack";
 
 class AdminCreditToolInputError extends Error {
   constructor(message: string) {
@@ -96,12 +96,11 @@ export function createAdminCreditWorker(): Worker {
       } catch (error) {
         MetricRegistry.adminCreditToolJobFailure.inc();
 
-        // Send Slack notification for failures
-        await sendSlackMessage({
-          message: `Error processing admin credit tool message:\n${
-            error instanceof Error ? error.message : error
-          }`,
-          icon_emoji: ":x:",
+        // Critical money-path failure → standardized red alert.
+        await sendAdminAlert({
+          severity: "critical",
+          title: "Admin credit tool failed",
+          detail: error instanceof Error ? error.message : String(error),
         });
 
         jobLogger.error("Admin credit job failed", {

@@ -22,6 +22,7 @@ import { Architecture } from "../../../architecture";
 import globalLogger from "../../../logger";
 import { MetricRegistry } from "../../../metricRegistry";
 import { triggerEmail } from "../../../triggerEmail";
+import { sendAdminAlert } from "../../../utils/slack";
 import { handleArNSPurchaseEvent } from "./arnsEventHandler";
 
 export async function handlePaymentSuccessEvent(
@@ -98,6 +99,16 @@ export async function refundPayment(
   } catch (error) {
     logger.error("⛔️ Payment refund has failed!");
     logger.error(error);
+    // Money-safety hard gate: we took the customer's money, failed to credit it,
+    // AND failed to refund it. It's now stuck — raise a CRITICAL alert so an
+    // operator can refund manually. Best-effort; never throws into the handler.
+    await sendAdminAlert({
+      severity: "critical",
+      title: "Stripe payment NOT credited and refund FAILED — manual refund required",
+      detail: `Payment intent: ${paymentIntentId}\nError: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    }).catch(() => undefined);
   }
 }
 
