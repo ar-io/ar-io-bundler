@@ -15,6 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 // import cors from "@koa/cors"; // CORS handled by nginx
+import type { Server as HttpServer } from "node:http";
+
 import Koa, { DefaultState, Next, ParameterizedContext } from "koa";
 import bodyParser from "koa-bodyparser";
 import jwt from "koa-jwt";
@@ -71,6 +73,64 @@ process.on("uncaughtException", (error) => {
 // registered inside createServer() once the http server handle exists, so
 // `pm2 reload` is drop-free. Do not add bare process.exit(0) handlers here —
 // they would fire first and skip the drain.
+
+// Registered-once graceful shutdown used by createServer(). On SIGTERM/SIGINT
+// (pm2 cluster reload sends SIGINT to the OLD instance once the new one is
+// listening) it stops accepting new connections, lets in-flight requests finish,
+// then exits — so `pm2 reload` drops zero in-flight requests. Bounded by
+// SHUTDOWN_DRAIN_MS (validated; default 4s; MUST stay under the 5s pm2
+// kill_timeout or the OS SIGKILLs the drain mid-flight). The logger is flushed
+// before exit so the final line is actually written (a bare process.exit() races
+// winston's async file transport and silently drops it). Handlers are bound once
+// even if createServer() is called repeatedly (e.g. in tests).
+let drainServer: HttpServer | undefined;
+let drainHandlersBound = false;
+let draining = false;
+function registerGracefulShutdown(server: HttpServer, log: Logger): void {
+  drainServer = server; // always drain the latest server instance
+  if (drainHandlersBound) return;
+  drainHandlersBound = true;
+
+  let finalizing = false;
+  const finalize = (level: "info" | "warn", message: string) => {
+    if (finalizing) return;
+    finalizing = true;
+    log[level](message);
+    let exited = false;
+    const exit = () => {
+      if (exited) return;
+      exited = true;
+      process.exit(0);
+    };
+    log.on("finish", exit);
+    log.end(); // flush winston transports, then 'finish' fires → exit
+    setTimeout(exit, 1000).unref(); // backstop if 'finish' never fires
+  };
+
+  const drainAndExit = (signal: string) => {
+    if (draining) return;
+    draining = true;
+    const parsed = Number(process.env.SHUTDOWN_DRAIN_MS);
+    const drainMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
+    log.info(
+      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`
+    );
+    const force = setTimeout(
+      () => finalize("warn", "Drain timeout exceeded — forcing exit."),
+      drainMs
+    );
+    force.unref();
+    drainServer?.close(() => {
+      clearTimeout(force);
+      finalize("info", "HTTP server closed — exiting cleanly.");
+    });
+    // Drop idle keep-alive sockets so server.close() can complete promptly.
+    drainServer?.closeIdleConnections?.();
+  };
+
+  process.on("SIGTERM", () => drainAndExit("SIGTERM"));
+  process.on("SIGINT", () => drainAndExit("SIGINT"));
+}
 
 export async function createServer(
   arch: Partial<Architecture>,
@@ -257,34 +317,8 @@ export async function createServer(
     headersTimeout,
   });
 
-  // Graceful shutdown so `pm2 reload` (rolling restart) drops zero in-flight
-  // requests: stop accepting new connections, let active requests finish, then
-  // exit. PM2 cluster reload sends SIGINT to the old instance once the new one is
-  // listening; SIGTERM covers stop/restart. Bounded by SHUTDOWN_DRAIN_MS (default
-  // 4s, under payment-service's kill_timeout) with a forced exit. Replaces the
-  // bare process.exit(0) handlers that dropped in-flight requests on every reload.
-  let shuttingDown = false;
-  const drainAndExit = (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    const drainMs = Number(process.env.SHUTDOWN_DRAIN_MS ?? 4000);
-    logger.info(
-      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`
-    );
-    const force = setTimeout(() => {
-      logger.warn("Drain timeout exceeded — forcing exit.");
-      process.exit(0);
-    }, drainMs);
-    force.unref();
-    server.close(() => {
-      clearTimeout(force);
-      logger.info("HTTP server closed — exiting cleanly.");
-      process.exit(0);
-    });
-    server.closeIdleConnections?.();
-  };
-  process.on("SIGTERM", () => drainAndExit("SIGTERM"));
-  process.on("SIGINT", () => drainAndExit("SIGINT"));
+  // Graceful drain on reload/shutdown (see registerGracefulShutdown above).
+  registerGracefulShutdown(server, logger);
 
   return server;
 }

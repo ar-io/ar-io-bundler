@@ -39,8 +39,15 @@ cd "$PROJECT_ROOT"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 ECOSYSTEM="ecosystem.config.js"   # root shim → infrastructure/pm2/ecosystem.config.js
 CLUSTER_APPS="upload-api,payment-service"
-UPLOAD_HEALTH="http://localhost:${UPLOAD_SERVICE_PORT:-3001}/v1/info"
-PAYMENT_HEALTH="http://localhost:${PAYMENT_SERVICE_PORT:-4001}/v1/info"
+
+# Resolve the API ports the way the RELOAD will (from .env, which the ecosystem
+# env_file applies), not just the deploy shell's environment — otherwise the
+# post-reload health gate can probe the wrong port. Order: .env → shell env → default.
+env_val() { grep -E "^$1=" "$PROJECT_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"' "; }
+UPLOAD_PORT="$(env_val UPLOAD_SERVICE_PORT)"; UPLOAD_PORT="${UPLOAD_PORT:-${UPLOAD_SERVICE_PORT:-3001}}"
+PAYMENT_PORT="$(env_val PAYMENT_SERVICE_PORT)"; PAYMENT_PORT="${PAYMENT_PORT:-${PAYMENT_SERVICE_PORT:-4001}}"
+UPLOAD_HEALTH="http://localhost:${UPLOAD_PORT}/v1/info"
+PAYMENT_HEALTH="http://localhost:${PAYMENT_PORT}/v1/info"
 
 API_ONLY=false
 DO_BUILD=true
@@ -64,8 +71,33 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 command -v pm2 >/dev/null 2>&1 || { echo -e "${RED}✗${NC} pm2 not on PATH (run as the deploy user that owns the daemon)."; exit 1; }
 
-# Must already be running — reload is for an UP stack, not a cold start.
-if ! pm2 jlist 2>/dev/null | grep -q '"name":"upload-api"'; then
+# Must already be running AND online — reload is for an UP stack, not a cold start
+# (and not a crashed one). Count online instances per app; if node is unavailable,
+# fall back to a presence-only check.
+online_count() { # $1 = app name → number of instances in 'online' status
+  pm2 jlist 2>/dev/null | node -e '
+    let d = [];
+    try { d = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { process.exit(0); }
+    const name = process.argv[1];
+    process.stdout.write(String(
+      d.filter((p) => p.name === name && p.pm2_env && p.pm2_env.status === "online").length
+    ));
+  ' "$1" 2>/dev/null || echo 0
+}
+if command -v node >/dev/null 2>&1; then
+  up_online="$(online_count upload-api)"; pay_online="$(online_count payment-service)"
+  if [ "${up_online:-0}" -lt 1 ] || [ "${pay_online:-0}" -lt 1 ]; then
+    echo -e "${RED}✗${NC} cluster APIs are not online under this pm2 daemon (upload-api online=${up_online:-0}, payment-service online=${pay_online:-0})."
+    echo "   This is a rolling reload of an UP stack, not a cold start / crash recovery."
+    echo "   Use ./scripts/start.sh, or check you are the deploy user that owns the daemon."
+    exit 1
+  fi
+  # Zero-downtime requires a cluster peer to hold the socket while one instance reloads.
+  if [ "$up_online" -lt 2 ] || [ "$pay_online" -lt 2 ]; then
+    echo -e "${YELLOW}⚠${NC}  a cluster app has <2 online instances (upload-api=$up_online, payment-service=$pay_online)."
+    echo "    The rolling reload will have a brief gap — set API_INSTANCES>=2 for true zero-downtime."
+  fi
+elif ! pm2 jlist 2>/dev/null | grep -q '"name":"upload-api"'; then
   echo -e "${RED}✗${NC} upload-api is not running under this pm2 daemon."
   echo "   This is a reload, not a cold start. Use ./scripts/start.sh, or check you are the deploy user."
   exit 1

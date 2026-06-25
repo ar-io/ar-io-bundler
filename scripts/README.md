@@ -141,8 +141,41 @@ sudo ./scripts/setup-pm2-startup.sh
 
 ---
 
+### `deploy.sh`
+**Rolling, zero client-facing-downtime deploy** of code and/or `.env` changes onto an
+already-running stack. The preferred way to ship updates.
+
+**Options:**
+- Default: builds `payment-service` + `upload-service`, then rolling-reloads all apps
+- `--api-only`: reload only the cluster APIs (`upload-api`, `payment-service`); leave workers running
+- `--no-build`: skip `yarn build` and reload the existing `lib/` artifacts
+
+**Usage:**
+```bash
+./scripts/deploy.sh                 # build all + rolling reload
+./scripts/deploy.sh --api-only      # APIs only
+./scripts/deploy.sh --no-build      # reload prebuilt artifacts
+```
+
+**What it does:**
+- `pm2 reload`s the **cluster** APIs one instance at a time — the cluster master holds the
+  listening socket, so nginx never sees a refused connection (**no client outage**)
+- Passes the ecosystem file + `--update-env`, so `.env` changes are re-read (a bare
+  `pm2 reload <name>` would not)
+- Restarts the **fork** apps (`upload-workers`, `payment-workers`, `admin-dashboard`) —
+  safe and client-invisible: SIGTERM drains gracefully and BullMQ jobs persist in Redis
+- Pre-flight (`.env`, pm2 up under the invoking user, infra) + a 30×1s post-reload health gate
+- **Never** triggers or mutates any BullMQ queue
+
+**Requirements:** run as the pm2 daemon owner; zero-downtime needs `API_INSTANCES` ≥ 2;
+for first boot / infra down use `start.sh` instead. Keep `SHUTDOWN_DRAIN_MS` (API drain,
+default 4s) under the 5s pm2 `kill_timeout`.
+
+---
+
 ### `restart.sh`
-**Restarts services** with optional Docker infrastructure restart.
+**Hard-restarts services** (`pm2 restart all`) with optional Docker infrastructure restart.
+This causes a **brief API outage** — for routine code/`.env` updates prefer `deploy.sh`.
 
 **Options:**
 - Default: Restarts only PM2 services (fast restart)
@@ -428,7 +461,7 @@ pm2 logs upload-workers
 curl http://localhost:3001/v1/tx/status/YOUR_DATA_ITEM_ID
 ```
 
-### Deployment / Updates
+### Deployment / Updates (rolling, zero client-facing downtime)
 ```bash
 # 1. Pull latest code
 git pull
@@ -436,18 +469,20 @@ git pull
 # 2. Install dependencies
 yarn install
 
-# 3. Run migrations
+# 3. Run migrations (if any)
 ./scripts/migrate-all.sh
 
-# 4. Rebuild services
-yarn build
+# 4. Build + rolling-reload onto the new code with no API outage.
+#    deploy.sh builds payment+upload, then pm2 reloads the cluster APIs one
+#    instance at a time and restarts the fork workers (jobs resume from Redis).
+#    --update-env re-reads .env. (Run as the pm2 daemon owner; needs API_INSTANCES >= 2.)
+./scripts/deploy.sh
 
-# 5. Restart services
-./scripts/restart.sh
-
-# 6. Verify health
+# 5. Verify health (deploy.sh also runs its own post-reload health gate)
 ./scripts/verify.sh
 ```
+> First boot or infra down? Use `./scripts/start.sh` instead of `deploy.sh`.
+> Need a full hard cycle? `./scripts/restart.sh` (brief API outage).
 
 ### Troubleshooting Services
 ```bash

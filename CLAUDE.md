@@ -48,9 +48,14 @@ the fork workers (safe: graceful SIGTERM + Redis-persisted jobs resume mid-fligh
 ```
 Use the old hard-restart path (`./scripts/stop.sh --services-only && ./scripts/start.sh`)
 only for **first boot or when Docker infra is down** — it has a brief outage window.
-The APIs implement a graceful drain (`SHUTDOWN_DRAIN_MS`, default 4s) so the rolling
-reload drops zero in-flight requests; single box, so this is the zero-downtime
-ceiling (no blue-green without a second node behind the LB).
+The APIs implement a graceful drain (`SHUTDOWN_DRAIN_MS`, default 4s — keep it **under**
+the 5s pm2 `kill_timeout`, else a slow drain is SIGKILLed) so the rolling reload drops
+zero in-flight requests. **Zero-downtime requires `API_INSTANCES` ≥ 2** (a cluster peer
+must hold the socket while one instance reloads); with a single instance the reload has a
+gap. The fork workers (`upload-workers`, `payment-workers`, `admin-dashboard`) hard-restart
+on a full `deploy.sh`, but that's loss-free (BullMQ jobs persist in Redis) and
+client-invisible. Single box, so this is the zero-downtime ceiling (no blue-green without
+a second node behind the LB).
 
 ## Common Commands
 
