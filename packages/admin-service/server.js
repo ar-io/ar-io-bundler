@@ -231,6 +231,20 @@ router.get('/admin/login', async (ctx) => {
 // First-run setup page (only when no credential exists yet).
 router.get('/admin/setup', async (ctx) => {
   if (!sessionAuth.isSetupMode()) { ctx.redirect('/admin/login'); return; }
+  // Only serve the form to clients permitted to POST it; otherwise the page
+  // would just lead to a 403 (and we avoid presenting a setup form to a remote
+  // client that cannot legitimately complete first-run provisioning).
+  const access = sessionAuth.isSetupRequestAllowed(ctx, {});
+  if (!access.ok) {
+    ctx.status = 403;
+    ctx.type = 'text';
+    ctx.body =
+      'First-run admin setup is restricted.\n\n' +
+      'Complete setup from the host over loopback (e.g. an SSH tunnel to this port),\n' +
+      'set ADMIN_SETUP_TOKEN and POST /admin/setup with the x-admin-setup-token header,\n' +
+      'or pre-provision ADMIN_PASSWORD / ADMIN_PASSWORD_HASH in .env.\n';
+    return;
+  }
   ctx.type = 'html';
   ctx.body = fs.createReadStream(SETUP_HTML_PATH);
 });
@@ -244,6 +258,20 @@ router.post('/admin/setup', async (ctx) => {
     return;
   }
   const body = await readJsonBody(ctx);
+  // Gate the unauthenticated first-run setup to the operator: loopback-only by
+  // default, or a matching ADMIN_SETUP_TOKEN. Without this, the first network
+  // client to reach the port during setup mode could claim admin ownership.
+  const access = sessionAuth.isSetupRequestAllowed(ctx, body);
+  if (!access.ok) {
+    console.warn(`⛔ Blocked first-run admin setup from ${ctx.ip} (${access.reason}) at ${new Date().toISOString()}`);
+    ctx.status = 403;
+    ctx.body = {
+      error: 'First-run setup is not permitted from this client',
+      reason: access.reason,
+      help: 'Run setup from the host over loopback (e.g. an SSH tunnel), set ADMIN_SETUP_TOKEN and present it via the x-admin-setup-token header, or pre-provision ADMIN_PASSWORD / ADMIN_PASSWORD_HASH in .env.',
+    };
+    return;
+  }
   const { username, password } = body || {};
   const result = await sessionAuth.setupCredential(username, password);
   if (!result.ok) {

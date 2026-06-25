@@ -36,6 +36,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const { argon2id, argon2Verify } = require('hash-wasm');
 
@@ -79,6 +80,20 @@ const LOCKOUT_MS = parseInt(
   process.env.ADMIN_LOCKOUT_MS || String(15 * 60 * 1000), // 15 minutes
   10
 );
+
+// First-run setup is UNAUTHENTICATED by nature (it creates the very first admin
+// credential), so it must be gated to the operator or the first network client
+// to reach the port could claim admin ownership. Two gates:
+//   - ADMIN_SETUP_TOKEN: when set, a matching token (header x-admin-setup-token
+//     or JSON body `setupToken`) authorizes setup from anywhere — the explicit
+//     operator-secret path for proxied/remote deployments.
+//   - otherwise: setup is permitted only from a loopback peer (the documented
+//     SSH-tunnel / localhost admin model). A trusted reverse proxy makes every
+//     remote client's socket look loopback, so when ADMIN_TRUST_PROXY is on we
+//     can no longer treat socket-loopback as proof of locality — a token (or
+//     env-provisioned credential) is then required.
+const ADMIN_SETUP_TOKEN = process.env.ADMIN_SETUP_TOKEN || '';
+const ADMIN_TRUST_PROXY = process.env.ADMIN_TRUST_PROXY === 'true';
 
 // ---------------------------------------------------------------------------
 // Password hashing (scrypt)
@@ -140,6 +155,51 @@ function isConfigured() {
 /** True when NO credential exists yet — the dashboard is awaiting first-run setup. */
 function isSetupMode() {
   return !isConfigured();
+}
+
+/** Normalize an IPv4-mapped IPv6 address (`::ffff:127.0.0.1` → `127.0.0.1`). */
+function normalizeAddr(addr) {
+  if (typeof addr !== 'string') return '';
+  return addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+}
+
+/** True for IPv4 (127.0.0.0/8) or IPv6 (::1) loopback addresses. */
+function isLoopbackAddr(addr) {
+  const a = normalizeAddr(addr);
+  if (a === '::1') return true;
+  if (net.isIPv4(a)) return a.startsWith('127.');
+  return false;
+}
+
+/** Whether a first-run setup token is configured (gates remote setup). */
+function hasSetupToken() {
+  return Boolean(ADMIN_SETUP_TOKEN);
+}
+
+/**
+ * Decide whether an UNAUTHENTICATED first-run setup request may create the admin
+ * credential. Callers must only invoke this while `isSetupMode()` is true.
+ * Returns { ok: boolean, reason?: string }. See the ADMIN_SETUP_TOKEN /
+ * ADMIN_TRUST_PROXY notes above for the gating rationale.
+ */
+function isSetupRequestAllowed(ctx, body) {
+  if (ADMIN_SETUP_TOKEN) {
+    const headerToken = (ctx && typeof ctx.get === 'function') ? ctx.get('x-admin-setup-token') : '';
+    const bodyToken = (body && typeof body.setupToken === 'string') ? body.setupToken : '';
+    const presented = headerToken || bodyToken;
+    if (presented && timingSafeStringEqual(presented, ADMIN_SETUP_TOKEN)) {
+      return { ok: true };
+    }
+    return { ok: false, reason: 'invalid_or_missing_setup_token' };
+  }
+  // No token configured: a reverse proxy in front makes socket-loopback
+  // meaningless as a locality signal, so require the token (or env credential).
+  if (ADMIN_TRUST_PROXY) {
+    return { ok: false, reason: 'proxy_requires_setup_token' };
+  }
+  const addr = ctx && ctx.req && ctx.req.socket ? ctx.req.socket.remoteAddress : '';
+  if (isLoopbackAddr(addr)) return { ok: true };
+  return { ok: false, reason: 'remote_setup_not_allowed' };
 }
 
 /** Whether a credential is provisioned via the env override (vs the first-run file). */
@@ -342,6 +402,9 @@ module.exports = {
   verifyCredentials,
   isConfigured,
   isSetupMode,
+  isLoopbackAddr,
+  hasSetupToken,
+  isSetupRequestAllowed,
   configuredViaEnv,
   setupCredential,
   currentUsername,
