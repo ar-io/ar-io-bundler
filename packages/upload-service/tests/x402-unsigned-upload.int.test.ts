@@ -60,7 +60,7 @@ function buildPaymentHeader(
   const paymentPayload = {
     x402Version: 1,
     scheme: "exact",
-    network: overrides.network ?? "base-sepolia",
+    network: overrides.network ?? "base",
     payload: {
       signature: "0x" + "1234567890abcdef".repeat(8) + "12",
       authorization: {
@@ -84,7 +84,16 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
   let arweaveGateway: ArweaveGateway;
 
   before(async () => {
-    x402Service = new X402Service(x402Networks);
+    // Deterministic enabled/disabled flags so the disabled-network regression
+    // test doesn't depend on ambient X402_*_ENABLED env: `base` is enabled (the
+    // happy paths use it) and `base-sepolia` is DISABLED (the testnet that must
+    // not be usable in production).
+    const testNetworks = {
+      ...x402Networks,
+      base: { ...x402Networks.base, enabled: true },
+      "base-sepolia": { ...x402Networks["base-sepolia"], enabled: false },
+    };
+    x402Service = new X402Service(testNetworks);
     arweaveGateway = new ArweaveGateway({
       endpoint: new URL("http://localhost:1984"),
     });
@@ -260,6 +269,45 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     );
   });
 
+  it("returns 400 for a DISABLED network and never verifies/settles (security regression)", async () => {
+    // Regression for the disabled-network payment bypass: getNetworkConfig()
+    // returns disabled configs too, so the paid path must reject a disabled
+    // network (e.g. base-sepolia testnet, off in prod) BEFORE verify/settle.
+    // Otherwise an attacker could settle a testnet USDC authorization and get a
+    // server-signed data item + receipt.
+    stub(arweaveGateway, "getWinstonPriceForByteCount").resolves(W("100000"));
+    stub(x402PricingOracle, "getUSDCForWinston").resolves("5000");
+
+    // If the gate works these are never reached; stub them so a regression
+    // (settlement on a disabled network) is caught by the not-called assertions.
+    const verifyStub = stub(x402Service, "verifyPayment").resolves({
+      isValid: true,
+    });
+    const settleStub = stub(x402Service, "settlePayment").resolves({
+      success: true,
+      transactionHash: "0x" + "1234".repeat(16),
+      network: "base-sepolia",
+    });
+
+    const body = Buffer.from("attacker pays with disabled testnet USDC");
+    const response = await axios.post(unsignedUrl, body, {
+      headers: {
+        "Content-Type": octetStreamContentType,
+        "Content-Length": body.length.toString(),
+        "X-PAYMENT": buildPaymentHeader({ network: "base-sepolia" }),
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+
+    expect(response.status).to.equal(400);
+    expect(verifyStub.called, "verifyPayment must NOT run for a disabled network")
+      .to.be.false;
+    expect(settleStub.called, "settlePayment must NOT run for a disabled network")
+      .to.be.false;
+  });
+
   it("returns 201 with a signed receipt and X-Payment-Response header on success", async () => {
     // Deterministic pricing/gateway so the test never touches a live gateway.
     stub(arweaveGateway, "getWinstonPriceForByteCount").resolves(W("100000"));
@@ -276,7 +324,7 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     stub(x402Service, "settlePayment").resolves({
       success: true,
       transactionHash: txHash,
-      network: "base-sepolia",
+      network: "base",
     });
 
     const body = Buffer.from("unsigned raw data for happy-path upload");
@@ -311,7 +359,7 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     );
     expect(decoded).to.have.property("paymentId");
     expect(decoded).to.have.property("transactionHash", txHash);
-    expect(decoded).to.have.property("network", "base-sepolia");
+    expect(decoded).to.have.property("network", "base");
     expect(decoded).to.have.property("mode", "payg");
   });
 });
