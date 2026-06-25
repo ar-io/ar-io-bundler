@@ -90,7 +90,10 @@ describe("Router tests", function () {
           // cspell:disable
           arweave: "8wgRDgvYOrtSaWEIV21g0lTuWDUnTu4_iYj4hmA7PI0", //cspell:enable
         },
-        freeUploadLimitBytes: 517120,
+        // /v1/info now advertises the free limit only when it is actually
+        // honored (ALLOW_ARFS_DATA). The test env leaves it off, so the honest
+        // advertised value is 0 (not the raw 517120 size threshold).
+        freeUploadLimitBytes: 0,
         gateway: "https://arweave.net",
         gateways: ["https://arweave.net"],
       });

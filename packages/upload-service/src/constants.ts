@@ -85,6 +85,18 @@ export const freeUploadLimitBytes = +(
 ); // Extra to account for the header sizes
 
 export const allowArFSData = process.env.ALLOW_ARFS_DATA === "true";
+
+// What /v1/info should advertise as the free-upload size limit. The general free
+// tier is only actually granted when ALLOW_ARFS_DATA is enabled (see
+// PaymentService.checkBalanceForDataInternal) — `freeUploadLimitBytes` alone is
+// just the size threshold. Advertising 0 when the free tier is off keeps /v1/info
+// honest: clients never see a free allowance the service will then reject for
+// payment. (Allow-listed addresses are a separate per-address grant, not a public
+// free tier, so they don't change the advertised number.)
+export const advertisedFreeUploadLimitBytes = allowArFSData
+  ? freeUploadLimitBytes
+  : 0;
+
 export const gatewayUrl = new URL(
   process.env.ARWEAVE_GATEWAY || "https://arweave.net:443",
 );

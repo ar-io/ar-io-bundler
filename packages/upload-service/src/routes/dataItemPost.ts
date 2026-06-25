@@ -494,7 +494,27 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
       await removeFromInFlight({ dataItemId, cacheService, logger });
 
-      // Get x402 payment requirements from payment service
+      // Payment IS required (no free allowance, no balance, no X-PAYMENT). The
+      // correct signal is 402 Payment Required — NOT 503. Even when we can't hand
+      // back full x402 requirements (payment method not configured, or the x402
+      // price endpoint erroring), the service itself is up; a 503 "unavailable"
+      // misleads the client and hides the real cause (the address simply has to
+      // pay). So we always return 402 here: with the x402 requirements when we can
+      // produce them, or a clear payment-required message when we can't (logged
+      // loudly for ops either way).
+      const respondPaymentRequired = (detail: string) => {
+        ctx.status = 402;
+        ctx.set("X-Payment-Required", "x402-1");
+        ctx.set("Content-Type", "application/json");
+        ctx.body = {
+          error: "Payment required",
+          message:
+            "This upload requires payment: this address has no free allowance or sufficient balance for it. " +
+            detail,
+          byteCount: rawContentLength,
+        };
+      };
+
       try {
         const x402Requirements = await paymentService.getX402PriceQuote({
           byteCount: rawContentLength,
@@ -502,35 +522,42 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
           signatureType,
         });
 
-        if (!x402Requirements) {
-          errorResponse(ctx, {
-            status: 503,
-            errorMessage: "Payment service unavailable",
+        if (x402Requirements) {
+          // x402-compliant 402 response with full payment requirements
+          ctx.status = 402;
+          ctx.set("X-Payment-Required", "x402-1");
+          ctx.set("Content-Type", "application/json");
+          ctx.body = x402Requirements;
+
+          logger.info("Returned 402 Payment Required with x402 requirements", {
+            dataItemId,
+            byteCount: rawContentLength,
+            nativeAddress,
           });
           return next();
         }
 
-        // x402-compliant 402 response
-        ctx.status = 402;
-        ctx.set("X-Payment-Required", "x402-1");
-        ctx.set("Content-Type", "application/json");
-        ctx.body = x402Requirements;
-
-        logger.info("Returned 402 Payment Required with x402 requirements", {
+        // Quote unavailable (no payment-service URL, or a non-200/non-5xx
+        // response): x402 isn't offered for this request. Still a 402, not a 503.
+        logger.warn("x402 price quote unavailable; returning 402 payment-required", {
           dataItemId,
           byteCount: rawContentLength,
           nativeAddress,
         });
-
-        // MetricRegistry.x402PaymentRequired.inc(); // TODO: Add metric
+        respondPaymentRequired(
+          "Top up credits and retry, or contact the operator if you expected a free upload."
+        );
         return next();
       } catch (error) {
-        logger.error("Failed to get x402 price quote", { error });
-        errorResponse(ctx, {
-          status: 503,
-          errorMessage: "Failed to generate payment requirements",
+        // The x402 price path threw (e.g. the payment service's x402 price
+        // endpoint returned 5xx). Log loudly for ops, but the client-facing status
+        // is still 402 — payment is required; the service is not down.
+        logger.error("Failed to get x402 price quote; returning 402 payment-required", {
           error,
         });
+        respondPaymentRequired(
+          "x402 payment requirements are temporarily unavailable — top up credits and retry, or contact the operator."
+        );
         return next();
       }
     }
