@@ -1054,8 +1054,15 @@ ALERT_WARNING_REMINDER_MS=14400000    # warning re-alert cadence (4h)
 ALERT_FAILURES_BEFORE_FIRING=2        # consecutive bad checks before a liveness alert
 ALERT_STARTUP_GRACE_MS=120000         # quiet window after boot (2m)
 ALERT_HEARTBEAT_HOUR=9                # daily digest hour, server-local ("" disables)
+ALERT_QUIET_HOURS=                    # e.g. "22-7": defer WARNINGS overnight; criticals always go
 ALERT_STARTUP_PING=false              # per-restart "online" ping (off; heartbeat covers it)
 ```
+
+Reminders and ✅ resolved messages are posted as **threaded replies** under the
+original alert (the resolved one is also broadcast to the channel), so an
+incident's whole lifecycle stays together. The alerter **persists its tracked
+state to Redis**, so a restart/deploy doesn't re-announce issues that are still
+ongoing.
 
 Issue **thresholds** are the dashboard rollup's — tuned via the same
 `ADMIN_*` / `POSTED_*` vars the dashboard uses, not separate alert knobs.

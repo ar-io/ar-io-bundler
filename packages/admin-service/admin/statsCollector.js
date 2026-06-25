@@ -643,6 +643,12 @@ async function getHistory(hours = 24) {
   }
 }
 
+// The cache Redis client (port 6379), reused by the alerter to persist its
+// in-memory issue-tracking state across restarts. Null until initialized.
+function getCacheRedis() {
+  return cacheRedis;
+}
+
 module.exports = {
   initializeStatsCollector,
   getStats,
@@ -652,5 +658,6 @@ module.exports = {
   getHealthWindowCached,
   recordHistoryPoint,
   sampleHistory,
+  getCacheRedis,
   cleanup
 };

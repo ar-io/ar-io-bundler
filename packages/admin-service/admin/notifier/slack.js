@@ -98,8 +98,10 @@ function buildEnvelope({ emoji, label, color, title, detail, area }) {
 
 /**
  * Post to Slack. Pass `attachments` for the standard colored envelope, or
- * `message` (mrkdwn string / blocks array) for a plain message.
- * @returns {Promise<{ok: boolean, error?: string}>}
+ * `message` (mrkdwn string / blocks array) for a plain message. Pass `thread_ts`
+ * to reply in a thread (with `reply_broadcast` to also surface it in-channel).
+ * @returns {Promise<{ok: boolean, error?: string, ts?: string}>} ts = the posted
+ *   message timestamp, usable as a `thread_ts` for follow-up replies.
  */
 async function sendSlackMessage({
   message,
@@ -108,6 +110,8 @@ async function sendSlackMessage({
   icon_emoji = ":rotating_light:",
   attachments,
   text,
+  thread_ts,
+  reply_broadcast,
 } = {}) {
   const oAuthToken = process.env.SLACK_OAUTH_TOKEN;
   if (!oAuthToken) {
@@ -122,6 +126,8 @@ async function sendSlackMessage({
   const payload = { channel, username, icon_emoji };
   // Top-level text renders above the attachment; an @mention here reliably pings.
   if (text) payload.text = text;
+  if (thread_ts) payload.thread_ts = thread_ts;
+  if (reply_broadcast) payload.reply_broadcast = true;
   if (attachments) {
     payload.attachments = attachments;
   } else {
@@ -148,7 +154,7 @@ async function sendSlackMessage({
       console.error(`❌ Slack send failed: ${error}`);
       return { ok: false, error };
     }
-    return { ok: true };
+    return { ok: true, ts: body.ts };
   } catch (error) {
     console.error("❌ Slack send threw:", error.message);
     return { ok: false, error: error.message };
@@ -162,15 +168,27 @@ async function sendSlackMessage({
  * @param {"critical"|"warning"|"recovered"|"info"} opts.severity
  * @param {string} opts.title    short headline (the "what")
  * @param {string} [opts.detail] context (counts, ages, error)
- * @param {string} [opts.area]   subsystem (infra, service, pipeline, payments…)
+ * @param {string} [opts.area]       subsystem (infra, service, pipeline, payments…)
+ * @param {string} [opts.thread_ts]  reply under this message (incident thread)
+ * @param {boolean} [opts.reply_broadcast] also surface the threaded reply in-channel
+ * @returns {Promise<{ok:boolean, ts?:string, error?:string}>}
  */
-async function sendAlert({ severity = "warning", title, detail, area } = {}) {
+async function sendAlert({
+  severity = "warning",
+  title,
+  detail,
+  area,
+  thread_ts,
+  reply_broadcast,
+} = {}) {
   const sev = SEVERITY[severity] || SEVERITY.warning;
   return sendSlackMessage({
     channel: channels.alert,
     icon_emoji: sev.emoji,
     // Ping someone on criticals so they're not missed; other severities stay quiet.
     text: severity === "critical" && ALERT_MENTION ? ALERT_MENTION : undefined,
+    thread_ts,
+    reply_broadcast,
     attachments: [buildEnvelope({ ...sev, title, detail, area })],
   });
 }
