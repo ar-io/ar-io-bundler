@@ -33,11 +33,11 @@ if [ "$RESTART_DOCKER" = true ]; then
   echo "🐳 Restarting Docker infrastructure..."
   cd "$PROJECT_ROOT"
   # Two-tier MinIO: include the HDD archive override when ARCHIVE_DATA_ITEM_BUCKET is
-  # set in .env so minio-hdd restarts alongside the rest (and minio-init-hdd re-runs).
+  # set in .env so minio-archive restarts alongside the rest (and minio-init-archive re-runs).
   # No-op on SSD-only boxes that leave ARCHIVE_* unset. Mirrors start.sh / stop.sh.
   ARCHIVE_COMPOSE=""; ARCHIVE_SVC=""
   if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
-    ARCHIVE_COMPOSE="-f docker-compose.yml -f docker-compose.hdd.yml"; ARCHIVE_SVC="minio-hdd"
+    ARCHIVE_COMPOSE="-f docker-compose.yml -f docker-compose.archive.yml"; ARCHIVE_SVC="minio-archive"
   fi
   docker compose $ARCHIVE_COMPOSE restart postgres redis-cache redis-queues minio $ARCHIVE_SVC
   echo "   Waiting for services to be ready..."
@@ -46,7 +46,7 @@ if [ "$RESTART_DOCKER" = true ]; then
   # Ensure MinIO buckets exist (safe to run multiple times)
   echo "   Ensuring MinIO buckets are initialized..."
   docker compose $ARCHIVE_COMPOSE up minio-init
-  [ -n "$ARCHIVE_SVC" ] && docker compose $ARCHIVE_COMPOSE up minio-init-hdd
+  [ -n "$ARCHIVE_SVC" ] && docker compose $ARCHIVE_COMPOSE up minio-init-archive
 
   echo -e "${GREEN}✓${NC} Docker infrastructure restarted"
   echo ""
