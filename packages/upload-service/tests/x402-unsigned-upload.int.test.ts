@@ -158,6 +158,30 @@ describe("x402 Unsigned Upload Integration Tests (POST /x402/upload/unsigned)", 
     expect(accept).to.have.property("asset");
   });
 
+  it("returns 402 (NOT 503) for the quote when no x402 network is enabled", async () => {
+    // Convention (mirrors dataItemPost.ts respondPaymentRequired): when payment
+    // is required but x402 requirements can't be produced, the signal is 402 —
+    // the service is up, the client just can't pay via x402 here — never 503.
+    stub(arweaveGateway, "getWinstonPriceForByteCount").resolves(W("100000"));
+    stub(x402PricingOracle, "getUSDCForWinston").resolves("5000");
+    stub(x402Service, "isNetworkEnabled").returns(false);
+    stub(x402Service, "getEnabledNetworks").returns([]);
+
+    const response = await axios.post(unsignedUrl, Buffer.from("hello world"), {
+      headers: {
+        "Content-Type": octetStreamContentType,
+        // No X-PAYMENT header → quote path.
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+
+    expect(response.status).to.equal(402);
+    expect(response.headers["x-payment-required"]).to.equal("x402-1");
+    expect(response.data).to.have.property("error", "Payment required");
+  });
+
   it("returns 400 when X-PAYMENT header is present but Content-Length is missing", async () => {
     const response = await axios.post(unsignedUrl, Buffer.from("some data"), {
       headers: {

@@ -624,9 +624,17 @@ async function send402PaymentRequired(
   if (!ctx.state.x402Service.isNetworkEnabled(network)) {
     const enabledNetworks = ctx.state.x402Service.getEnabledNetworks();
     if (enabledNetworks.length === 0) {
+      // Payment is required but no x402 network is enabled, so we cannot hand
+      // back payment requirements. The signal is still 402 Payment Required, NOT
+      // 503: the service is up, the client just can't pay via x402 here. Mirrors
+      // the signed path's convention (dataItemPost.ts respondPaymentRequired).
       logger.error("x402 quote requested but no x402 network is enabled", { configured: network });
-      ctx.status = 503;
-      ctx.body = { error: "x402 payments are not currently available" };
+      ctx.status = 402;
+      ctx.set("X-Payment-Required", "x402-1");
+      ctx.body = {
+        error: "Payment required",
+        message: "x402 payments are not currently available on this bundler.",
+      };
       return;
     }
     logger.warn("Configured X402_NETWORK is not enabled; quoting first enabled network instead", {
