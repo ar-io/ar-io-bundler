@@ -148,7 +148,7 @@ describe("Router tests", () => {
 
   beforeEach(() => {
     stub(coinGeckoOracle, "getFiatPricesForOneToken").resolves(
-      expectedTokenPrices
+      expectedTokenPrices,
     );
     stub(arweaveOracle, "getWinstonForBytes").resolves(W(857_922_282_166));
   });
@@ -167,7 +167,7 @@ describe("Router tests", () => {
       gatewayMap,
     });
     await paymentDatabase["writer"]<SingleUseCodePaymentCatalogDBResult>(
-      tableNames.singleUseCodePaymentAdjustmentCatalog
+      tableNames.singleUseCodePaymentAdjustmentCatalog,
     ).insert({
       code_value: routerTestPromoCode,
       adjustment_exclusivity: "exclusive",
@@ -192,7 +192,7 @@ describe("Router tests", () => {
     };
 
     await paymentDatabase["writer"](tableNames.uploadAdjustmentCatalog).insert(
-      uploadAdjustmentCatalogDbInsert
+      uploadAdjustmentCatalogDbInsert,
     );
   });
 
@@ -220,9 +220,8 @@ describe("Router tests", () => {
       adjustments: [],
     });
 
-    const { status, statusText, data } = await axios.get(
-      `/v1/price/bytes/1024`
-    );
+    const { status, statusText, data } =
+      await axios.get(`/v1/price/bytes/1024`);
     expect(status).to.equal(200);
     expect(statusText).to.equal("OK");
 
@@ -246,9 +245,8 @@ describe("Router tests", () => {
   });
 
   it("GET /price/arweave/:bytes returns 400 for invalid byte count", async () => {
-    const { status, statusText, data } = await axios.get(
-      `/price/arweave/-54.2`
-    );
+    const { status, statusText, data } =
+      await axios.get(`/price/arweave/-54.2`);
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
     expect(data).to.equal("Invalid byte count");
@@ -257,7 +255,7 @@ describe("Router tests", () => {
   it("GET /price/arweave/:bytes returns 503 if bytes pricing oracle fails to get a price", async () => {
     stub(pricingService, "getWCForDataItem").throws(Error("Serious failure"));
     const { status, statusText, data } = await axios.get(
-      `/price/arweave/1321321`
+      `/price/arweave/1321321`,
     );
     expect(status).to.equal(503);
     expect(data).to.equal("Pricing Oracle Unavailable");
@@ -266,7 +264,7 @@ describe("Router tests", () => {
 
   it("GET /price/bytes returns 400 for bytes > max safe integer", async () => {
     const { status, statusText, data } = await axios.get(
-      `/v1/price/bytes/1024000000000000000000000000000000000000000000`
+      `/v1/price/bytes/1024000000000000000000000000000000000000000000`,
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -275,7 +273,7 @@ describe("Router tests", () => {
 
   it("GET /price/bytes returns 400 for invalid byte count", async () => {
     const { status, statusText, data } = await axios.get(
-      `/v1/price/bytes/-54.2`
+      `/v1/price/bytes/-54.2`,
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -285,7 +283,7 @@ describe("Router tests", () => {
   it("GET /price/bytes returns 503 if bytes pricing oracle fails to get a price", async () => {
     stub(pricingService, "getWCForDataItem").throws(Error("Serious failure"));
     const { status, statusText, data } = await axios.get(
-      `/v1/price/bytes/1321321`
+      `/v1/price/bytes/1321321`,
     );
     expect(status).to.equal(503);
     expect(data).to.equal("Pricing Oracle Unavailable");
@@ -312,7 +310,7 @@ describe("Router tests", () => {
 
   it("GET /rates returns the correct response", async () => {
     const fakeDateBeforeSubsidyAndInfraFee = new Date(
-      "2021-01-01T00:00:00.000Z"
+      "2021-01-01T00:00:00.000Z",
     );
     const clock = useFakeTimers(fakeDateBeforeSubsidyAndInfraFee.getTime());
 
@@ -344,7 +342,7 @@ describe("Router tests", () => {
 
   it("GET /rates during twenty percent infra fee event returns the expected result", async () => {
     const fakeDateDuringTwentyPctInfraFee = new Date(
-      "2023-01-02T00:00:00.000Z"
+      "2023-01-02T00:00:00.000Z",
     );
     const clock = useFakeTimers(fakeDateDuringTwentyPctInfraFee.getTime());
 
@@ -362,7 +360,7 @@ describe("Router tests", () => {
     const fakeDateDuringTwentyThreeFourPctInfraFeeAndSepOctSubsidyEvent =
       new Date("2023-09-25T00:00:00.000Z");
     const clock = useFakeTimers(
-      fakeDateDuringTwentyThreeFourPctInfraFeeAndSepOctSubsidyEvent.getTime()
+      fakeDateDuringTwentyThreeFourPctInfraFeeAndSepOctSubsidyEvent.getTime(),
     );
 
     const { data, status, statusText } = await axios.get(`/v1/rates`);
@@ -491,7 +489,7 @@ describe("Router tests", () => {
         validateStatus: () => true,
       })
       .get(
-        `/v1/price/USD/123?promoCode=${routerTestPromoCode}&destinationAddress=${destinationAddress}`
+        `/v1/price/USD/123?promoCode=${routerTestPromoCode}&destinationAddress=${destinationAddress}`,
       );
 
     expect(status).to.equal(200);
@@ -542,7 +540,7 @@ describe("Router tests", () => {
         `/v1/price/USD/1234?promoCode=${routerTestPromoCode}&promoCode=${routerTestPromoCode}`,
         {
           headers: await signedRequestHeadersFromJwk(testArweaveWallet, "123"),
-        }
+        },
       );
 
     expect(status).to.equal(200);
@@ -624,7 +622,7 @@ describe("Router tests", () => {
       });
 
     expect(data).to.equal(
-      `The user '${userAddress}' is ineligible for the promo code '${routerTestPromoCode}'`
+      `The user '${userAddress}' is ineligible for the promo code '${routerTestPromoCode}'`,
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -639,7 +637,7 @@ describe("Router tests", () => {
       .get(`/v1/price/USD/100?promoCode=${routerTestPromoCode}`);
 
     expect(data).to.equal(
-      "Promo codes must be applied to a specific `destinationAddress` or to the request signer"
+      "Promo codes must be applied to a specific `destinationAddress` or to the request signer",
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -647,10 +645,10 @@ describe("Router tests", () => {
 
   it("GET /price/:currency/:value returns 400 for invalid currency", async () => {
     const { data, status, statusText } = await axios.get(
-      `/v1/price/Random-Currency/100`
+      `/v1/price/Random-Currency/100`,
     );
     expect(data).to.equal(
-      "The currency type 'random-currency' is currently not supported by this API!"
+      "The currency type 'random-currency' is currently not supported by this API!",
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -659,7 +657,7 @@ describe("Router tests", () => {
   it("GET /price/:currency/:value returns 400 for an invalid payment amount", async () => {
     const { data, status, statusText } = await axios.get(`/v1/price/usd/200.5`);
     expect(data).to.equal(
-      "The provided payment amount (200.5) is invalid; it must be a positive non-decimal integer!"
+      "The provided payment amount (200.5) is invalid; it must be a positive non-decimal integer!",
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -715,7 +713,7 @@ describe("Router tests", () => {
     });
 
     const { status, statusText, data } = await axios.get(
-      `/v1/balance?address=${userAddress}`
+      `/v1/balance?address=${userAddress}`,
     );
 
     expect(status).to.equal(200);
@@ -775,11 +773,11 @@ describe("Router tests", () => {
       stripeResponseStub({
         ...checkoutSessionSuccessStub,
         amount_total: amount,
-      })
+      }),
     );
 
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/checkout-session/${email}/usd/${amount}?destinationAddressType=email&giftMessage=hello%20world`
+      `/v1/top-up/checkout-session/${email}/usd/${amount}?destinationAddressType=email&giftMessage=hello%20world`,
     );
 
     expect(data).to.have.property("topUpQuote");
@@ -825,7 +823,7 @@ describe("Router tests", () => {
     expect(adjustments).to.deep.equal([]);
 
     const dbResult = await paymentDatabase["writer"]<TopUpQuoteDBResult>(
-      tableNames.topUpQuote
+      tableNames.topUpQuote,
     )
       .where({ top_up_quote_id: topUpQuoteId })
       .first();
@@ -855,7 +853,7 @@ describe("Router tests", () => {
     expect(destination_address_type).to.equal("email");
     expect(winston_credit_amount).to.equal("1091168091168");
     expect(new Date(quote_expiration_date).toISOString()).to.equal(
-      quoteExpirationDate.toString()
+      quoteExpirationDate.toString(),
     );
     expect(quote_creation_date).to.be.a.string;
     expect(gift_message).to.equal("hello world");
@@ -865,7 +863,7 @@ describe("Router tests", () => {
 
   it("GET /top-up/checkout-session with an invalid destination address type returns 400 response", async () => {
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/checkout-session/hello-test/usd/4231?destinationAddressType=notReal`
+      `/v1/top-up/checkout-session/hello-test/usd/4231?destinationAddressType=notReal`,
     );
 
     expect(status).to.equal(400);
@@ -879,11 +877,11 @@ describe("Router tests", () => {
       stripeResponseStub({
         ...checkoutSessionSuccessStub,
         amount_total: amount,
-      })
+      }),
     );
 
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/checkout-session/${testAddress}/usd/${amount}`
+      `/v1/top-up/checkout-session/${testAddress}/usd/${amount}`,
     );
 
     expect(data).to.have.property("topUpQuote");
@@ -909,11 +907,11 @@ describe("Router tests", () => {
           amount: topUpAmount,
           status: "requires_payment_method",
         }),
-      })
+      }),
     );
 
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/payment-intent/${testAddress}/usd/${topUpAmount}`
+      `/v1/top-up/payment-intent/${testAddress}/usd/${topUpAmount}`,
     );
 
     expect(data).to.have.property("topUpQuote");
@@ -975,7 +973,7 @@ describe("Router tests", () => {
           amount: 800,
           status: "requires_payment_method",
         }),
-      })
+      }),
     );
 
     const { status, statusText, data } = await axiosPackage
@@ -987,7 +985,7 @@ describe("Router tests", () => {
         `/v1/top-up/payment-intent/${testAddress}/usd/${topUpAmount}?promoCode=${routerTestPromoCode}`,
         {
           headers: await signedRequestHeadersFromJwk(testArweaveWallet, "123"),
-        }
+        },
       );
 
     expect(data).to.have.property("topUpQuote");
@@ -1061,7 +1059,7 @@ describe("Router tests", () => {
         `/v1/top-up/payment-intent/${testAddress}/usd/1000?promoCode=fakeCodeLOL`,
         {
           headers: await signedRequestHeadersFromJwk(testArweaveWallet, "123"),
-        }
+        },
       );
 
     expect(data).to.equal("No promo code found with code 'fakeCodeLOL'");
@@ -1073,14 +1071,18 @@ describe("Router tests", () => {
     const jwk = await Arweave.crypto.generateJWK();
     const userAddress = arweaveRSAModulusToAddress(jwk.n);
 
+    // Distinct top_up_quote_id from the price-route promo test, which also seeds
+    // a receipt with its own quote id — a shared value collides on
+    // UNIQUE(payment_receipt.top_up_quote_id).
+    const topUpQuoteId = "used promo code id - top up";
     await dbTestHelper.insertStubPaymentReceipt({
-      top_up_quote_id: "used promo code id",
+      top_up_quote_id: topUpQuoteId,
       destination_address: userAddress,
       payment_receipt_id: "unique id promo ineligible top up",
     });
     await dbTestHelper.insertStubPaymentAdjustment({
       catalog_id: routerTestPromoCodeCatalogId,
-      top_up_quote_id: "used promo code id",
+      top_up_quote_id: topUpQuoteId,
       user_address: userAddress,
     });
 
@@ -1094,11 +1096,11 @@ describe("Router tests", () => {
         `/v1/top-up/payment-intent/${userAddress}/usd/1000?promoCode=${routerTestPromoCode}`,
         {
           headers: await signedRequestHeadersFromJwk(jwk, "123"),
-        }
+        },
       );
 
     expect(data).to.equal(
-      `The user '${userAddress}' is ineligible for the promo code '${routerTestPromoCode}'`
+      `The user '${userAddress}' is ineligible for the promo code '${routerTestPromoCode}'`,
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -1106,18 +1108,18 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 403 for bad arweave address", async () => {
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/checkout-session/BAD_ADDRESS_OF_DOOM/usd/100`
+      `/v1/top-up/checkout-session/BAD_ADDRESS_OF_DOOM/usd/100`,
     );
     expect(status).to.equal(403);
     expect(data).to.equal(
-      "Destination address is not a valid supported native wallet address!"
+      "Destination address is not a valid supported native wallet address!",
     );
     expect(statusText).to.equal("Forbidden");
   });
 
   it("GET /top-up returns 400 for bad email address", async () => {
     const { status, statusText, data } = await axios.get(
-      `/v1/top-up/checkout-session/THISisNotEmail/usd/100?destinationAddressType=email`
+      `/v1/top-up/checkout-session/THISisNotEmail/usd/100?destinationAddressType=email`,
     );
     expect(status).to.equal(400);
     expect(data).to.equal("Destination address is not a valid email!");
@@ -1126,11 +1128,11 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 400 for invalid payment method", async () => {
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/some-method/${testAddress}/usd/101`
+      `/v1/top-up/some-method/${testAddress}/usd/101`,
     );
 
     expect(data).to.equal(
-      "Payment method must include one of: payment-intent,checkout-session!"
+      "Payment method must include one of: payment-intent,checkout-session!",
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -1138,12 +1140,12 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 400 for invalid currency", async () => {
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/payment-intent/${testAddress}/currencyThatDoesNotExist/100`
+      `/v1/top-up/payment-intent/${testAddress}/currencyThatDoesNotExist/100`,
     );
 
     expect(data).to.equal(
       // cspell:disable
-      "The currency type 'currencythatdoesnotexist' is currently not supported by this API!"
+      "The currency type 'currencythatdoesnotexist' is currently not supported by this API!",
       // cspell:enable
     );
     expect(status).to.equal(400);
@@ -1152,11 +1154,11 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 400 for invalid payment amount", async () => {
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/checkout-session/${testAddress}/usd/-984`
+      `/v1/top-up/checkout-session/${testAddress}/usd/-984`,
     );
 
     expect(data).to.equal(
-      "The provided payment amount (-984) is invalid; it must be a positive non-decimal integer!"
+      "The provided payment amount (-984) is invalid; it must be a positive non-decimal integer!",
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
@@ -1165,7 +1167,7 @@ describe("Router tests", () => {
   it("GET /top-up returns 503 when fiat pricing oracle is unreachable", async () => {
     stub(pricingService, "getWCForPayment").throws(Error("Oh no!"));
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/checkout-session/${testAddress}/usd/1337`
+      `/v1/top-up/checkout-session/${testAddress}/usd/1337`,
     );
 
     expect(data).to.equal("Fiat Oracle Unavailable");
@@ -1183,16 +1185,16 @@ describe("Router tests", () => {
     it("GET /top-up returns 200 for max and min payment amounts for each currency", async () => {
       const checkoutSessionStubSpy = stub(
         stripe.checkout.sessions,
-        "create"
+        "create",
       ).resolves(stripeResponseStub(checkoutSessionStub({})));
 
       // Get maximum price for each supported currency concurrently
       const maxPriceResponses = await Promise.all(
         supportedFiatPaymentCurrencyTypes.map((currencyType) =>
           axios.get(
-            `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${currencyLimitations[currencyType].maximumPaymentAmount}`
-          )
-        )
+            `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${currencyLimitations[currencyType].maximumPaymentAmount}`,
+          ),
+        ),
       );
       for (const res of maxPriceResponses) {
         expect(res.status).to.equal(200);
@@ -1202,9 +1204,9 @@ describe("Router tests", () => {
       const minPriceResponses = await Promise.all(
         supportedFiatPaymentCurrencyTypes.map((currencyType) =>
           axios.get(
-            `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${currencyLimitations[currencyType].minimumPaymentAmount}`
-          )
-        )
+            `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${currencyLimitations[currencyType].minimumPaymentAmount}`,
+          ),
+        ),
       );
       for (const { status } of minPriceResponses) {
         expect(status).to.equal(200);
@@ -1220,13 +1222,13 @@ describe("Router tests", () => {
         const { data, status, statusText } = await axios.get(
           `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${
             maxAmountAllowed + 1
-          }`
+          }`,
         );
 
         expect(data).to.equal(
           `The provided payment amount (${
             maxAmountAllowed + 1
-          }) is too large for the currency type "${currencyType}"; it must be below or equal to ${maxAmountAllowed}!`
+          }) is too large for the currency type "${currencyType}"; it must be below or equal to ${maxAmountAllowed}!`,
         );
         expect(status).to.equal(400);
         expect(statusText).to.equal("Bad Request");
@@ -1241,13 +1243,13 @@ describe("Router tests", () => {
         const { data, status, statusText } = await axios.get(
           `/v1/top-up/checkout-session/${testAddress}/${currencyType}/${
             minAmountAllowed - 1
-          }`
+          }`,
         );
 
         expect(data).to.equal(
           `The provided payment amount (${
             minAmountAllowed - 1
-          }) is too small for the currency type "${currencyType}"; it must be above ${minAmountAllowed}!`
+          }) is too small for the currency type "${currencyType}"; it must be above ${minAmountAllowed}!`,
         );
         expect(status).to.equal(400);
         expect(statusText).to.equal("Bad Request");
@@ -1257,10 +1259,10 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 503 when stripe fails to create payment session", async () => {
     const checkoutStub = stub(stripe.checkout.sessions, "create").throws(
-      Error("Oh no!")
+      Error("Oh no!"),
     );
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/checkout-session/${testAddress}/usd/1337`
+      `/v1/top-up/checkout-session/${testAddress}/usd/1337`,
     );
 
     expect(data).to.equal("Error creating stripe payment session! Oh no!");
@@ -1271,11 +1273,11 @@ describe("Router tests", () => {
 
   it("GET /top-up returns 503 when database is unreachable", async () => {
     stub(stripe.checkout.sessions, "create").resolves(
-      stripeResponseStub(checkoutSessionStub({}))
+      stripeResponseStub(checkoutSessionStub({})),
     );
     stub(paymentDatabase, "createTopUpQuote").throws(Error("Bad news"));
     const { status, data, statusText } = await axios.get(
-      `/v1/top-up/checkout-session/${testAddress}/usd/1337`
+      `/v1/top-up/checkout-session/${testAddress}/usd/1337`,
     );
 
     expect(data).to.equal("Cloud Database Unavailable");
@@ -1310,8 +1312,12 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/reserve-balance/${token}/${address}?byteCount=${byteCount}&dataItemId=${stubTxId2}`,
-        authHeaders
+        // Unique dataItemId: this test runs once per token, so a shared id would
+        // be a no-op on the 2nd+ token under reserve idempotency (the first
+        // token's reservation already exists), leaving balances undebited and
+        // breaking the downstream redeem assertions.
+        `/v1/reserve-balance/${token}/${address}?byteCount=${byteCount}&dataItemId=${randomCharString()}`,
+        authHeaders,
       );
       expect(statusText).to.equal("Balance reserved");
       expect(status).to.equal(200);
@@ -1324,11 +1330,11 @@ describe("Router tests", () => {
         stripeResponseStub({
           ...checkoutSessionSuccessStub,
           amount_total: amount,
-        })
+        }),
       );
 
       const { status, statusText, data } = await axios.get(
-        `/v1/top-up/checkout-session/${address}/usd/${amount}?token=${token}`
+        `/v1/top-up/checkout-session/${address}/usd/${amount}?token=${token}`,
       );
 
       expect(data).to.have.property("topUpQuote");
@@ -1366,7 +1372,7 @@ describe("Router tests", () => {
         gift_message: giftMessage,
       };
       await paymentDatabase["writer"]<PaymentReceiptDBResult>(
-        tableNames.paymentReceipt
+        tableNames.paymentReceipt,
       ).insert(paymentReceiptDBInsert);
       const unredeemedGiftDbInsert: UnredeemedGiftDBInsert = {
         gifted_winc_amount: "100",
@@ -1375,11 +1381,11 @@ describe("Router tests", () => {
         gift_message: giftMessage,
       };
       await paymentDatabase["writer"]<UnredeemedGiftDBResult>(
-        tableNames.unredeemedGift
+        tableNames.unredeemedGift,
       ).insert(unredeemedGiftDbInsert);
 
       const { status, statusText, data } = await axios.get(
-        `/v1/redeem?destinationAddress=${address}&id=${paymentReceiptId}&email=${emailAddress}&token=${token}`
+        `/v1/redeem?destinationAddress=${address}&id=${paymentReceiptId}&email=${emailAddress}&token=${token}`,
       );
 
       expect(status).to.equal(200);
@@ -1392,7 +1398,7 @@ describe("Router tests", () => {
       expect(userCreationDate).to.exist;
 
       const userDbResult = await paymentDatabase["reader"]<UserDBResult>(
-        tableNames.user
+        tableNames.user,
       ).where({
         user_address: address,
       });
@@ -1454,7 +1460,7 @@ describe("Router tests", () => {
 
     const { status, statusText, data } = await axios.get(
       `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId2}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("Balance reserved");
     expect(status).to.equal(200);
@@ -1465,10 +1471,10 @@ describe("Router tests", () => {
     const byteCount = 1000;
 
     const { status, statusText } = await axios.get(
-      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`
+      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`,
     );
     expect(statusText).to.equal(
-      "No authorization or user provided for authorized route!"
+      "No authorization or user provided for authorized route!",
     );
     expect(status).to.equal(401);
   });
@@ -1486,7 +1492,7 @@ describe("Router tests", () => {
 
     const { status, statusText, data } = await axios.get(
       `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("Balance reserved");
     expect(status).to.equal(200);
@@ -1508,14 +1514,16 @@ describe("Router tests", () => {
       reservation_id: "a unique ID",
     };
     await paymentDatabase["writer"](tableNames.uploadAdjustment).insert(
-      stubUploadAdjustment
+      stubUploadAdjustment,
     );
 
     const byteCount = 100000000;
 
     const { status, statusText } = await axios.get(
-      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`,
-      authHeaders
+      // Unique id: a 402 requires a fresh reserve that hits the balance check;
+      // a reused id would no-op via reserve idempotency (id is globally unique).
+      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${randomCharString()}`,
+      authHeaders,
     );
     expect(statusText).to.equal("Insufficient balance");
     expect(status).to.equal(402);
@@ -1525,8 +1533,9 @@ describe("Router tests", () => {
     const byteCount = 600000;
 
     const { status, statusText } = await axios.get(
-      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`,
-      authHeaders
+      // Unique id (see note above) so the reserve isn't a no-op under idempotency.
+      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${randomCharString()}`,
+      authHeaders,
     );
     expect(statusText).to.equal("Insufficient balance");
     expect(status).to.equal(402);
@@ -1537,8 +1546,9 @@ describe("Router tests", () => {
     const byteCount = 10000000;
 
     const { status, statusText } = await axios.get(
-      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${stubTxId1}`,
-      authHeaders
+      // Unique id (see note above) so the reserve isn't a no-op under idempotency.
+      `/v1/reserve-balance/arweave/${testAddress}?byteCount=${byteCount}&dataItemId=${randomCharString()}`,
+      authHeaders,
     );
     expect(statusText).to.equal("Insufficient balance");
     expect(status).to.equal(402);
@@ -1563,7 +1573,7 @@ describe("Router tests", () => {
 
     const { status, statusText, data } = await axios.get(
       `/v1/check-balance/arweave/${testAddress}?byteCount=${byteCount}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("User has sufficient balance");
     expect(status).to.equal(200);
@@ -1579,7 +1589,7 @@ describe("Router tests", () => {
     const byteCount = 1000;
 
     const { status, statusText } = await axios.get(
-      `/v1/check-balance/arweave/${testAddress}?byteCount=${byteCount}`
+      `/v1/check-balance/arweave/${testAddress}?byteCount=${byteCount}`,
     );
     expect(statusText).to.equal("Unauthorized");
     expect(status).to.equal(401);
@@ -1590,7 +1600,7 @@ describe("Router tests", () => {
 
     const { status, statusText } = await axios.get(
       `/v1/check-balance/arweave/${testAddress}?byteCount=${byteCount}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("Insufficient balance");
     expect(status).to.equal(402);
@@ -1601,7 +1611,7 @@ describe("Router tests", () => {
 
     const { status, statusText } = await axios.get(
       `/v1/check-balance/arweave/${randomCharString()}?byteCount=${byteCount}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("User not found");
     expect(status).to.equal(404);
@@ -1612,7 +1622,7 @@ describe("Router tests", () => {
 
     const { status, statusText } = await axios.get(
       `/v1/check-balance/arweave/${testAddress}?byteCount=${byteCount}`,
-      authHeaders
+      authHeaders,
     );
     expect(status).to.equal(200);
     expect(statusText).to.equal("User has sufficient balance");
@@ -1651,7 +1661,7 @@ describe("Router tests", () => {
 
       const { data, status, statusText } = await axios.get(
         `/v1/check-balance/arweave/${signerAddress}?byteCount=1000&paidBy=${payer1Address},${payer2Address}`,
-        authHeaders
+        authHeaders,
       );
 
       expect(statusText).to.equal("User has sufficient balance");
@@ -1675,7 +1685,7 @@ describe("Router tests", () => {
 
       const { data, status, statusText } = await axios.get(
         `/v1/check-balance/arweave/${signerAddress}?byteCount=1000&paidBy=${payer1Address},${payer2Address}`,
-        authHeaders
+        authHeaders,
       );
 
       expect(statusText).to.equal("Insufficient balance");
@@ -1693,7 +1703,7 @@ describe("Router tests", () => {
 
     const { status, statusText } = await axios.get(
       `/v1/refund-balance/arweave/${testAddress}?winstonCredits=${winstonCredits}&dataItemId=${randomCharString()}`,
-      authHeaders
+      authHeaders,
     );
     expect(statusText).to.equal("Balance refunded");
     expect(status).to.equal(200);
@@ -1703,7 +1713,7 @@ describe("Router tests", () => {
     const winstonCredits = 1000;
 
     const { status, statusText } = await axios.get(
-      `/v1/refund-balance/arweave/${testAddress}?winstonCredits=${winstonCredits}&dataItemId=${stubTxId1}`
+      `/v1/refund-balance/arweave/${testAddress}?winstonCredits=${winstonCredits}&dataItemId=${stubTxId1}`,
     );
     expect(statusText).to.equal("Unauthorized");
     expect(status).to.equal(401);
@@ -1716,7 +1726,7 @@ describe("Router tests", () => {
 
     const { status, statusText } = await axios.get(
       `/v1/refund-balance/arweave/${testAddress}?winstonCredits=${winstonCredits}&dataItemId=${dataItemId}`,
-      authHeaders
+      authHeaders,
     );
 
     expect(statusText).to.equal("User not found");
@@ -1727,7 +1737,7 @@ describe("Router tests", () => {
     const { status, statusText, data } = await axios.get(`/v1/currencies`);
 
     expect(data.supportedCurrencies).to.deep.equal(
-      supportedFiatPaymentCurrencyTypes
+      supportedFiatPaymentCurrencyTypes,
     );
     expect(data.limits).to.exist;
     expect(statusText).to.equal("OK");
@@ -1760,7 +1770,7 @@ describe("Router tests", () => {
 
     const paymentIntentResponseStub = stub(
       stripe.paymentIntents,
-      "retrieve"
+      "retrieve",
     ).resolves(paymentIntentResponse);
 
     // Insert payment receipt and user that dispute event depends on
@@ -1782,13 +1792,13 @@ describe("Router tests", () => {
     });
 
     const eventStub = stub(stripe.webhooks, "constructEvent").returns(
-      stubEvent
+      stubEvent,
     );
 
     const { status, statusText, data } = await axios.post(
       `/v1/stripe-webhook`,
       undefined,
-      webhookPostConfig
+      webhookPostConfig,
     );
 
     expect(status).to.equal(200);
@@ -1830,7 +1840,7 @@ describe("Router tests", () => {
     expect(chargeback_reason).to.equal("fraudulent");
 
     const user = await paymentDatabase["reader"]<UserDBResult>(
-      tableNames.user
+      tableNames.user,
     ).where({
       user_address: disputeEventUserAddress,
     });
@@ -1875,13 +1885,13 @@ describe("Router tests", () => {
     });
 
     const webhookStub = stub(stripe.webhooks, "constructEvent").returns(
-      stubEvent
+      stubEvent,
     );
 
     const { status, statusText, data } = await axios.post(
       `/v1/stripe-webhook`,
       undefined,
-      webhookPostConfig
+      webhookPostConfig,
     );
 
     expect(status).to.equal(200);
@@ -1915,7 +1925,7 @@ describe("Router tests", () => {
     expect(payment_provider).to.equal("stripe");
 
     const user = await paymentDatabase["reader"]<UserDBResult>(
-      tableNames.user
+      tableNames.user,
     ).where({
       user_address: paymentReceivedUserAddress,
     });
@@ -1957,13 +1967,13 @@ describe("Router tests", () => {
     });
 
     const webhookStub = stub(stripe.webhooks, "constructEvent").returns(
-      stubEvent
+      stubEvent,
     );
 
     const { status, statusText, data } = await axios.post(
       `/v1/stripe-webhook`,
       undefined,
-      webhookPostConfig
+      webhookPostConfig,
     );
 
     expect(status).to.equal(200);
@@ -1997,7 +2007,7 @@ describe("Router tests", () => {
     expect(payment_provider).to.equal("stripe");
 
     const gift = await paymentDatabase["writer"]<UnredeemedGiftDBResult>(
-      tableNames.unredeemedGift
+      tableNames.unredeemedGift,
     ).where({
       payment_receipt_id: paymentReceipt[0].payment_receipt_id,
     });
@@ -2017,9 +2027,9 @@ describe("Router tests", () => {
     expect(new Date(expiration_date).toISOString()).to.equal(
       new Date(
         new Date(creation_date).setFullYear(
-          new Date(creation_date).getFullYear() + 1
-        )
-      ).toISOString()
+          new Date(creation_date).getFullYear() + 1,
+        ),
+      ).toISOString(),
     );
     expect(gifted_winc_amount).to.equal("500");
     expect(payment_receipt_id).to.equal(paymentReceipt[0].payment_receipt_id);
@@ -2035,7 +2045,7 @@ describe("Router tests", () => {
     const { status, statusText, data } = await axios.post(
       `/v1/stripe-webhook`,
       undefined,
-      webhookPostConfig
+      webhookPostConfig,
     );
 
     expect(status).to.equal(400);
@@ -2079,13 +2089,13 @@ describe("Router tests", () => {
       eventObject: successStub,
     });
     const webhookStub = stub(stripe.webhooks, "constructEvent").returns(
-      stubEvent
+      stubEvent,
     );
 
     const { status, statusText, data } = await axios.post(
       `/v1/stripe-webhook`,
       undefined,
-      webhookPostConfig
+      webhookPostConfig,
     );
 
     expect(status).to.equal(200);
@@ -2098,7 +2108,7 @@ describe("Router tests", () => {
     expect(webhookStub.calledOnce).to.equal(true);
 
     const arnsReceipt = await paymentDatabase["reader"]<ArNSPurchaseDBResult>(
-      tableNames.arNSPurchaseReceipt
+      tableNames.arNSPurchaseReceipt,
     ).where({
       nonce: paymentStubNonce,
     });
@@ -2177,7 +2187,7 @@ describe("Router tests", () => {
       gift_message: giftMessage,
     };
     await paymentDatabase["writer"]<PaymentReceiptDBResult>(
-      tableNames.paymentReceipt
+      tableNames.paymentReceipt,
     ).insert(paymentReceiptDBInsert);
     const unredeemedGiftDbInsert: UnredeemedGiftDBInsert = {
       gifted_winc_amount: "100",
@@ -2186,11 +2196,11 @@ describe("Router tests", () => {
       gift_message: giftMessage,
     };
     await paymentDatabase["writer"]<UnredeemedGiftDBResult>(
-      tableNames.unredeemedGift
+      tableNames.unredeemedGift,
     ).insert(unredeemedGiftDbInsert);
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`,
     );
 
     expect(status).to.equal(200);
@@ -2203,7 +2213,7 @@ describe("Router tests", () => {
     expect(userCreationDate).to.exist;
 
     const userDbResult = await paymentDatabase["reader"]<UserDBResult>(
-      tableNames.user
+      tableNames.user,
     ).where({
       user_address: destinationAddress,
     });
@@ -2251,13 +2261,13 @@ describe("Router tests", () => {
     const emailAddress = "invalid email";
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`,
     );
 
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
     expect(data).to.equal(
-      "Provided recipient email address is not a valid email!"
+      "Provided recipient email address is not a valid email!",
     );
   });
 
@@ -2267,13 +2277,13 @@ describe("Router tests", () => {
     const emailAddress = "fake@example.inc";
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`,
     );
 
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
     expect(data).to.equal(
-      "Provided destination address is not a valid native address!"
+      "Provided destination address is not a valid native address!",
     );
   });
 
@@ -2297,7 +2307,7 @@ describe("Router tests", () => {
       gift_message: "A gift message",
     };
     await paymentDatabase["writer"]<PaymentReceiptDBResult>(
-      tableNames.paymentReceipt
+      tableNames.paymentReceipt,
     ).insert(paymentReceiptDBInsert);
 
     const unredeemedGiftDbInsert: UnredeemedGiftDBInsert = {
@@ -2307,11 +2317,11 @@ describe("Router tests", () => {
       gift_message: "A gift message",
     };
     await paymentDatabase["writer"]<UnredeemedGiftDBResult>(
-      tableNames.unredeemedGift
+      tableNames.unredeemedGift,
     ).insert(unredeemedGiftDbInsert);
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=wrong@email.test`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=wrong@email.test`,
     );
 
     expect(status).to.equal(400);
@@ -2325,7 +2335,7 @@ describe("Router tests", () => {
     const emailAddress = "fake@unique.inc";
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`,
     );
 
     expect(status).to.equal(400);
@@ -2341,13 +2351,13 @@ describe("Router tests", () => {
     stub(paymentDatabase, "redeemGift").throws();
 
     const { status, statusText, data } = await axios.get(
-      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`
+      `/v1/redeem?destinationAddress=${destinationAddress}&id=${paymentReceiptId}&email=${emailAddress}`,
     );
 
     expect(status).to.equal(503);
     expect(statusText).to.equal("Service Unavailable");
     expect(data).to.equal(
-      "Error while redeeming payment receipt. Unable to reach Database!"
+      "Error while redeeming payment receipt. Unable to reach Database!",
     );
   });
 
@@ -2359,7 +2369,7 @@ describe("Router tests", () => {
     });
 
     const { status, statusText, data } = await axios.get(
-      `/v1/account/balance?address=${testAddress}`
+      `/v1/account/balance?address=${testAddress}`,
     );
 
     expect(status).to.equal(200);
@@ -2384,7 +2394,7 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/balance/${token}?address=${testAddress}`
+        `/v1/account/balance/${token}?address=${testAddress}`,
       );
 
       expect(status).to.equal(200);
@@ -2401,7 +2411,7 @@ describe("Router tests", () => {
 
     it(`GET /account/balance/${token} returns 400 for missing address`, async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/balance/${token}`
+        `/v1/account/balance/${token}`,
       );
 
       expect(status).to.equal(400);
@@ -2413,7 +2423,7 @@ describe("Router tests", () => {
       const testAddress = "someRandomAddress";
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/balance/${token}?address=${testAddress}`
+        `/v1/account/balance/${token}?address=${testAddress}`,
       );
 
       expect(status).to.equal(404);
@@ -2426,7 +2436,7 @@ describe("Router tests", () => {
       stub(paymentDatabase, "getBalance").throws(Error("Bad news"));
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/balance/${token}?address=${testAddress}`
+        `/v1/account/balance/${token}?address=${testAddress}`,
       );
 
       expect(status).to.equal(503);
@@ -2455,7 +2465,7 @@ describe("Router tests", () => {
         `/v1/account/balance/${token}`,
         {
           tx_id: testTxId,
-        }
+        },
       );
 
       const turboInfraFeeMagnitude =
@@ -2467,7 +2477,7 @@ describe("Router tests", () => {
         baseAmountToTokenAmount(tokenAmount, token)
           .times(ratio)
           .shiftedBy(12)
-          .toFixed(0, BigNumber.ROUND_DOWN)
+          .toFixed(0, BigNumber.ROUND_DOWN),
       );
       const finalWc = wc.times(turboInfraFeeMagnitude);
       const infraFeeReducedWc = finalWc.minus(wc);
@@ -2536,7 +2546,7 @@ describe("Router tests", () => {
         `/v1/account/balance/${token}`,
         {
           tx_id: testTxId,
-        }
+        },
       );
 
       const turboInfraFeeMagnitude =
@@ -2548,7 +2558,7 @@ describe("Router tests", () => {
         baseAmountToTokenAmount(tokenAmount, token)
           .times(ratio)
           .shiftedBy(12)
-          .toFixed(0, BigNumber.ROUND_DOWN)
+          .toFixed(0, BigNumber.ROUND_DOWN),
       );
       const finalWc = wc.times(turboInfraFeeMagnitude);
       const infraFeeReducedWc = finalWc.minus(wc);
@@ -2597,14 +2607,14 @@ describe("Router tests", () => {
       const testTxId = `a stub tx id unique to this ${token} not found post balance test`;
 
       stub(gatewayMap[token], "getTransaction").throws(
-        new PaymentTransactionNotFound(testTxId)
+        new PaymentTransactionNotFound(testTxId),
       );
 
       const { status, statusText, data } = await axios.post(
         `/v1/account/balance/${token}`,
         {
           tx_id: testTxId,
-        }
+        },
       );
 
       expect(status).to.equal(404);
@@ -2635,12 +2645,12 @@ describe("Router tests", () => {
       `/v1/account/balance/ethereum`,
       {
         tx_id: testTxId,
-      }
+      },
     );
     expect(status).to.equal(400);
     expect(statusText).to.equal("Bad Request");
     expect(data).to.equal(
-      "Crypto payment amount is too small! Token value must convert to at least one winc"
+      "Crypto payment amount is too small! Token value must convert to at least one winc",
     );
   });
 
@@ -2649,7 +2659,7 @@ describe("Router tests", () => {
     const destination_address = "TotallyUniqueUserForThisArweavePostBalTest3";
 
     await dbTestHelper.db["writer"](
-      tableNames.creditedPaymentTransaction
+      tableNames.creditedPaymentTransaction,
     ).insert({
       transaction_id: txId,
       destination_address,
@@ -2664,7 +2674,7 @@ describe("Router tests", () => {
       `/v1/account/balance/arweave`,
       {
         tx_id: txId,
-      }
+      },
     );
 
     expect(status).to.equal(200);
@@ -2672,7 +2682,7 @@ describe("Router tests", () => {
     expect(data.message).to.equal("Transaction already credited");
 
     expect(
-      filterKeysFromObject(data.creditedTransaction, ["createdDate"])
+      filterKeysFromObject(data.creditedTransaction, ["createdDate"]),
     ).deep.equal({
       blockHeight: "1",
       destinationAddress: destination_address,
@@ -2694,7 +2704,7 @@ describe("Router tests", () => {
     const destination_address = "TotallyUniqueUserForThisArweavePostBalTest4";
 
     await dbTestHelper.db["writer"](
-      tableNames.pendingPaymentTransaction
+      tableNames.pendingPaymentTransaction,
     ).insert({
       transaction_id: txId,
       destination_address,
@@ -2708,7 +2718,7 @@ describe("Router tests", () => {
       `/v1/account/balance/arweave`,
       {
         tx_id: txId,
-      }
+      },
     );
 
     expect(status).to.equal(202);
@@ -2716,7 +2726,7 @@ describe("Router tests", () => {
 
     expect(data.message).to.equal("Transaction already pending");
     expect(
-      filterKeysFromObject(data.pendingTransaction, ["createdDate"])
+      filterKeysFromObject(data.pendingTransaction, ["createdDate"]),
     ).deep.equal({
       destinationAddress: destination_address,
       destinationAddressType: "arweave",
@@ -2741,13 +2751,13 @@ describe("Router tests", () => {
       `/v1/account/balance/arweave`,
       {
         tx_id: "testTxId",
-      }
+      },
     );
 
     expect(status).to.equal(403);
     expect(statusText).to.equal("Forbidden");
     expect(data).to.equal(
-      "Payment transaction 'testTxId' has sender that is on the excluded address list: 'testExcludedAddress'"
+      "Payment transaction 'testTxId' has sender that is on the excluded address list: 'testExcludedAddress'",
     );
   });
 
@@ -2765,7 +2775,7 @@ describe("Router tests", () => {
       `/v1/account/balance/arweave`,
       {
         tx_id: "testTxId",
-      }
+      },
     );
 
     expect(status).to.equal(400);
@@ -2775,7 +2785,7 @@ describe("Router tests", () => {
 
   it("POST /account/balance/arweave returns 400 for missing JSON", async () => {
     const { status, statusText, data } = await axios.post(
-      `/v1/account/balance/arweave`
+      `/v1/account/balance/arweave`,
     );
 
     expect(status).to.equal(400);
@@ -2790,7 +2800,7 @@ describe("Router tests", () => {
   it("POST /account/balance/arweave returns 400 for missing tx_id", async () => {
     const { status, statusText, data } = await axios.post(
       `/v1/account/balance/arweave`,
-      { pants: "none" }
+      { pants: "none" },
     );
 
     expect(status).to.equal(400);
@@ -2803,7 +2813,7 @@ describe("Router tests", () => {
       `/v1/account/balance/invalidCurrency`,
       {
         tx_id: "TotallyUniqueUserForThisArweavePostBalTest8",
-      }
+      },
     );
 
     expect(status).to.equal(400);
@@ -2817,7 +2827,7 @@ describe("Router tests", () => {
       `/v1/account/balance/arweave`,
       {
         tx_id: "TotallyUniqueUserForThisArweavePostBalTest7",
-      }
+      },
     );
 
     expect(status).to.equal(503);
@@ -2839,7 +2849,7 @@ describe("Router tests", () => {
 
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${payingAddress}&approvedAddress=${approvedAddress}&dataItemId=${approvalDataItemId}&winc=${approvedWincAmount}&expiresInSeconds=3600`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(200);
@@ -2848,7 +2858,7 @@ describe("Router tests", () => {
       expect(data.creationDate).to.exist;
       expect(data.expirationDate).to.exist;
       expect(
-        filterKeysFromObject(data, ["creationDate", "expirationDate"])
+        filterKeysFromObject(data, ["creationDate", "expirationDate"]),
       ).to.deep.equal({
         approvalDataItemId,
         approvedAddress,
@@ -2861,20 +2871,20 @@ describe("Router tests", () => {
     it("returns 400 for missing params", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        "Malformed or missing required query parameters: payingAddress, approvedAddress"
+        "Malformed or missing required query parameters: payingAddress, approvedAddress",
       );
     });
 
     it("returns 400 for invalid paying address", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=invalid&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=100`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
@@ -2885,7 +2895,7 @@ describe("Router tests", () => {
     it("returns 400 for invalid approved address", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=invalid&dataItemId=${stubTxId1}&winc=100`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
@@ -2896,7 +2906,7 @@ describe("Router tests", () => {
     it("returns 400 for invalid data item id", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=invalid&winc=100`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
@@ -2907,25 +2917,25 @@ describe("Router tests", () => {
     it("returns 400 for invalid winc amount", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=0.4300`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        "Invalid value provided for wincAmount: 0.4300\nWinston value should be an integer!"
+        "Invalid value provided for wincAmount: 0.4300\nWinston value should be an integer!",
       );
     });
 
     it("returns 401 for unauthorized access", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=100`
+        `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=100`,
       );
 
       expect(status).to.equal(401);
       expect(statusText).to.equal("Unauthorized");
       expect(data).to.equal(
-        "No authorization or user provided for authorized route!"
+        "No authorization or user provided for authorized route!",
       );
     });
 
@@ -2933,13 +2943,13 @@ describe("Router tests", () => {
       const unknownAddress = "43CharacterAddressWithNoBalance123456789012";
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${unknownAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=100`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(402);
       expect(statusText).to.equal("Payment Required");
       expect(data).to.equal(
-        "No user found in database with address '" + unknownAddress + "'"
+        "No user found in database with address '" + unknownAddress + "'",
       );
     });
 
@@ -2952,7 +2962,7 @@ describe("Router tests", () => {
 
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${payingAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=1000`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(402);
@@ -2962,12 +2972,12 @@ describe("Router tests", () => {
 
     it("returns 503 for unexpected database errors", async () => {
       stub(paymentDatabase, "createDelegatedPaymentApproval").throws(
-        Error("Database error")
+        Error("Database error"),
       );
 
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/create?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}&winc=100`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(503);
@@ -2996,7 +3006,7 @@ describe("Router tests", () => {
 
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/revoke?payingAddress=${payingAddress}&approvedAddress=${approvedAddress}&dataItemId=${revokeDataItemId}`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(200);
@@ -3005,7 +3015,7 @@ describe("Router tests", () => {
       expect(data[0].creationDate).to.exist;
       expect(data[0].inactiveDate).to.exist;
       expect(
-        filterKeysFromObject(data[0], ["creationDate", "inactiveDate"])
+        filterKeysFromObject(data[0], ["creationDate", "inactiveDate"]),
       ).to.deep.equal({
         approvedAddress,
         payingAddress,
@@ -3020,25 +3030,25 @@ describe("Router tests", () => {
     it("returns 400 for missing params", async () => {
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/revoke`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        "Malformed or missing required query parameters: payingAddress, approvedAddress"
+        "Malformed or missing required query parameters: payingAddress, approvedAddress",
       );
     });
 
     it("returns 401 for unauthorized access", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/revoke?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}`
+        `/v1/account/approvals/revoke?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}`,
       );
 
       expect(status).to.equal(401);
       expect(statusText).to.equal("Unauthorized");
       expect(data).to.equal(
-        "No authorization or user provided for authorized route!"
+        "No authorization or user provided for authorized route!",
       );
     });
 
@@ -3046,24 +3056,24 @@ describe("Router tests", () => {
       const unknownUserAddress = "43CharacterAddressWithNoApprovals1234567890";
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/revoke?payingAddress=${unknownUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        `No valid approvals found for approved address '${stubArweaveUserAddress}' and paying address '${unknownUserAddress}'`
+        `No valid approvals found for approved address '${stubArweaveUserAddress}' and paying address '${unknownUserAddress}'`,
       );
     });
 
     it("returns 503 for unexpected database errors", async () => {
       stub(paymentDatabase, "revokeDelegatedPaymentApprovals").throws(
-        Error("Database error")
+        Error("Database error"),
       );
 
       const { status, statusText, data } = await axios.get(
         `/v1/account/approvals/revoke?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}&dataItemId=${stubTxId1}`,
-        authHeaders
+        authHeaders,
       );
 
       expect(status).to.equal(503);
@@ -3091,7 +3101,7 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals?payingAddress=${payingAddress}&approvedAddress=${approvedAddress}`
+        `/v1/account/approvals?payingAddress=${payingAddress}&approvedAddress=${approvedAddress}`,
       );
 
       expect(status).to.equal(200);
@@ -3106,7 +3116,7 @@ describe("Router tests", () => {
       expect(data.expiresBy).to.be.undefined;
 
       expect(
-        filterKeysFromObject(approvals[0], ["creationDate"])
+        filterKeysFromObject(approvals[0], ["creationDate"]),
       ).to.deep.equal({
         approvalDataItemId,
         payingAddress,
@@ -3118,35 +3128,35 @@ describe("Router tests", () => {
 
     it("returns 400 for missing params", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals`
+        `/v1/account/approvals`,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        "Malformed or missing required query parameters: payingAddress, approvedAddress"
+        "Malformed or missing required query parameters: payingAddress, approvedAddress",
       );
     });
 
     it("returns 400 if no approvals found", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}`
+        `/v1/account/approvals?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}`,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        `No valid approvals found for approved address '${stubArweaveUserAddress}' and paying address '${stubArweaveUserAddress}'`
+        `No valid approvals found for approved address '${stubArweaveUserAddress}' and paying address '${stubArweaveUserAddress}'`,
       );
     });
 
     it("returns 503 for unexpected database errors", async () => {
       stub(paymentDatabase, "getApprovalsFromPayerForAddress").throws(
-        Error("Database error")
+        Error("Database error"),
       );
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}`
+        `/v1/account/approvals?payingAddress=${stubArweaveUserAddress}&approvedAddress=${stubArweaveUserAddress}`,
       );
 
       expect(status).to.equal(503);
@@ -3183,15 +3193,15 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/get?userAddress=${userAddress}`
+        `/v1/account/approvals/get?userAddress=${userAddress}`,
       );
 
       expect(status).to.equal(200);
       expect(statusText).to.equal("Approvals retrieved");
       expect(
         data.givenApprovals.map((a: DelegatedPaymentApproval) =>
-          filterKeysFromObject(a, ["creationDate"])
-        )
+          filterKeysFromObject(a, ["creationDate"]),
+        ),
       ).to.deep.equal([
         {
           approvalDataItemId: approvalId1,
@@ -3214,7 +3224,7 @@ describe("Router tests", () => {
       const userAddress = "43CharacterStubApprovalGetAllAddress123456b";
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/get?userAddress=${userAddress}`
+        `/v1/account/approvals/get?userAddress=${userAddress}`,
       );
 
       expect(status).to.equal(200);
@@ -3227,23 +3237,23 @@ describe("Router tests", () => {
 
     it("returns 400 for missing params", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/get`
+        `/v1/account/approvals/get`,
       );
 
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
       expect(data).to.equal(
-        "Malformed or missing required query parameter: userAddress"
+        "Malformed or missing required query parameter: userAddress",
       );
     });
 
     it("returns 503 for unexpected database errors", async () => {
       stub(paymentDatabase, "getAllApprovalsForUserAddress").throws(
-        Error("Database error")
+        Error("Database error"),
       );
 
       const { status, statusText, data } = await axios.get(
-        `/v1/account/approvals/get?userAddress=${stubArweaveUserAddress}`
+        `/v1/account/approvals/get?userAddress=${stubArweaveUserAddress}`,
       );
 
       expect(status).to.equal(503);
@@ -3259,7 +3269,7 @@ describe("Router tests", () => {
       // (src/utils/validators.ts:664-669 runs before :704-707). Provide a valid
       // type so the request reaches — and is rejected by — the auth check.
       const { status, statusText, data } = await axios.post(
-        `/v1/arns/purchase/Buy-Name/testName?type=permabuy`
+        `/v1/arns/purchase/Buy-Name/testName?type=permabuy`,
       );
       expect(status).to.equal(401);
       expect(statusText).to.equal("Unauthorized");
@@ -3270,7 +3280,7 @@ describe("Router tests", () => {
       const { status, statusText, data } = await axios.post(
         `/v1/arns/purchase/invalidIntent/testName`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) }
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
       );
 
       expect(data).to.equal("Invalid intent parameter");
@@ -3288,7 +3298,7 @@ describe("Router tests", () => {
         "",
         {
           headers: await signedRequestHeadersFromEthWallet(testEthereumWallet),
-        }
+        },
       );
 
       expect(data).to.equal("Missing required parameter: processId");
@@ -3300,11 +3310,11 @@ describe("Router tests", () => {
       const { status, statusText, data } = await axios.post(
         `/v1/arns/purchase/buy-name/testName?processId=stubProcessId`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) }
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
       );
 
       expect(data).to.equal(
-        "Missing required parameter: type. Must be either 'permabuy' or 'lease'"
+        "Missing required parameter: type. Must be either 'permabuy' or 'lease'",
       );
       expect(status).to.equal(400);
       expect(statusText).to.equal("Bad Request");
@@ -3323,7 +3333,7 @@ describe("Router tests", () => {
       const { status, statusText, data } = await axios.post(
         `/v1/arns/purchase/Buy-Name/test-Name?type=permabuy&processId=stubProcessId`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) }
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
       );
 
       expect(status).to.equal(200);
@@ -3362,7 +3372,7 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/purchase/my-great-nonce`
+        `/v1/arns/purchase/my-great-nonce`,
       );
 
       expect(status).to.equal(200);
@@ -3378,7 +3388,7 @@ describe("Router tests", () => {
         nonce: "failed-nonce",
       });
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/purchase/failed-nonce`
+        `/v1/arns/purchase/failed-nonce`,
       );
       expect(status).to.equal(200);
       expect(statusText).to.equal("Purchase status retrieved successfully");
@@ -3394,7 +3404,7 @@ describe("Router tests", () => {
       });
 
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/purchase/my-great-pending-nonce`
+        `/v1/arns/purchase/my-great-pending-nonce`,
       );
       expect(status).to.equal(200);
       expect(statusText).to.equal("Purchase status retrieved successfully");
@@ -3405,7 +3415,7 @@ describe("Router tests", () => {
 
     it("should return 400 for nonce not found", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/purchase/invalid-nonce`
+        `/v1/arns/purchase/invalid-nonce`,
       );
 
       expect(status).to.equal(400);
@@ -3419,7 +3429,7 @@ describe("Router tests", () => {
       stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
 
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/price/Buy-Name/testName?type=permabuy`
+        `/v1/arns/price/Buy-Name/testName?type=permabuy`,
       );
 
       expect(status).to.equal(200);
@@ -3431,7 +3441,7 @@ describe("Router tests", () => {
   describe("GET /v1/arns/quote/:method/:address/:currency/:intent/:name", () => {
     beforeEach(() => {
       stub(gatewayMap.ario, "getTokenCost").resolves(
-        new ARIOToken(1000).toMARIO()
+        new ARIOToken(1000).toMARIO(),
       );
       stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
         id: "stubbedId",
@@ -3442,13 +3452,13 @@ describe("Router tests", () => {
             amount: 4256,
             status: "requires_payment_method",
           }),
-        })
+        }),
       );
     });
 
     it("should succeed for valid params and a stubbed ario gateway call", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/quote/payment-intent/${stubArweaveUserAddress}/usd/Buy-Name/testName?type=permabuy&processId=stubProcessId`
+        `/v1/arns/quote/payment-intent/${stubArweaveUserAddress}/usd/Buy-Name/testName?type=permabuy&processId=stubProcessId`,
       );
 
       expect(status).to.equal(200);
@@ -3490,7 +3500,7 @@ describe("Router tests", () => {
 
     it("should succeed with a valid promo code", async () => {
       const { status, statusText, data } = await axios.get(
-        `/v1/arns/quote/payment-intent/${stubArweaveUserAddress}/usd/Buy-Name/testName?type=permabuy&processId=stubProcessId&promoCode=${routerTestPromoCode}`
+        `/v1/arns/quote/payment-intent/${stubArweaveUserAddress}/usd/Buy-Name/testName?type=permabuy&processId=stubProcessId&promoCode=${routerTestPromoCode}`,
       );
 
       expect(status).to.equal(200);
@@ -3548,7 +3558,7 @@ describe("Caching behavior tests", () => {
   it("GET /price/:currency/:value only calls the oracle once for many subsequent price calls", async () => {
     const coinGeckoStub = stub(
       coinGeckoOracle,
-      "getFiatPricesForOneToken"
+      "getFiatPricesForOneToken",
     ).resolves(expectedTokenPrices);
 
     const pricingSpy = spy(pricingService, "getWCForPayment");
@@ -3571,23 +3581,23 @@ describe("Caching behavior tests", () => {
     await Promise.all(
       supportedFiatPaymentCurrencyTypes.map((currencyType) =>
         axios.get(
-          `/v1/price/${currencyType}/${paymentAmountLimits[currencyType].maximumPaymentAmount}`
-        )
-      )
+          `/v1/price/${currencyType}/${paymentAmountLimits[currencyType].maximumPaymentAmount}`,
+        ),
+      ),
     );
 
     // Get minimum price for each supported currency concurrently
     await Promise.all(
       supportedFiatPaymentCurrencyTypes.map((currencyType) =>
         axios.get(
-          `/v1/price/${currencyType}/${paymentAmountLimits[currencyType].minimumPaymentAmount}`
-        )
-      )
+          `/v1/price/${currencyType}/${paymentAmountLimits[currencyType].minimumPaymentAmount}`,
+        ),
+      ),
     );
 
     // We expect the pricing service spy to be called 10 times and twice for each supported currencies
     expect(pricingSpy.callCount).to.equal(
-      10 + supportedFiatPaymentCurrencyTypes.length * 2
+      10 + supportedFiatPaymentCurrencyTypes.length * 2,
     );
 
     // But the CoinGecko oracle is only called the one time

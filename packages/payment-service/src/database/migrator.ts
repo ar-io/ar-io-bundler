@@ -18,7 +18,11 @@ import { Knex } from "knex";
 import { randomUUID } from "node:crypto";
 
 import globalLogger from "../logger";
-import { columnNames, tableNames } from "./dbConstants";
+import {
+  balanceReservationActiveUniqueIndex,
+  columnNames,
+  tableNames,
+} from "./dbConstants";
 import {
   PaymentAdjustmentCatalogDBInsert,
   SingleUseCodePaymentCatalogDBInsert,
@@ -980,6 +984,75 @@ export class PaymentReceiptUniqueQuoteMigrator extends Migrator {
         await this.knex.schema.alterTable(tableNames.paymentReceipt, (t) => {
           t.dropUnique([columnNames.topUpQuoteId]);
         });
+      },
+    });
+  }
+}
+
+export class ReserveIdempotencyMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  // Make balance reservations idempotent per data item so a retried or concurrent
+  // reserve cannot debit a wallet twice. Adds is_refunded and a PARTIAL unique
+  // index on (data_item_id) WHERE NOT is_refunded — at most one ACTIVE reservation
+  // per data item. Existing rows are backfilled: where a data item has multiple
+  // reservations (legacy refund-then-reupload, or the pre-fix double-reserve), all
+  // but the most recent are marked is_refunded=true so the partial index can be
+  // created. This is non-destructive — no row is deleted and no balance changes;
+  // it only flags superseded reservations inactive. Runs in one transaction.
+  // Identifiers below are compile-time constants (not user input), so inlining
+  // them in raw SQL is safe.
+  public migrate() {
+    return this.operate({
+      name: "add is_refunded + partial unique index to balance_reservation",
+      operation: async () => {
+        const table = tableNames.balanceReservation;
+        const refunded = columnNames.isRefunded;
+        const dataItemId = columnNames.dataItemId;
+        const reservationId = columnNames.reservationId;
+        const reservedDate = columnNames.reservedDate;
+
+        await this.knex.schema.alterTable(table, (t) => {
+          t.boolean(refunded).notNullable().defaultTo(false);
+        });
+
+        // Keep only the most recent reservation per data_item_id active.
+        await this.knex.raw(
+          `UPDATE ${table} SET ${refunded} = true
+             WHERE ${reservationId} IN (
+               SELECT ${reservationId} FROM (
+                 SELECT ${reservationId},
+                        ROW_NUMBER() OVER (
+                          PARTITION BY ${dataItemId} ORDER BY ${reservedDate} DESC
+                        ) AS rn
+                   FROM ${table}
+               ) ranked
+               WHERE ranked.rn > 1
+             )`,
+        );
+
+        await this.knex.raw(
+          `CREATE UNIQUE INDEX ${balanceReservationActiveUniqueIndex} ON ${table} (${dataItemId}) WHERE ${refunded} = false`,
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback is_refunded + partial unique index on balance_reservation",
+      operation: async () => {
+        await this.knex.raw(
+          `DROP INDEX IF EXISTS ${balanceReservationActiveUniqueIndex}`,
+        );
+        await this.knex.schema.alterTable(
+          tableNames.balanceReservation,
+          (t) => {
+            t.dropColumn(columnNames.isRefunded);
+          },
+        );
       },
     });
   }

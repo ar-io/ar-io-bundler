@@ -545,11 +545,16 @@ describe("PostgresDatabase class", () => {
     const strawberriesId = "Strawberries 🍓";
 
     before(async () => {
+      // Distinct top_up_quote_ids: insertStubPaymentReceipt defaults the quote id,
+      // so two stub receipts would otherwise collide on the
+      // UNIQUE(top_up_quote_id) constraint.
       await dbTestHelper.insertStubPaymentReceipt({
         payment_receipt_id: grapesId,
+        top_up_quote_id: grapesId,
       });
       await dbTestHelper.insertStubPaymentReceipt({
         payment_receipt_id: strawberriesId,
+        top_up_quote_id: strawberriesId,
       });
     });
 
@@ -1096,7 +1101,10 @@ describe("PostgresDatabase class", () => {
           signerAddress,
           reservedWincAmount: new FinalPrice(new Winston(10)),
           networkWincAmount: new NetworkPrice(new Winston(10)),
-          dataItemId: "Unique Data Item ID -- Used Approval Test",
+          // Distinct from the earlier "Used Approval Test" reserve: a fresh id is
+          // required so this hits the balance check rather than the idempotent
+          // fast-path of the existing reservation.
+          dataItemId: "Unique Data Item ID -- Used Approval Error Test",
           adjustments: [],
           signerAddressType: "arweave",
           paidBy: [],
@@ -1361,7 +1369,10 @@ describe("PostgresDatabase class", () => {
           reservedWincAmount: new FinalPrice(new Winston(200)),
           networkWincAmount: new NetworkPrice(new Winston(200)),
           adjustments: [],
-          dataItemId: stubTxId1,
+          // Unique id so this is a fresh reserve that hits the balance check;
+          // reusing an already-reserved id would now no-op via the idempotent
+          // fast-path instead of throwing.
+          dataItemId: "reserve-insufficient-balance-test-data-item",
           signerAddressType: "arweave",
         }),
         errorType: "InsufficientBalance",
@@ -1379,12 +1390,96 @@ describe("PostgresDatabase class", () => {
           reservedWincAmount: new FinalPrice(new Winston(200)),
           networkWincAmount: new NetworkPrice(new Winston(200)),
           adjustments: [],
-          dataItemId: stubTxId1,
+          // Unique id so this is a fresh reserve (see note above).
+          dataItemId: "reserve-user-not-found-test-data-item",
           signerAddressType: "arweave",
         }),
         errorType: "InsufficientBalance",
         errorMessage: "Insufficient balance for 'Non Existent Address'",
       });
+    });
+  });
+
+  describe("reserveBalance / refundBalance idempotency (C3)", () => {
+    const addr = "Idempotency Tester 🔁";
+    const startBalance = 1_000_000;
+    const reserveWinc = 1000;
+
+    const reserve = (dataItemId: string) =>
+      db.reserveBalance({
+        signerAddress: addr,
+        reservedWincAmount: new FinalPrice(new Winston(reserveWinc)),
+        networkWincAmount: new NetworkPrice(new Winston(reserveWinc)),
+        dataItemId,
+        adjustments: [],
+        signerAddressType: "arweave",
+      });
+
+    const activeReservations = (dataItemId: string) =>
+      db["writer"]<BalanceReservationDBResult>(
+        tableNames.balanceReservation,
+      ).where({ data_item_id: dataItemId, is_refunded: false });
+
+    beforeEach(async () => {
+      // insertStubUser upserts, so this resets the balance before each case.
+      await dbTestHelper.insertStubUser({
+        user_address: addr,
+        winston_credit_balance: startBalance.toString(),
+      });
+    });
+
+    afterEach(async () => {
+      // Remove this user's reservations so the suite is re-runnable on the shared
+      // DB (a lingering active reservation would make the next run's reserve a
+      // no-op). The tests use no adjustments, so no upload_adjustment FK rows.
+      await db["writer"](tableNames.balanceReservation)
+        .where({ user_address: addr })
+        .del();
+    });
+
+    it("debits only once when the same data item is reserved twice (HTTP-retry safety)", async () => {
+      const dataItemId = "idemReserveTwice".padEnd(43, "0");
+      await reserve(dataItemId);
+      await reserve(dataItemId); // duplicate/retry — must be a no-op debit
+
+      const user = await db.getUser(addr);
+      expect(+user.winstonCreditBalance).to.equal(startBalance - reserveWinc);
+      expect((await activeReservations(dataItemId)).length).to.equal(1);
+    });
+
+    it("allows reserve-again after a refund (re-upload), charging again", async () => {
+      const dataItemId = "idemReserveRefundReserve".padEnd(43, "0");
+
+      await reserve(dataItemId);
+      await db.refundBalance(addr, new Winston(reserveWinc), dataItemId);
+
+      // Refund returned the credits and marked the reservation inactive.
+      expect(+(await db.getUser(addr)).winstonCreditBalance).to.equal(
+        startBalance,
+      );
+      expect((await activeReservations(dataItemId)).length).to.equal(0);
+
+      await reserve(dataItemId); // legitimate re-upload reserves (and charges) again
+      expect(+(await db.getUser(addr)).winstonCreditBalance).to.equal(
+        startBalance - reserveWinc,
+      );
+      expect((await activeReservations(dataItemId)).length).to.equal(1);
+    });
+
+    it("debits only once under concurrent reserves for the same data item", async () => {
+      const dataItemId = "idemReserveConcurrent".padEnd(43, "0");
+
+      const results = await Promise.allSettled([
+        reserve(dataItemId),
+        reserve(dataItemId),
+        reserve(dataItemId),
+      ]);
+      // All resolve (idempotent) — the losers roll back their debit, not error out.
+      results.forEach((r) => expect(r.status).to.equal("fulfilled"));
+
+      const user = await db.getUser(addr);
+      expect(+user.winstonCreditBalance).to.equal(startBalance - reserveWinc);
+      expect((await activeReservations(dataItemId)).length).to.equal(1);
     });
   });
 
