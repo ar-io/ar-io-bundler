@@ -23,7 +23,11 @@ import globalLogger from "../logger";
 import { ByteCount, TransactionId, W, WC, Winston } from "../types";
 import { remainingWincAmountFromApprovals } from "../utils/common";
 import { Database, WincUsedForUploadAdjustmentParams } from "./database";
-import { columnNames, tableNames } from "./dbConstants";
+import {
+  balanceReservationActiveUniqueIndex,
+  columnNames,
+  tableNames,
+} from "./dbConstants";
 import {
   arnsPurchaseDBMap,
   arnsPurchaseQuoteDBInsertFromParams,
@@ -833,44 +837,81 @@ export class PostgresDatabase implements Database {
     paidBy = [],
     paymentDirective = "list-or-signer",
   }: CreateBalanceReservationParams): Promise<void> {
-    await this.writer.transaction(async (knexTransaction) => {
-      const reservationId = randomUUID();
+    try {
+      await this.writer.transaction(async (knexTransaction) => {
+        // Idempotency fast-path: if an ACTIVE (un-refunded) reservation already
+        // exists for this data item, do nothing. A retried or duplicated reserve
+        // (e.g. the upload service retrying the reserve HTTP call) must NOT debit
+        // the wallet a second time. The partial unique index
+        // (balanceReservationActiveUniqueIndex) is the race backstop below.
+        const existing = await knexTransaction<BalanceReservationDBResult>(
+          tableNames.balanceReservation,
+        )
+          .where({ data_item_id: dataItemId, is_refunded: false })
+          .first();
+        if (existing) {
+          this.log.info(
+            "Active balance reservation already exists; skipping duplicate reserve (idempotent).",
+            { dataItemId },
+          );
+          return;
+        }
 
-      const overflow_spend = await this.useBalanceAndApprovals({
-        changeId: dataItemId,
-        changeReason: "upload",
-        paidBy,
-        knexTransaction,
-        signerAddress,
-        wincAmount: reservedWincAmount.winc,
-        paymentDirective,
-      });
+        const reservationId = randomUUID();
 
-      const balanceReservationDbInsert: BalanceReservationDBInsert = {
-        reservation_id: reservationId,
-        data_item_id: dataItemId,
-        reserved_winc_amount: reservedWincAmount.toString(),
-        network_winc_amount: networkWincAmount.toString(),
-        user_address: signerAddress,
-        overflow_spend: JSON.stringify(overflow_spend),
-      };
-      await knexTransaction<BalanceReservationDBInsert>(
-        tableNames.balanceReservation,
-      ).insert(balanceReservationDbInsert);
+        const overflow_spend = await this.useBalanceAndApprovals({
+          changeId: dataItemId,
+          changeReason: "upload",
+          paidBy,
+          knexTransaction,
+          signerAddress,
+          wincAmount: reservedWincAmount.winc,
+          paymentDirective,
+        });
 
-      const batchUploadAdjustmentInserts: UploadAdjustmentDBInsert[] =
-        adjustments.map(({ adjustmentAmount, catalogId }, index) => ({
-          adjusted_winc_amount: adjustmentAmount.toString(),
-          user_address: signerAddress,
-          catalog_id: catalogId,
-          adjustment_index: index,
+        const balanceReservationDbInsert: BalanceReservationDBInsert = {
           reservation_id: reservationId,
-        }));
-      await knexTransaction.batchInsert(
-        tableNames.uploadAdjustment,
-        batchUploadAdjustmentInserts,
-      );
-    });
+          data_item_id: dataItemId,
+          reserved_winc_amount: reservedWincAmount.toString(),
+          network_winc_amount: networkWincAmount.toString(),
+          user_address: signerAddress,
+          overflow_spend: JSON.stringify(overflow_spend),
+        };
+        await knexTransaction<BalanceReservationDBInsert>(
+          tableNames.balanceReservation,
+        ).insert(balanceReservationDbInsert);
+
+        const batchUploadAdjustmentInserts: UploadAdjustmentDBInsert[] =
+          adjustments.map(({ adjustmentAmount, catalogId }, index) => ({
+            adjusted_winc_amount: adjustmentAmount.toString(),
+            user_address: signerAddress,
+            catalog_id: catalogId,
+            adjustment_index: index,
+            reservation_id: reservationId,
+          }));
+        await knexTransaction.batchInsert(
+          tableNames.uploadAdjustment,
+          batchUploadAdjustmentInserts,
+        );
+      });
+    } catch (error) {
+      // Race backstop: a concurrent reserve for the same data item committed
+      // first, so this transaction's INSERT violated the partial unique index and
+      // the WHOLE transaction (including its debit) rolled back. Treat as
+      // idempotent success — the wallet was charged exactly once by the winner.
+      const pgError = error as { code?: string; constraint?: string };
+      if (
+        pgError.code === "23505" &&
+        pgError.constraint === balanceReservationActiveUniqueIndex
+      ) {
+        this.log.info(
+          "Concurrent reserve for the same data item lost the race; duplicate debit rolled back (idempotent).",
+          { dataItemId },
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   public async refundBalance(
@@ -879,11 +920,15 @@ export class PostgresDatabase implements Database {
     dataItemId: TransactionId,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
+      // Refund the ACTIVE (un-refunded) reservation for this data item. With the
+      // partial unique index there is at most one; orderBy is a defensive
+      // tie-breaker for any legacy rows that predate the index.
       const reservation = await knexTransaction<BalanceReservationDBResult>(
         tableNames.balanceReservation,
       )
         .where({
           data_item_id: dataItemId,
+          is_refunded: false,
         })
         .orderBy("reserved_date", "desc")
         .first();
@@ -895,6 +940,16 @@ export class PostgresDatabase implements Database {
         knexTransaction,
         overflowSpend: reservation?.overflow_spend,
       });
+
+      // Mark the reservation refunded so the partial unique index frees this data
+      // item for a legitimate re-upload (reserve-again after a failed upload was
+      // refunded). Without this, a re-reserve would hit the idempotent fast-path
+      // and the retry would never be charged.
+      if (reservation) {
+        await knexTransaction(tableNames.balanceReservation)
+          .where({ reservation_id: reservation.reservation_id })
+          .update({ is_refunded: true });
+      }
     });
   }
 

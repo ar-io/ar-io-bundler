@@ -210,7 +210,7 @@ export function isFailedPaymentTransactionDBResult(
   transaction:
     | PendingPaymentTransactionDBResult
     | FailedPaymentTransaction
-    | CreditedPaymentTransaction
+    | CreditedPaymentTransaction,
 ): transaction is FailedPaymentTransactionDBResult {
   return (
     (transaction as FailedPaymentTransactionDBResult).failed_reason !==
@@ -222,7 +222,7 @@ export function isCreditedPaymentTransactionDBResult(
   transaction:
     | PendingPaymentTransactionDBResult
     | CreditedPaymentTransaction
-    | FailedPaymentTransaction
+    | FailedPaymentTransaction,
 ): transaction is CreditedPaymentTransactionDBResult {
   return (
     (transaction as CreditedPaymentTransactionDBResult).block_height !==
@@ -455,12 +455,14 @@ export interface BalanceReservationDBInsert {
   reserved_winc_amount: string;
   network_winc_amount: string;
   overflow_spend?: string;
+  is_refunded?: boolean; // defaults false; true once refunded/superseded
 }
 
 export interface BalanceReservationDBResult
   extends Omit<BalanceReservationDBInsert, "overflow_spend"> {
   reserved_date: string;
   overflow_spend?: OverflowSpendDBResult; // Store as a JSON string
+  is_refunded: boolean;
 }
 
 interface AdjustmentCatalogDBInsert {
@@ -742,7 +744,7 @@ export const [
 ] = purchaseStatus;
 export type ArNSPurchaseStatus = (typeof purchaseStatus)[number];
 export const isArNSPurchaseStatus = (
-  value: string
+  value: string,
 ): value is ArNSPurchaseStatus =>
   purchaseStatus.includes(value as ArNSPurchaseStatus);
 
@@ -756,7 +758,7 @@ export type FailedArNSPurchase = ArNSPurchase & {
 };
 
 export const isFailedArNSNamePurchase = (
-  purchase: ArNSPurchase
+  purchase: ArNSPurchase,
 ): purchase is FailedArNSPurchase =>
   (purchase as FailedArNSPurchase).failedDate !== undefined;
 

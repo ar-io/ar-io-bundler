@@ -93,6 +93,7 @@ export const columnNames = {
   networkWincAmount: "network_winc_amount", // amount before adjustments
   reservedWincAmount: "reserved_winc_amount", // amount reserved after adjustments
   overflowSpend: "overflow_spend",
+  isRefunded: "is_refunded", // true once refunded/superseded; partial-unique key
 
   // Adjustments
   adjustmentId: "adjustment_id",
@@ -190,3 +191,10 @@ export const columnNames = {
   excessWinc: "excess_winc",
   paidBy: "paid_by", // CSV of user addresses
 } as const;
+
+// Partial unique index enforcing at most one ACTIVE (un-refunded) balance
+// reservation per data_item_id. Referenced by both the migration that creates it
+// and reserveBalance (which matches this name on a 23505 to detect the
+// lost-the-race case). Keep the two in sync via this single constant.
+export const balanceReservationActiveUniqueIndex =
+  "balance_reservation_active_data_item_id_unique";
