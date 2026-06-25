@@ -94,6 +94,11 @@ Prometheus metrics (if enabled):
 
 ## Backups
 
+> **Superseded by [`BACKUP_RESTORE.md`](./BACKUP_RESTORE.md)** — the authoritative architecture (measured
+> sizing, encrypted `restic` procedure + systemd timer, pgBackRest/WAL scale path with PITR, restore drill).
+> The snippet below is a minimal starting point only. **Do not** mirror MinIO object bytes (permanent on
+> Arweave; in-flight re-uploadable) — that advice is obsolete.
+
 ### Database Backup Script
 
 Create `/opt/backups/backup.sh`:
