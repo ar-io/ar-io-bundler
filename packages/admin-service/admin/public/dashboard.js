@@ -619,11 +619,12 @@ function updateCharts(stats) {
   updateSignatureChart(stats.uploads.bySignatureType);
   updateCryptoTokenChart(stats.payments?.cryptoTopUps?.byToken || {});
   updatePaymentTypeChart(stats.payments?.x402Payments?.byMode || {});
-  // byNetwork + byMode must come from the SAME x402 source (the payment-service
-  // `x402_payment_transaction` table). The top-level `stats.x402Payments` reads a
-  // separate `x402_payments` table that doesn't exist in payment_service, so the
-  // network chart was always empty and inconsistent with the payment-type chart.
-  updateNetworkChart(stats.payments?.x402Payments?.byNetwork || {});
+  // NOTE: byNetwork and byMode come from DIFFERENT x402 systems and that's correct
+  // — they are not the same data. byNetwork = the upload-service unsigned-x402
+  // store (`upload_service.x402_payments`, has `network` but no `mode`); byMode =
+  // the payment-service signed-x402 store (`payment_service.x402_payment_transaction`,
+  // has `mode`). Pointing byNetwork at the payment store emptied a populated chart.
+  updateNetworkChart(stats.x402Payments?.byNetwork || {});
 }
 
 /**

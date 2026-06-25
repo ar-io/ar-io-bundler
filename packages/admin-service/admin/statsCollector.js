@@ -35,17 +35,21 @@ const { computeHealthRollup } = require('./healthRollup');
 const Redis = require('ioredis');
 const Knex = require('knex');
 
-// Postgres `timestamp without time zone` columns (uploaded_date, planned_date,
-// permanent_date, posted/failed dates, payment timestamps) store UTC wall-clock.
-// node-postgres parses OID 1114 in the PROCESS's local timezone by default, so
-// when this process doesn't run in UTC (e.g. prod on CEST) every dashboard time
-// is skewed by the host's UTC offset — that's the "newest upload shows 2 hours
-// ago" bug. Force 1114 to be read as UTC so timestamps are correct regardless of
-// the host timezone. Scoped to the admin process (the services have their own).
+// Postgres `timestamp without time zone` columns on the UPLOAD side (uploaded_date,
+// planned_date, permanent_date — all 1114, stored as UTC wall-clock). node-postgres
+// parses OID 1114 in the PROCESS's local timezone by default, so when this process
+// doesn't run in UTC (e.g. prod on CEST) every dashboard time is skewed by the
+// host's UTC offset — that's the "newest upload shows 2 hours ago" bug. Force 1114
+// to be read as UTC. Scoped to the admin process (the services have their own pg).
+// (Payment-side timestamps are timestamptz/1184 and were already correct.)
 try {
-  require('pg').types.setTypeParser(1114, (v) =>
-    v == null ? v : new Date(v.replace(' ', 'T') + 'Z')
-  );
+  require('pg').types.setTypeParser(1114, (v) => {
+    if (v == null) return v;
+    const d = new Date(v.replace(' ', 'T') + 'Z');
+    // Postgres can emit 'infinity'/'-infinity'/BC values that don't parse — fall
+    // back to the raw string rather than surfacing an "Invalid Date".
+    return Number.isNaN(d.getTime()) ? v : d;
+  });
 } catch (e) {
   console.warn('Stats collector: could not set UTC timestamp parser:', e.message);
 }

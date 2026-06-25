@@ -504,7 +504,11 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
       // loudly for ops either way).
       const respondPaymentRequired = (detail: string) => {
         ctx.status = 402;
-        ctx.set("X-Payment-Required", "x402-1");
+        // NOTE: deliberately NOT setting `X-Payment-Required: x402-1` here — that
+        // header signals a parseable x402 envelope (`{x402Version, accepts:[...]}`),
+        // which the success path returns. This fallback body has no `accepts`, so
+        // advertising x402-1 would make an x402-fetch client read `accepts[0]` →
+        // undefined/throw. A plain 402 + JSON message is the honest signal.
         ctx.set("Content-Type", "application/json");
         ctx.body = {
           error: "Payment required",
