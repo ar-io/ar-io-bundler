@@ -2053,6 +2053,29 @@ describe("Router tests", () => {
     expect(data).to.equal("Webhook Error!");
   });
 
+  it("POST /stripe-webhook returns 413 for an oversized body and never verifies the signature (pre-auth DoS guard)", async () => {
+    // The webhook bypasses the global koa-bodyParser (its raw body is reserved
+    // for signature verification), so the route itself must cap the raw read.
+    // A body over the jsonLimit must be rejected with 413 BEFORE signature
+    // verification — an unauthenticated client must not be able to force
+    // unbounded buffering on this public endpoint.
+    const constructEventSpy = stub(stripe.webhooks, "constructEvent");
+    const oversized = Buffer.alloc(3 * 1024 * 1024, 0x61); // 3 MiB > 1mb jsonLimit
+
+    const { status, data } = await axios.post(`/v1/stripe-webhook`, oversized, {
+      ...webhookPostConfig,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+
+    expect(status).to.equal(413);
+    expect(data).to.equal("Payload Too Large");
+    expect(
+      constructEventSpy.called,
+      "signature verification must NOT run for an oversized body",
+    ).to.equal(false);
+  });
+
   it("POST /stripe-webhook returns 200 for a valid stripe payment event from an ArNS Purchase Quote", async () => {
     const paymentReceivedEventId = "A Payment Receipt Id";
     const paymentReceivedUserAddress = "User Address Stubbed";
