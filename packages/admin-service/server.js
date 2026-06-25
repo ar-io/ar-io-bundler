@@ -164,6 +164,7 @@ const uploadQueueLabels = [
   jobLabels.prepareBundle,
   jobLabels.postBundle,
   jobLabels.seedBundle,
+  jobLabels.broadcastChunks,
   jobLabels.verifyBundle,
   jobLabels.opticalPost,
   jobLabels.putOffsets,
@@ -172,6 +173,8 @@ const uploadQueueLabels = [
   jobLabels.cleanupFs,
   jobLabels.redrivePosted,
   jobLabels.refundBalance,
+  jobLabels.archiveCopy,
+  jobLabels.ensurePartitions,
 ];
 
 // Drift guard: every queue defined by the upload service must be on the board.
