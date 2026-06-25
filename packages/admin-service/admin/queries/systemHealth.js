@@ -331,10 +331,15 @@ async function getInfrastructureHealth({
     const r = await uploadDb.raw(`SELECT count(*)::int as count FROM pg_stat_activity`);
     const used = r.rows[0].count;
     const max = parseInt(process.env.PG_MAX_CONNECTIONS || '500', 10);
+    const pct = max > 0 ? Math.round((used / max) * 100) : 0;
     health.dbConnections = {
+      // This is a pool-saturation GAUGE, not a liveness check. It needs a
+      // `status` so the dashboard's infrastructure card renders a real icon
+      // instead of defaulting to the unhealthy ✗. Healthy until the pool is hot.
+      status: pct >= 90 ? 'unhealthy' : 'healthy',
       total: used,
       max,
-      pct: max > 0 ? Math.round((used / max) * 100) : 0,
+      pct,
     };
   } catch (error) {
     // best-effort; omit on error (the per-DB liveness above still alerts on down)

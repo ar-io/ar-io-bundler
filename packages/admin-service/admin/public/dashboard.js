@@ -545,12 +545,22 @@ function updateSystemHealth(health) {
   // Infrastructure
   Object.entries(health.infrastructure || {}).forEach(([name, data]) => {
     const el = document.createElement('div');
-    el.className = `health-item ${data.status}`;
+    el.className = `health-item ${data.status || ''}`;
+    // Build the meta line by shape: a pool gauge (total/max/pct), a per-DB
+    // connection count, a Redis memory figure, or a plain liveness label.
+    let meta;
+    if (data.pct != null && data.max != null) {
+      meta = `${(data.total ?? 0).toLocaleString()} / ${data.max.toLocaleString()} conns · ${data.pct}%`;
+    } else if (data.connections != null || data.memoryUsed) {
+      meta = `${data.connections != null ? data.connections.toLocaleString() + ' conns' : ''} ${data.memoryUsed || ''}`.trim();
+    } else {
+      meta = data.status === 'healthy' ? 'Active' : (data.error || 'Unavailable');
+    }
     el.innerHTML = `
       <span class="health-icon">${data.status === 'healthy' ? icon('circle-check', { size: 18 }) : icon('circle-x', { size: 18 })}</span>
       <div>
         <div class="health-name">${formatServiceName(name)}</div>
-        <div class="health-meta">${data.memoryUsed || data.connections ? `${data.connections || ''} ${data.memoryUsed || ''}`.trim() : 'Active'}</div>
+        <div class="health-meta">${meta}</div>
       </div>
     `;
     grid.appendChild(el);
@@ -1232,6 +1242,7 @@ function formatServiceName(name) {
     'admin-dashboard': 'Admin Dashboard',
     'postgresUpload': 'PostgreSQL (Upload)',
     'postgresPayment': 'PostgreSQL (Payment)',
+    'dbConnections': 'PostgreSQL Pool',
     'redisCache': 'Redis Cache',
     'redisQueues': 'Redis Queues',
     'minio': 'MinIO Object Storage'
