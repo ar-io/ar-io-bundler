@@ -2,17 +2,25 @@
 #
 # This is the SLOW, full-stack gate: each service spins up its real infra
 # (Postgres/Redis/MinIO/arlocal) in Docker and runs its integration suite in a
-# container. It is intentionally NOT a per-pull_request gate (a run is several
-# minutes); per-PR build/typecheck/lint/unit live in ci.yml and stay untouched.
+# container. It runs a few minutes per service; per-PR build/typecheck/lint/unit
+# live in ci.yml and stay untouched.
 #
-# Triggers: pushes to the integration/release branches (develop, main — plus
-# master during the transition) and a nightly schedule, so regressions in the
-# bundle/payment pipelines are caught as code lands and as external deps drift.
+# It now ALSO runs on pull requests targeting develop. ci.yml's build-and-test
+# only runs build + test:unit, so an integration-only regression (e.g. a new DB
+# constraint breaking an integration test) could merge behind a green PR and only
+# surface later on the develop push. Gating PRs on this catches it before merge.
+#
+# Triggers: PRs to develop, pushes to the integration/release branches (develop,
+# main — plus master during the transition), and a nightly schedule, so
+# regressions in the bundle/payment pipelines are caught before merge, as code
+# lands, and as external deps drift.
 name: Integration (test:docker)
 
 on:
   push:
     branches: [develop, main, master]
+  pull_request:
+    branches: [develop]
   schedule:
     # Nightly at 07:00 UTC.
     - cron: "0 7 * * *"
