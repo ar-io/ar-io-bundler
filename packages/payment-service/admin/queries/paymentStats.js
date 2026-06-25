@@ -354,16 +354,32 @@ async function getPaymentIntegrity(db) {
     };
   }
 
-  let failedTopUpQuotes = { count: 0 };
+  // recentCount (last 24h) is what the rollup alerts on — lifetime totals would
+  // nag forever once anything has ever failed.
+  let failedTopUpQuotes = { count: 0, recentCount: 0 };
   if (hasFailedQuote) {
     const r = await db(tableNames.failedTopUpQuote).count('* as count').first();
-    failedTopUpQuotes = { count: parseInt(r.count) || 0 };
+    const recent = await db(tableNames.failedTopUpQuote)
+      .where('quote_failed_date', '>', db.raw("now() - interval '24 hours'"))
+      .count('* as count')
+      .first();
+    failedTopUpQuotes = {
+      count: parseInt(r.count) || 0,
+      recentCount: parseInt(recent.count) || 0,
+    };
   }
 
-  let chargebacks = { count: 0 };
+  let chargebacks = { count: 0, recentCount: 0 };
   if (hasChargeback) {
     const r = await db(tableNames.chargebackReceipt).count('* as count').first();
-    chargebacks = { count: parseInt(r.count) || 0 };
+    const recent = await db(tableNames.chargebackReceipt)
+      .where('chargeback_receipt_date', '>', db.raw("now() - interval '24 hours'"))
+      .count('* as count')
+      .first();
+    chargebacks = {
+      count: parseInt(r.count) || 0,
+      recentCount: parseInt(recent.count) || 0,
+    };
   }
 
   // x402 uploads that paid but were never finalized. The status starts at

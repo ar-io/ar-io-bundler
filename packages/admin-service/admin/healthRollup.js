@@ -27,6 +27,16 @@ const DEFAULTS = {
   // Postgres pool saturation: total server connections as a % of the cap.
   dbConnWarnPct: 80,
   dbConnCritPct: 90,
+  // Redis memory as a % of maxmemory (only alerts if a maxmemory limit is set).
+  redisMemWarnPct: 85,
+  redisMemCritPct: 95,
+  // Disputes/chargebacks in the last 24h. A dispute is always worth a warning;
+  // a cluster is critical (fraud / systemic billing problem).
+  chargebackCrit: 5,
+  // Failed top-up quotes in the last 24h. Some failures are normal (abandoned
+  // checkout), so thresholds are generous — only flag a genuine spike.
+  failedQuoteWarn: 20,
+  failedQuoteCrit: 100,
   backlogAgeWarnSec: 1800, // 30 min — backlog this old is suspicious
   backlogAgeCritSec: 7200, // 2 h   — backlog this old means something's stuck
   stuckPostedWarn: 1,
@@ -119,6 +129,18 @@ function computeHealthRollup(stats, overrides = {}) {
   }
   if ((integ.failedCrypto || {}).count > 0)
     add('degraded', 'payments', `${integ.failedCrypto.count} failed crypto payments`);
+  // Chargebacks/disputes in the last 24h (recent, not lifetime — wouldn't nag).
+  const cb = integ.chargebacks || {};
+  if ((cb.recentCount || 0) > 0) {
+    const sev = cb.recentCount >= t.chargebackCrit ? 'critical' : 'degraded';
+    add(sev, 'payments', `${cb.recentCount} chargeback(s)/dispute(s) in the last 24h`);
+  }
+  // Failed top-up quotes in the last 24h (users trying to pay and failing).
+  const fq = integ.failedTopUpQuotes || {};
+  if ((fq.recentCount || 0) >= t.failedQuoteWarn) {
+    const sev = fq.recentCount >= t.failedQuoteCrit ? 'critical' : 'degraded';
+    add(sev, 'payments', `${fq.recentCount} failed top-up quotes in the last 24h — users may be unable to pay`);
+  }
   // x402-paid uploads that settled but never finalized (excludes top-ups, which
   // legitimately stay pending_validation).
   const x402stuck = integ.x402StuckUploads || {};
@@ -146,6 +168,23 @@ function computeHealthRollup(stats, overrides = {}) {
     else if (dbc.pct >= t.dbConnWarnPct)
       add('degraded', 'infra', `Postgres connections ${dbc.total}/${dbc.max} (${dbc.pct}%) of cap`);
   }
+
+  // --- Redis memory pressure (only when a maxmemory limit is set) ---
+  const infra = (stats.system && stats.system.infrastructure) || {};
+  for (const [k, label] of [['redisCache', 'Redis cache'], ['redisQueues', 'Redis queues']]) {
+    const r = infra[k];
+    if (r && typeof r.memoryPct === 'number') {
+      if (r.memoryPct >= t.redisMemCritPct)
+        add('critical', 'infra', `${label} memory ${r.memoryPct}% of maxmemory — eviction/OOM imminent`);
+      else if (r.memoryPct >= t.redisMemWarnPct)
+        add('degraded', 'infra', `${label} memory ${r.memoryPct}% of maxmemory`);
+    }
+  }
+
+  // --- Arweave gateway reachability (reads/pricing/posting depend on it) ---
+  const gw = (stats.system && stats.system.gateway) || {};
+  if (gw.configured && gw.status === 'unhealthy')
+    add('critical', 'infra', `Arweave gateway unreachable (${gw.url}): ${gw.error} — reads/pricing/posting affected`);
 
   // --- Schedulers (silent-stop guard) ---
   const sched = (stats.system && stats.system.schedulers) || {};

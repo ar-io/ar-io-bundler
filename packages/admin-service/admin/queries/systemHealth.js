@@ -35,6 +35,16 @@ const EXPECTED_SCHEDULERS = {
   'redrive-posted': 'redrive-posted-scheduler',
 };
 
+// Percent of maxmemory used, from a Redis `INFO memory` dump. Returns null when
+// no maxmemory limit is set (0 = unlimited → no eviction/OOM pressure to alert on).
+function redisMemoryPct(info) {
+  const used = info.match(/used_memory:(\d+)/);
+  const max = info.match(/maxmemory:(\d+)/);
+  const maxBytes = max ? parseInt(max[1], 10) : 0;
+  if (!used || !maxBytes) return null;
+  return Math.round((parseInt(used[1], 10) / maxBytes) * 100);
+}
+
 /**
  * Get comprehensive system health status
  * @param {object} args
@@ -57,12 +67,13 @@ async function getSystemHealth({
   queues
 }) {
   try {
-    const [services, infrastructure, queueHealth, storage, schedulers] = await Promise.all([
+    const [services, infrastructure, queueHealth, storage, schedulers, gateway] = await Promise.all([
       getServiceHealth(),
       getInfrastructureHealth({ uploadDb, paymentDb, redis, queueRedis }),
       getQueueHealth(queues),
       getStorageHealth({ minioEndpoint, diskPath }),
       getSchedulerHealth(queues),
+      getGatewayHealth(),
     ]);
 
     return {
@@ -71,11 +82,36 @@ async function getSystemHealth({
       queues: queueHealth,
       storage,
       schedulers,
+      gateway,
       rawSigner: getRawSignerHealth(),
     };
   } catch (error) {
     console.error('Failed to get system health:', error);
     throw error;
+  }
+}
+
+/**
+ * Direct reachability probe of the Arweave gateway used for reads/pricing/posting
+ * (ARWEAVE_GATEWAY, falling back to PUBLIC_ACCESS_GATEWAY). Optical-bridge failures
+ * already surface via the optical-post queue; this catches the gateway itself
+ * being down. Unconfigured = no alert. 5s timeout so a slow gateway can't stall.
+ */
+async function getGatewayHealth() {
+  const base = process.env.ARWEAVE_GATEWAY || process.env.PUBLIC_ACCESS_GATEWAY;
+  if (!base) return { configured: false };
+  const url = `${base.replace(/\/$/, '')}/info`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    return res.ok
+      ? { configured: true, status: 'healthy', url: base }
+      : { configured: true, status: 'unhealthy', url: base, error: `HTTP ${res.status}` };
+  } catch (error) {
+    return { configured: true, status: 'unhealthy', url: base, error: error.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -312,7 +348,8 @@ async function getInfrastructureHealth({
       const memoryMatch = info.match(/used_memory_human:([^\r\n]+)/);
       health.redisCache = {
         status: 'healthy',
-        memoryUsed: memoryMatch ? memoryMatch[1] : 'unknown'
+        memoryUsed: memoryMatch ? memoryMatch[1] : 'unknown',
+        memoryPct: redisMemoryPct(info) // null if no maxmemory limit
       };
     } catch (error) {
       health.redisCache = {
@@ -330,7 +367,8 @@ async function getInfrastructureHealth({
       const memoryMatch = info.match(/used_memory_human:([^\r\n]+)/);
       health.redisQueues = {
         status: 'healthy',
-        memoryUsed: memoryMatch ? memoryMatch[1] : 'unknown'
+        memoryUsed: memoryMatch ? memoryMatch[1] : 'unknown',
+        memoryPct: redisMemoryPct(info) // null if no maxmemory limit
       };
     } catch (error) {
       health.redisQueues = {
