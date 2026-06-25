@@ -24,6 +24,9 @@
  */
 
 const DEFAULTS = {
+  // Postgres pool saturation: total server connections as a % of the cap.
+  dbConnWarnPct: 80,
+  dbConnCritPct: 90,
   backlogAgeWarnSec: 1800, // 30 min — backlog this old is suspicious
   backlogAgeCritSec: 7200, // 2 h   — backlog this old means something's stuck
   stuckPostedWarn: 1,
@@ -76,6 +79,10 @@ function computeHealthRollup(stats, overrides = {}) {
     else if (w.status === 'low') add('degraded', 'wallet', `Bundle wallet low: ${w.balanceAr} AR (< ${w.lowThresholdAr})`);
     else if (w.status === 'unknown') add('degraded', 'wallet', `Cannot read bundle wallet balance: ${w.error || 'unknown'}`);
   }
+  // Raw-data-item signer wallet (signs unsigned x402 uploads) — file health only.
+  const rawSigner = (stats.system && stats.system.rawSigner) || {};
+  if (rawSigner.configured && rawSigner.ok === false)
+    add('critical', 'wallet', `Raw-data-item signer wallet unusable: ${rawSigner.error} — unsigned x402 uploads will fail`);
 
   // --- Pipeline (data flowing to permanence) ---
   const risk = (stats.pipeline && stats.pipeline.atRisk) || {};
@@ -129,6 +136,15 @@ function computeHealthRollup(stats, overrides = {}) {
   if (storage.disk && typeof storage.disk.usedPct === 'number') {
     if (storage.disk.usedPct >= t.diskCritPct) add('critical', 'storage', `Disk ${storage.disk.usedPct}% full (${storage.disk.path})`);
     else if (storage.disk.usedPct >= t.diskWarnPct) add('degraded', 'storage', `Disk ${storage.disk.usedPct}% full (${storage.disk.path})`);
+  }
+
+  // --- Postgres connection-pool saturation ---
+  const dbc = (stats.system && stats.system.infrastructure && stats.system.infrastructure.dbConnections) || null;
+  if (dbc && typeof dbc.pct === 'number') {
+    if (dbc.pct >= t.dbConnCritPct)
+      add('critical', 'infra', `Postgres connections ${dbc.total}/${dbc.max} (${dbc.pct}%) — near the cap, work will stall`);
+    else if (dbc.pct >= t.dbConnWarnPct)
+      add('degraded', 'infra', `Postgres connections ${dbc.total}/${dbc.max} (${dbc.pct}%) of cap`);
   }
 
   // --- Schedulers (silent-stop guard) ---

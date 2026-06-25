@@ -71,10 +71,34 @@ async function getSystemHealth({
       queues: queueHealth,
       storage,
       schedulers,
+      rawSigner: getRawSignerHealth(),
     };
   } catch (error) {
     console.error('Failed to get system health:', error);
     throw error;
+  }
+}
+
+/**
+ * Health of the raw-data-item signer wallet (RAW_DATA_ITEM_JWK_FILE) — the key
+ * that signs unsigned x402 uploads. Nothing else health-checks it, so if the file
+ * is missing/corrupt those uploads fail silently. Pure fs check (no balance — a
+ * signer needs none). Unconfigured = feature unused = no alert.
+ */
+function getRawSignerHealth() {
+  const p = process.env.RAW_DATA_ITEM_JWK_FILE;
+  if (!p) return { configured: false };
+  try {
+    const jwk = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return jwk && jwk.kty
+      ? { configured: true, ok: true }
+      : { configured: true, ok: false, error: 'not a valid JWK (missing kty)' };
+  } catch (error) {
+    return {
+      configured: true,
+      ok: false,
+      error: error.code === 'ENOENT' ? 'file not found' : error.message,
+    };
   }
 }
 
@@ -262,6 +286,22 @@ async function getInfrastructureHealth({
       status: 'unhealthy',
       error: error.message
     };
+  }
+
+  // Pool-saturation signal: TOTAL server connections (all DBs) vs the configured
+  // cap. A near-full pool means new work can't get a connection → stalls. Both
+  // DBs share one Postgres server, so count server-wide, not per-database.
+  try {
+    const r = await uploadDb.raw(`SELECT count(*)::int as count FROM pg_stat_activity`);
+    const used = r.rows[0].count;
+    const max = parseInt(process.env.PG_MAX_CONNECTIONS || '500', 10);
+    health.dbConnections = {
+      total: used,
+      max,
+      pct: max > 0 ? Math.round((used / max) * 100) : 0,
+    };
+  } catch (error) {
+    // best-effort; omit on error (the per-DB liveness above still alerts on down)
   }
 
   // Redis (ElastiCache - port 6379)
