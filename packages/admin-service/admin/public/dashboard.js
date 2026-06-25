@@ -44,6 +44,7 @@ let signatureChart = null;
 let paymentModeChart = null;
 let networkChart = null;
 let cryptoTokenChart = null;
+let failureReasonsChart = null;
 const sparkCharts = {};
 
 // Selected time window for the health panel + trends.
@@ -191,6 +192,11 @@ function renderSparklines(points) {
   renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
   renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
   renderSparkline('spark-bundles', points, p => p.bp, '#16a34a');
+  // ba/lat are stored in SECONDS — chart in minutes for readability. lat can be
+  // null on older history points (gap-spanned). ib is a plain count.
+  renderSparkline('spark-backlog-age', points, p => (p.ba == null ? null : p.ba / 60), '#d97706');
+  renderSparkline('spark-inflight', points, p => p.ib, '#0ea5e9');
+  renderSparkline('spark-latency', points, p => (p.lat == null ? null : p.lat / 60), '#7c3aed');
   renderSparkline('spark-wallet', points, p => p.w, '#5427C8');
 }
 
@@ -583,11 +589,13 @@ function updateOverviewCards(stats) {
   document.getElementById('total-bytes').textContent =
     stats.uploads.allTime.totalBytesFormatted;
 
-  // Unique users
+  // Unique users — headline is all-time distinct uploaders; sub-line splits them
+  // into paid (≥1 upload assessed a non-zero price) vs free (only free-tier).
+  const upAll = stats.uploads.allTime;
   document.getElementById('unique-users').textContent =
-    stats.uploads.allTime.uniqueUploaders.toLocaleString();
+    (upAll.uniqueUploaders || 0).toLocaleString();
   document.getElementById('users-today').textContent =
-    `${stats.uploads.today.uniqueUploaders} today`;
+    `${(upAll.paidUploaders || 0).toLocaleString()} paid · ${(upAll.freeUploaders || 0).toLocaleString()} free`;
 
   // Credit top-ups (Stripe + crypto, from payment_service.payment_receipt)
   const topUp = stats.payments?.topUps?.total || { count: 0, ar: '0.000000' };
@@ -625,6 +633,7 @@ function updateCharts(stats) {
   // the payment-service signed-x402 store (`payment_service.x402_payment_transaction`,
   // has `mode`). Pointing byNetwork at the payment store emptied a populated chart.
   updateNetworkChart(stats.x402Payments?.byNetwork || {});
+  updateFailureReasonsChart(stats.bundles?.failureReasons || {});
 }
 
 /**
@@ -746,6 +755,54 @@ function updateSignatureChart(byType) {
     signatureChart.destroy();
   }
   signatureChart = new Chart(ctx, config);
+}
+
+/**
+ * Update the failure-reasons chart (doughnut) — failed bundles + items grouped by
+ * reason, so an admin can see WHAT is failing, not just how many. Reason text is
+ * truncated in the legend and shown in full in the tooltip.
+ */
+function updateFailureReasonsChart(byReason) {
+  const canvas = document.getElementById('failure-reasons-chart');
+  if (!canvas) return;
+  const data = Object.entries(byReason || {}).map(([reason, count]) => ({
+    full: reason,
+    label: reason.length > 28 ? reason.slice(0, 27) + '…' : reason,
+    value: count,
+  }));
+  const noData = data.length === 0;
+  if (noData) data.push({ full: 'No failures', label: 'No failures', value: 1 });
+
+  const chartData = {
+    labels: data.map(d => d.label),
+    datasets: [{
+      data: data.map(d => d.value),
+      backgroundColor: noData
+        ? ['#16a34a']
+        : ['#e74c3c', '#f5a623', '#ec4899', '#8B5CF6', '#0ea5e9', '#d97706', '#5427C8', '#64748b'],
+      borderWidth: 2,
+      borderColor: '#ffffff',
+    }],
+  };
+  const config = {
+    type: 'doughnut',
+    data: chartData,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 14, font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            title: (items) => (data[items[0].dataIndex] && data[items[0].dataIndex].full) || '',
+            label: (item) => (noData ? 'No failures' : `${item.parsed.toLocaleString()}`),
+          },
+        },
+      },
+    },
+  };
+  if (failureReasonsChart) failureReasonsChart.destroy();
+  failureReasonsChart = new Chart(canvas.getContext('2d'), config);
 }
 
 /**

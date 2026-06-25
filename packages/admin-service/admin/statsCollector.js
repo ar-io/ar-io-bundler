@@ -305,6 +305,8 @@ function getEmptyUploadStats() {
       totalBytes: 0,
       totalBytesFormatted: '0 B',
       uniqueUploaders: 0,
+      paidUploaders: 0,
+      freeUploaders: 0,
       averageSize: 0,
       averageSizeFormatted: '0 B'
     },
@@ -441,7 +443,8 @@ function getEmptyBundleStats() {
       totalPermanent: 0,
       totalPosted: 0,
       totalFailed: 0
-    }
+    },
+    failureReasons: {}
   };
 }
 
@@ -580,6 +583,8 @@ async function recordHistoryPoint(stats) {
       ib: risk.inFlightBundles || 0,
       ar: (tp.arrivals && tp.arrivals.lastHour) || 0,
       bp: (tp.bundlesPermanent && tp.bundlesPermanent.lastHour) || 0,
+      // upload→permanent latency p50 (seconds) — the user-facing SLA trend.
+      lat: (tp.permanenceLatency && tp.permanenceLatency.p50Sec) || null,
       w: stats.wallet && stats.wallet.balanceAr != null ? Number(stats.wallet.balanceAr) : null,
       s: stats.health && stats.health.status,
     };

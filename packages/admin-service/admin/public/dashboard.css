@@ -686,10 +686,10 @@ table td .copyable-id {
 .reason-cell { max-width: 360px; color: var(--danger-color); font-size: 13px; word-break: break-word; }
 
 /* Sparklines */
-.spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.spark { border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; }
+.spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.spark { border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; }
 .spark-title { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
-.spark canvas { height: 90px !important; }
+.spark canvas { height: 150px !important; }
 
 /* Window selector (segmented control) */
 .window-selector { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
