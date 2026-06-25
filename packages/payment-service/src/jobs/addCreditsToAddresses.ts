@@ -23,7 +23,7 @@ import { EmailProvider } from "../emailProvider";
 import globalLogger from "../logger";
 import { triggerEmail } from "../triggerEmail";
 import { wincFromCredits } from "../types";
-import { sendSlackMessage } from "../utils/slack";
+import { sendAdminAlert, slackChannels } from "../utils/slack";
 
 /**
  * Admin tool for adding credits to a list of email or wallet addresses
@@ -69,9 +69,10 @@ export async function addCreditsToAddresses({
     await triggerEmail(unredeemedGift, emailProvider);
   }
 
-  await sendSlackMessage({
-    message: `Added ${creditAmount} Turbo Credit(s) to the following addresses:\n\`\`\`${addresses.map(
-      (address) => `\n${address}`
-    )}\`\`\``,
+  await sendAdminAlert({
+    severity: "info",
+    channel: slackChannels.admin, // admin-action notice → admin channel, not ops alerts
+    title: `Added ${creditAmount} Turbo Credit(s)`,
+    detail: addresses.map((address) => `• ${address}`).join("\n"),
   });
 }
