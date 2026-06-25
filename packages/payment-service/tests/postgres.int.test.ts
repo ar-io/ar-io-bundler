@@ -545,11 +545,16 @@ describe("PostgresDatabase class", () => {
     const strawberriesId = "Strawberries 🍓";
 
     before(async () => {
+      // Distinct top_up_quote_ids: insertStubPaymentReceipt defaults the quote id,
+      // so two stub receipts would otherwise collide on the
+      // UNIQUE(top_up_quote_id) constraint.
       await dbTestHelper.insertStubPaymentReceipt({
         payment_receipt_id: grapesId,
+        top_up_quote_id: grapesId,
       });
       await dbTestHelper.insertStubPaymentReceipt({
         payment_receipt_id: strawberriesId,
+        top_up_quote_id: strawberriesId,
       });
     });
 
@@ -1096,7 +1101,10 @@ describe("PostgresDatabase class", () => {
           signerAddress,
           reservedWincAmount: new FinalPrice(new Winston(10)),
           networkWincAmount: new NetworkPrice(new Winston(10)),
-          dataItemId: "Unique Data Item ID -- Used Approval Test",
+          // Distinct from the earlier "Used Approval Test" reserve: a fresh id is
+          // required so this hits the balance check rather than the idempotent
+          // fast-path of the existing reservation.
+          dataItemId: "Unique Data Item ID -- Used Approval Error Test",
           adjustments: [],
           signerAddressType: "arweave",
           paidBy: [],
