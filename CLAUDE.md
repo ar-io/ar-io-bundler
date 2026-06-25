@@ -26,8 +26,9 @@ as the live architecture is legacy framing, not current behavior.
 **NEVER use `pm2 restart` directly! ALWAYS use these scripts:**
 
 ```bash
+./scripts/deploy.sh                 # Rolling code/env deploy — NO client outage (preferred for updates)
 ./scripts/stop.sh --services-only  # Stop PM2 only (keeps Docker running)
-./scripts/start.sh                  # Start everything (Docker + PM2)
+./scripts/start.sh                  # Start everything (Docker + PM2) — first boot / infra down
 ./scripts/restart.sh                # Restart PM2 services only
 ./scripts/restart.sh --with-docker  # Restart everything including Docker
 ./scripts/verify.sh                 # Verify system health
@@ -35,11 +36,21 @@ as the live architecture is legacy framing, not current behavior.
 
 **Why**: Scripts ensure proper environment variable loading, verify infrastructure health, check builds are up to date, and provide clear status output. Direct `pm2 restart` can lead to stale code or environment issues.
 
-**Rebuild workflow**:
+**Rebuild workflow (preferred — zero-downtime):** `deploy.sh` builds, then
+`pm2 reload`s the cluster APIs one instance at a time (the socket stays bound, so
+nginx never sees a refused connection → **no client-facing outage**) and restarts
+the fork workers (safe: graceful SIGTERM + Redis-persisted jobs resume mid-flight).
+`--update-env` re-reads `.env`, so it applies code AND env changes.
 ```bash
-cd packages/payment-service && yarn build
-./scripts/stop.sh --services-only && ./scripts/start.sh
+./scripts/deploy.sh                 # build all + rolling reload (most deploys)
+./scripts/deploy.sh --api-only      # reload only upload-api + payment-service, leave workers running
+./scripts/deploy.sh --no-build      # reload already-built artifacts
 ```
+Use the old hard-restart path (`./scripts/stop.sh --services-only && ./scripts/start.sh`)
+only for **first boot or when Docker infra is down** — it has a brief outage window.
+The APIs implement a graceful drain (`SHUTDOWN_DRAIN_MS`, default 4s) so the rolling
+reload drops zero in-flight requests; single box, so this is the zero-downtime
+ceiling (no blue-green without a second node behind the LB).
 
 ## Common Commands
 

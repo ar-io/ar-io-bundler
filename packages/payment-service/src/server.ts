@@ -67,15 +67,10 @@ process.on("uncaughtException", (error) => {
   logger.error("Uncaught exception:", error);
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received, exiting...");
-  process.exit(0);
-});
-
-process.on("SIGINT", () => {
-  logger.info("SIGINT received, exiting...");
-  process.exit(0);
-});
+// NOTE: graceful SIGTERM/SIGINT shutdown (drain in-flight HTTP, then exit) is
+// registered inside createServer() once the http server handle exists, so
+// `pm2 reload` is drop-free. Do not add bare process.exit(0) handlers here —
+// they would fire first and skip the drain.
 
 export async function createServer(
   arch: Partial<Architecture>,
@@ -261,5 +256,35 @@ export async function createServer(
     keepAliveTimeout,
     headersTimeout,
   });
+
+  // Graceful shutdown so `pm2 reload` (rolling restart) drops zero in-flight
+  // requests: stop accepting new connections, let active requests finish, then
+  // exit. PM2 cluster reload sends SIGINT to the old instance once the new one is
+  // listening; SIGTERM covers stop/restart. Bounded by SHUTDOWN_DRAIN_MS (default
+  // 4s, under payment-service's kill_timeout) with a forced exit. Replaces the
+  // bare process.exit(0) handlers that dropped in-flight requests on every reload.
+  let shuttingDown = false;
+  const drainAndExit = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const drainMs = Number(process.env.SHUTDOWN_DRAIN_MS ?? 4000);
+    logger.info(
+      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`
+    );
+    const force = setTimeout(() => {
+      logger.warn("Drain timeout exceeded — forcing exit.");
+      process.exit(0);
+    }, drainMs);
+    force.unref();
+    server.close(() => {
+      clearTimeout(force);
+      logger.info("HTTP server closed — exiting cleanly.");
+      process.exit(0);
+    });
+    server.closeIdleConnections?.();
+  };
+  process.on("SIGTERM", () => drainAndExit("SIGTERM"));
+  process.on("SIGINT", () => drainAndExit("SIGINT"));
+
   return server;
 }
