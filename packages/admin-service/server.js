@@ -257,11 +257,17 @@ router.post('/admin/setup', async (ctx) => {
     ctx.body = { error: 'Admin access is already configured' };
     return;
   }
-  const body = await readJsonBody(ctx);
   // Gate the unauthenticated first-run setup to the operator: loopback-only by
   // default, or a matching ADMIN_SETUP_TOKEN. Without this, the first network
   // client to reach the port during setup mode could claim admin ownership.
-  const access = sessionAuth.isSetupRequestAllowed(ctx, body);
+  // Preflight body-independent denials (remote/no-token) BEFORE reading the body
+  // so unauthenticated clients can't make the endpoint read/hold a request body.
+  let body = {};
+  let access = sessionAuth.isSetupRequestAllowed(ctx, body);
+  if (access.ok || sessionAuth.hasSetupToken()) {
+    body = await readJsonBody(ctx);
+    access = sessionAuth.isSetupRequestAllowed(ctx, body);
+  }
   if (!access.ok) {
     console.warn(`⛔ Blocked first-run admin setup from ${ctx.ip} (${access.reason}) at ${new Date().toISOString()}`);
     ctx.status = 403;

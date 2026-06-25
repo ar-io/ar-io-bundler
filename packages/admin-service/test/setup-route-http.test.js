@@ -33,11 +33,14 @@ const fs = require('node:fs');
 const Koa = require('koa');
 
 const SESSION_PATH = require.resolve('../admin/middleware/session.js');
+// A token that satisfies the ≥32-byte ADMIN_SETUP_TOKEN strength check.
+const STRONG_TOKEN = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 let seq = 0;
 
 function loadSession(envOverlay = {}) {
   for (const k of ['ADMIN_PASSWORD', 'ADMIN_PASSWORD_HASH', 'ADMIN_AUTH_FILE',
-    'ADMIN_SETUP_TOKEN', 'ADMIN_TRUST_PROXY', 'ADMIN_USERNAME']) delete process.env[k];
+    'ADMIN_SETUP_TOKEN', 'ADMIN_TRUST_PROXY', 'ADMIN_USERNAME',
+    'ADMIN_COOKIE_SECURE']) delete process.env[k];
   process.env.ADMIN_AUTH_FILE = path.join(os.tmpdir(), `admin-auth-http-${process.pid}-${seq++}.json`);
   Object.assign(process.env, envOverlay);
   delete require.cache[SESSION_PATH];
@@ -53,12 +56,18 @@ function buildApp(sessionAuth) {
   app.use(async (ctx) => {
     if (ctx.method !== 'POST' || ctx.path !== '/admin/setup') { ctx.status = 404; return; }
     if (!sessionAuth.isSetupMode()) { ctx.status = 409; ctx.body = { error: 'configured' }; return; }
-    const body = await new Promise((resolve) => {
+    const readBody = () => new Promise((resolve) => {
       let d = '';
       ctx.req.on('data', (c) => (d += c));
       ctx.req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch { resolve({}); } });
     });
-    const access = sessionAuth.isSetupRequestAllowed(ctx, body);
+    // Preflight body-independent denials before reading the body (mirrors server.js).
+    let body = {};
+    let access = sessionAuth.isSetupRequestAllowed(ctx, body);
+    if (access.ok || sessionAuth.hasSetupToken()) {
+      body = await readBody();
+      access = sessionAuth.isSetupRequestAllowed(ctx, body);
+    }
     if (!access.ok) { ctx.status = 403; ctx.body = { error: 'blocked', reason: access.reason }; return; }
     const result = await sessionAuth.setupCredential(body.username, body.password);
     if (!result.ok) { ctx.status = 400; ctx.body = { error: result.error }; return; }
@@ -130,7 +139,7 @@ test('trusted-proxy POST without token is rejected and provisions NOTHING', asyn
 });
 
 test('token mode: correct x-admin-setup-token provisions; wrong token is blocked', async () => {
-  const sessionAuth = loadSession({ ADMIN_SETUP_TOKEN: 'operator-secret', ADMIN_TRUST_PROXY: 'true', ADMIN_COOKIE_SECURE: 'false' });
+  const sessionAuth = loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN, ADMIN_TRUST_PROXY: 'true', ADMIN_COOKIE_SECURE: 'false' });
   const server = await listen(buildApp(sessionAuth));
   try {
     const bad = await postSetup(server, {
@@ -143,7 +152,7 @@ test('token mode: correct x-admin-setup-token provisions; wrong token is blocked
 
     const good = await postSetup(server, {
       body: { username: 'operator', password: 'password-1234' },
-      headers: { 'x-admin-setup-token': 'operator-secret' },
+      headers: { 'x-admin-setup-token': STRONG_TOKEN },
     });
     assert.equal(good.status, 200);
     assert.equal(good.body.ok, true);

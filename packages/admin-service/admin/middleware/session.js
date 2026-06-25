@@ -93,6 +93,16 @@ const LOCKOUT_MS = parseInt(
 //     can no longer treat socket-loopback as proof of locality — a token (or
 //     env-provisioned credential) is then required.
 const ADMIN_SETUP_TOKEN = process.env.ADMIN_SETUP_TOKEN || '';
+// Fail closed on a weak token: it is the ONLY gate for remote unauthenticated
+// first-run setup, so a guessable value would re-open the takeover hole. Require
+// real entropy (the docs recommend `openssl rand -hex 32` → 64 chars).
+const MIN_SETUP_TOKEN_BYTES = 32;
+if (ADMIN_SETUP_TOKEN && Buffer.byteLength(ADMIN_SETUP_TOKEN, 'utf8') < MIN_SETUP_TOKEN_BYTES) {
+  throw new Error(
+    `ADMIN_SETUP_TOKEN is too weak: must be at least ${MIN_SETUP_TOKEN_BYTES} bytes ` +
+      '(generate one with `openssl rand -hex 32`).'
+  );
+}
 const ADMIN_TRUST_PROXY = process.env.ADMIN_TRUST_PROXY === 'true';
 
 // ---------------------------------------------------------------------------

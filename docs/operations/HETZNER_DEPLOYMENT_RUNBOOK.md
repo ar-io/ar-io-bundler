@@ -602,9 +602,10 @@ Steps:
      -H "x-admin-setup-token: $ADMIN_SETUP_TOKEN" -H 'content-type: application/json' \
      -d '{"username":"admin","password":"<a-strong-password>"}'
    ```
-   The password is hashed server-side (Argon2id) and stored as a hash only; setup then closes. (Or skip
-   first-run setup by pre-setting `ADMIN_PASSWORD_HASH`; or run setup over an SSH tunnel to `:3002` —
-   loopback is always allowed.) Then sign in at `https://admin.services.perma.online/admin/login`.
+   The password is hashed server-side (Argon2id) and stored as a hash only; setup then closes. To skip
+   first-run setup entirely, pre-set `ADMIN_PASSWORD_HASH`; otherwise use the token path above (with
+   `ADMIN_TRUST_PROXY=true` the loopback/SSH-tunnel path is NOT accepted — the token is required). Then
+   sign in at `https://admin.services.perma.online/admin/login`.
 
 Notes: the session cookie is **host-only** (no `Domain`), so it never reaches sibling
 `*.services.perma.online` hosts. Renewal reuses the `:80` ACME block — keep port 80 reachable.

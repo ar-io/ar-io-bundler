@@ -36,6 +36,9 @@ const fs = require('node:fs');
 
 const SESSION_PATH = require.resolve('../admin/middleware/session.js');
 
+// A token that satisfies the ≥32-byte ADMIN_SETUP_TOKEN strength check.
+const STRONG_TOKEN = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
 let authFileSeq = 0;
 
 // Load session.js fresh under a given env overlay. Auth-related env is wiped
@@ -49,6 +52,7 @@ function loadSession(envOverlay = {}) {
     'ADMIN_SETUP_TOKEN',
     'ADMIN_TRUST_PROXY',
     'ADMIN_USERNAME',
+    'ADMIN_COOKIE_SECURE',
   ];
   for (const k of AUTH_KEYS) delete process.env[k];
   process.env.ADMIN_AUTH_FILE = path.join(
@@ -106,26 +110,26 @@ test('trusted proxy without a token blocks even a loopback socket', () => {
 });
 
 test('token mode: matching token in header authorizes a remote client', () => {
-  const s = loadSession({ ADMIN_SETUP_TOKEN: 'super-secret-token' });
+  const s = loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN });
   assert.equal(s.hasSetupToken(), true);
   const ctx = makeCtx({
     remoteAddress: '203.0.113.7',
-    headers: { 'x-admin-setup-token': 'super-secret-token' },
+    headers: { 'x-admin-setup-token': STRONG_TOKEN },
   });
   assert.deepEqual(s.isSetupRequestAllowed(ctx, {}), { ok: true });
 });
 
 test('token mode: matching token in body authorizes', () => {
-  const s = loadSession({ ADMIN_SETUP_TOKEN: 'super-secret-token' });
+  const s = loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN });
   const ctx = makeCtx({ remoteAddress: '203.0.113.7' });
   assert.deepEqual(
-    s.isSetupRequestAllowed(ctx, { setupToken: 'super-secret-token' }),
+    s.isSetupRequestAllowed(ctx, { setupToken: STRONG_TOKEN }),
     { ok: true }
   );
 });
 
 test('token mode: wrong or missing token is blocked (even from loopback)', () => {
-  const s = loadSession({ ADMIN_SETUP_TOKEN: 'super-secret-token' });
+  const s = loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN });
   const wrong = s.isSetupRequestAllowed(
     makeCtx({ remoteAddress: '127.0.0.1', headers: { 'x-admin-setup-token': 'nope' } }),
     {}
@@ -139,8 +143,8 @@ test('token mode: wrong or missing token is blocked (even from loopback)', () =>
 });
 
 test('token mode: trusted proxy + matching token is allowed', () => {
-  const s = loadSession({ ADMIN_SETUP_TOKEN: 'tok', ADMIN_TRUST_PROXY: 'true' });
-  const ctx = makeCtx({ remoteAddress: '203.0.113.7', headers: { 'x-admin-setup-token': 'tok' } });
+  const s = loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN, ADMIN_TRUST_PROXY: 'true' });
+  const ctx = makeCtx({ remoteAddress: '203.0.113.7', headers: { 'x-admin-setup-token': STRONG_TOKEN } });
   assert.deepEqual(s.isSetupRequestAllowed(ctx, {}), { ok: true });
 });
 
@@ -165,6 +169,12 @@ test('setupCredential persists a hash and refuses a second setup', async () => {
   assert.equal(again.ok, false);
 
   fs.unlinkSync(process.env.ADMIN_AUTH_FILE);
+});
+
+test('a weak ADMIN_SETUP_TOKEN is rejected at load (fail closed)', () => {
+  assert.throws(() => loadSession({ ADMIN_SETUP_TOKEN: 'too-short' }), /at least 32 bytes/);
+  // A strong token loads fine.
+  assert.doesNotThrow(() => loadSession({ ADMIN_SETUP_TOKEN: STRONG_TOKEN }));
 });
 
 test('setupCredential rejects a short password', async () => {
