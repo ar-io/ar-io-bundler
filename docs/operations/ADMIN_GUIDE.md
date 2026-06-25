@@ -1095,10 +1095,16 @@ result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 - **Queues**: recent (last-hour) failure rate ≥10 (warn) / ≥50 (crit), with the
   **offending queues named** (e.g. `optical-post: 9, verify-bundle: 5`) — this is
   how optical-post/broadcast-chunks failures (no DB signal) surface.
+- **Capacity**: Postgres connection-pool ≥80%/≥90% of `PG_MAX_CONNECTIONS`; Redis
+  memory ≥85%/≥95% of `maxmemory` (only when a limit is set).
+- **More money-safety**: chargebacks/disputes (last 24h); failed top-up quotes
+  (last 24h spike); raw-signer wallet (`RAW_DATA_ITEM_JWK_FILE`) unusable.
+- **External**: Arweave gateway (`ARWEAVE_GATEWAY`) unreachable.
 
-> Not yet alerted (known follow-ups): chargebacks/failed-top-up-quotes counts,
-> DB connection-pool saturation, Redis memory pressure, RAW-signer wallet health,
-> and a direct gateway/optical reachability probe.
+> Not yet alerted (remaining follow-ups): a Stripe credit-failure DB/metric signal
+> beyond the direct event alert; a dedicated optical-bridge probe (surfaced today
+> via the named queue-failure alert). On-call escalation (PagerDuty webhook) and
+> Slack ack/snooze buttons were intentionally not added.
 
 **Example: external uptime monitoring (complements the Slack alerter)**
 ```bash
