@@ -41,6 +41,34 @@ async function countSince(db, table, dateColumn, interval) {
 }
 
 /**
+ * Arrivals (uploads accepted) in the window, counted across EVERY state table
+ * that retains uploaded_date — not just new_data_item, which drains as items get
+ * bundled. Counting only new_data_item undercounts the true arrival rate (and
+ * disagreed with healthWindow.arrivalsInWindow, which does this correctly). On
+ * permanent_data_items, uploaded_date is the partition key so this prunes.
+ */
+async function arrivalsSince(db, interval) {
+  const tables = ['new_data_item', 'planned_data_item', 'permanent_data_items', 'failed_data_item'];
+  let count = 0;
+  let bytes = 0n;
+  for (const t of tables) {
+    if (!(await db.schema.hasTable(t))) continue;
+    if (!(await db.schema.hasColumn(t, 'uploaded_date'))) continue;
+    const hasBytes = await db.schema.hasColumn(t, 'byte_count');
+    const row = await db(t)
+      .where('uploaded_date', '>=', db.raw(`NOW() - INTERVAL '${interval}'`))
+      .select(
+        db.raw('COUNT(*) as count'),
+        hasBytes ? db.raw('COALESCE(SUM(CAST(byte_count AS BIGINT)), 0) as bytes') : db.raw('0 as bytes')
+      )
+      .first();
+    count += parseInt(row.count) || 0;
+    try { bytes += BigInt(row.bytes); } catch { /* ignore non-numeric */ }
+  }
+  return { count, bytes: String(bytes) };
+}
+
+/**
  * True end-to-end upload→permanent latency distribution (seconds) over a recent
  * window. permanent_data_items retains the original uploaded_date, so this is the
  * user-facing SLA: how long from accepting an upload to it being permanent.
@@ -82,8 +110,8 @@ async function getThroughputStats(db) {
     bundles24h,
     latency,
   ] = await Promise.all([
-    countSince(db, 'new_data_item', 'uploaded_date', '1 hour'),
-    countSince(db, 'new_data_item', 'uploaded_date', '24 hours'),
+    arrivalsSince(db, '1 hour'),
+    arrivalsSince(db, '24 hours'),
     countSince(db, 'permanent_data_items', 'permanent_date', '1 hour'),
     countSince(db, 'permanent_data_items', 'permanent_date', '24 hours'),
     countSince(db, 'permanent_bundle', 'permanent_date', '1 hour'),

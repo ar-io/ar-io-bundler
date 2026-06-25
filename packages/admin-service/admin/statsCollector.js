@@ -35,6 +35,21 @@ const { computeHealthRollup } = require('./healthRollup');
 const Redis = require('ioredis');
 const Knex = require('knex');
 
+// Postgres `timestamp without time zone` columns (uploaded_date, planned_date,
+// permanent_date, posted/failed dates, payment timestamps) store UTC wall-clock.
+// node-postgres parses OID 1114 in the PROCESS's local timezone by default, so
+// when this process doesn't run in UTC (e.g. prod on CEST) every dashboard time
+// is skewed by the host's UTC offset — that's the "newest upload shows 2 hours
+// ago" bug. Force 1114 to be read as UTC so timestamps are correct regardless of
+// the host timezone. Scoped to the admin process (the services have their own).
+try {
+  require('pg').types.setTypeParser(1114, (v) =>
+    v == null ? v : new Date(v.replace(' ', 'T') + 'Z')
+  );
+} catch (e) {
+  console.warn('Stats collector: could not set UTC timestamp parser:', e.message);
+}
+
 const CACHE_TTL = 30; // seconds
 const CACHE_KEY = 'admin:stats';
 // Server-side cap on every admin query so the dashboard can never load the DB.

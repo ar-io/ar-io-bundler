@@ -163,17 +163,19 @@ async function getBundlePlanningStats(db) {
     };
   }
 
+  // hasTable() returns a Promise (always truthy), so using it directly as a
+  // ternary condition made the `: { count: 0 }` fallback dead code and threw on a
+  // missing table (rejecting the whole bundle-stats fetch). Await the checks.
+  const [hasPerm, hasPosted, hasFailed] = await Promise.all([
+    db.schema.hasTable('permanent_bundle'),
+    db.schema.hasTable('posted_bundle'),
+    db.schema.hasTable('failed_bundle'),
+  ]);
   const [planned, permanent, posted, failed] = await Promise.all([
     db('bundle_plan').count('* as count').first(),
-    db.schema.hasTable('permanent_bundle')
-      ? db('permanent_bundle').count('* as count').first()
-      : { count: 0 },
-    db.schema.hasTable('posted_bundle')
-      ? db('posted_bundle').count('* as count').first()
-      : { count: 0 },
-    db.schema.hasTable('failed_bundle')
-      ? db('failed_bundle').count('* as count').first()
-      : { count: 0 }
+    hasPerm ? db('permanent_bundle').count('* as count').first() : { count: 0 },
+    hasPosted ? db('posted_bundle').count('* as count').first() : { count: 0 },
+    hasFailed ? db('failed_bundle').count('* as count').first() : { count: 0 },
   ]);
 
   return {

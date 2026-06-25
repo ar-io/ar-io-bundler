@@ -157,7 +157,19 @@ function renderSparkline(canvasId, points, accessor, color) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false }, tooltip: {
         callbacks: {
-          title: (items) => new Date(items[0].label).toLocaleTimeString(),
+          // Labels are epoch-ms (Date.now()); Chart.js stringifies them for the
+          // category axis, so `items[0].label` is a numeric STRING like
+          // "1782421688571" — and `new Date("1782421688571")` is NOT a parseable
+          // date ("Invalid Date"). Coerce back to a Number first. Show date+time
+          // so the tooltip reads correctly across the 1h / 24h / 7d windows.
+          title: (items) => {
+            const ms = Number(items && items[0] && items[0].label);
+            return Number.isFinite(ms)
+              ? new Date(ms).toLocaleString(undefined, {
+                  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                })
+              : '';
+          },
           label: (item) => `${item.formattedValue}`,
         },
       } },
@@ -175,6 +187,7 @@ function renderSparklines(points) {
   const empty = document.getElementById('trends-empty');
   if (points.length < 2) { if (empty) empty.style.display = 'block'; return; }
   if (empty) empty.style.display = 'none';
+  renderSparkline('spark-uploads', points, p => p.ar, '#2D9CDB');
   renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
   renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
   renderSparkline('spark-bundles', points, p => p.bp, '#16a34a');
@@ -596,7 +609,11 @@ function updateCharts(stats) {
   updateSignatureChart(stats.uploads.bySignatureType);
   updateCryptoTokenChart(stats.payments?.cryptoTopUps?.byToken || {});
   updatePaymentTypeChart(stats.payments?.x402Payments?.byMode || {});
-  updateNetworkChart(stats.x402Payments?.byNetwork || {});
+  // byNetwork + byMode must come from the SAME x402 source (the payment-service
+  // `x402_payment_transaction` table). The top-level `stats.x402Payments` reads a
+  // separate `x402_payments` table that doesn't exist in payment_service, so the
+  // network chart was always empty and inconsistent with the payment-type chart.
+  updateNetworkChart(stats.payments?.x402Payments?.byNetwork || {});
 }
 
 /**
@@ -661,6 +678,12 @@ function updateSignatureChart(byType) {
     label: type,
     value: data.count
   }));
+
+  // Match the other charts' empty-data handling so a zero-upload window renders a
+  // neutral "No Data" slice instead of an empty doughnut + NaN% tooltip.
+  if (data.length === 0) {
+    data.push({ label: 'No Data', value: 1 });
+  }
 
   const chartData = {
     labels: data.map(d => d.label),
@@ -871,23 +894,23 @@ function updateQueueStatus(queues) {
   const summary = document.getElementById('queue-summary');
   const recent = queues.totalRecentFailed || 0;
   summary.innerHTML = `
-    <div class="queue-stat">
+    <div class="queue-stat" title="Jobs being processed by a worker right now.">
       <div class="queue-stat-value">${queues.totalActive || 0}</div>
       <div class="queue-stat-label">Active</div>
     </div>
-    <div class="queue-stat">
+    <div class="queue-stat" title="Jobs queued and ready, waiting for a free worker. A growing number means the workers can't keep up.">
       <div class="queue-stat-value">${queues.totalWaiting || 0}</div>
       <div class="queue-stat-label">Waiting</div>
     </div>
-    <div class="queue-stat">
+    <div class="queue-stat" title="Jobs that failed in the last hour — the live-incident signal.">
       <div class="queue-stat-value ${recent > 0 ? 'text-danger' : ''}">${recent}${recent >= 50 ? '+' : ''}</div>
       <div class="queue-stat-label">Failed (1h)</div>
     </div>
-    <div class="queue-stat">
+    <div class="queue-stat" title="All failed jobs BullMQ still retains, including old ones — mostly stale cruft until cleaned. Use Failed (1h) for live issues.">
       <div class="queue-stat-value muted">${(queues.totalFailed || 0).toLocaleString()}</div>
       <div class="queue-stat-label">Failed (total)</div>
     </div>
-    <div class="queue-stat">
+    <div class="queue-stat" title="Jobs scheduled to run later — the recurring schedulers (plan-bundle, cleanup, redrive, ensure-partitions) sit here between runs, plus any jobs in retry backoff. Normal to be non-zero on a healthy, idle system.">
       <div class="queue-stat-value">${queues.totalDelayed || 0}</div>
       <div class="queue-stat-label">Delayed</div>
     </div>

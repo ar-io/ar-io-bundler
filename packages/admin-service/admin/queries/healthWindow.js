@@ -103,7 +103,10 @@ async function getHealthWindow(db, windowKey = '24h') {
 
   // Verdict — failures relative to throughput, with an explicit "idle" state so
   // a quiet window doesn't read as "bad".
-  const activity = arrivals.count + decided;
+  // arrivalsInWindow() returns a plain number; `.count` was undefined → activity
+  // was NaN, so the "idle" verdict was unreachable (a quiet window read as
+  // "healthy" instead of "idle").
+  const activity = arrivals + decided;
   let verdict;
   if (activity === 0) verdict = 'idle';
   else if (successRate !== null && successRate < 80) verdict = 'critical';

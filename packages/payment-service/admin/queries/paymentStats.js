@@ -38,7 +38,24 @@ function sumExpr(db, column) {
 }
 
 function wincToAr(winc) {
-  return (Number(winc) / WINSTON_PER_AR).toFixed(6);
+  if (winc == null) return '0.000000';
+  const s = String(winc).trim();
+  // Integer winston strings (incl. the all-user balance SUM, which can exceed
+  // 2^53) are converted with BigInt to avoid Number() precision loss / "NaN".
+  if (/^-?\d+$/.test(s)) {
+    try {
+      const v = BigInt(s);
+      const neg = v < 0n;
+      const abs = neg ? -v : v;
+      const whole = abs / 1000000000000n; // WINSTON_PER_AR = 1e12
+      const micro = (abs % 1000000000000n) / 1000000n; // 6-dp fractional part
+      return `${neg ? '-' : ''}${whole}.${micro.toString().padStart(6, '0')}`;
+    } catch {
+      /* fall through to float path */
+    }
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? (n / WINSTON_PER_AR).toFixed(6) : '0.000000';
 }
 
 /**
