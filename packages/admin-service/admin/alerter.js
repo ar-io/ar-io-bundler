@@ -45,7 +45,7 @@
  * the caller.
  */
 
-const { getStats } = require("./statsCollector");
+const { getStats, getCacheRedis } = require("./statsCollector");
 const { sendAlert, sendHeartbeat, isConfigured } = require("./notifier/slack");
 
 // Raw datastore liveness the rollup doesn't check (down => CRITICAL).
@@ -81,6 +81,16 @@ function parseHour(v, def) {
   return Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : def;
 }
 
+// Parse "22-7" → {start:22,end:7} (server-local hours). "" / invalid = null.
+function parseQuietHours(v) {
+  if (!v) return null;
+  const m = /^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$/.exec(v);
+  if (!m) return null;
+  const start = Math.min(23, Math.max(0, parseInt(m[1], 10)));
+  const end = Math.min(23, Math.max(0, parseInt(m[2], 10)));
+  return { start, end };
+}
+
 const config = {
   enabled: process.env.ALERTS_ENABLED === "true",
   intervalMs: num("ALERT_CHECK_INTERVAL_MS", 60_000),
@@ -95,9 +105,15 @@ const config = {
   startupPing: process.env.ALERT_STARTUP_PING === "true",
   // Daily heartbeat hour (server local). null = disabled.
   heartbeatHour: parseHour(process.env.ALERT_HEARTBEAT_HOUR, 9),
+  // Quiet hours (server local): WARNINGS are deferred until the window ends;
+  // criticals and resolves always go through. null = always on.
+  quietHours: parseQuietHours(process.env.ALERT_QUIET_HOURS),
 };
 
-// key -> { hits, firing, lastNotified, severity, title, detail, minConsecutive }
+const STATE_KEY = "admin:alerter:state";
+const STATE_TTL_SEC = 86_400; // refreshed each tick; expires if the alerter dies
+
+// key -> { hits, firing, firstFiredAt, lastNotified, severity, title, detail, area, threadTs }
 const tracked = new Map();
 
 let timer = null;
@@ -105,6 +121,15 @@ let running = false;
 let monitoredQueues = [];
 let startedAt = 0;
 let lastHeartbeatDay = null;
+
+// True if the current server-local hour is within the configured quiet window.
+function inQuietHours(d = new Date()) {
+  if (!config.quietHours) return false;
+  const { start, end } = config.quietHours;
+  const h = d.getHours();
+  // Same-day window (e.g. 1-5) vs wrap-around (e.g. 22-7).
+  return start <= end ? h >= start && h < end : h >= start || h < end;
+}
 
 function now() {
   return Date.now();
@@ -216,20 +241,31 @@ async function evaluate(stats) {
     st.area = iss.area;
     tracked.set(key, st);
 
+    // Quiet hours defer WARNINGS only (criticals always go). A deferred warning
+    // is left un-fired so it announces normally once the window ends.
+    const quietWarning = iss.severity !== "critical" && inQuietHours();
+
     if (!st.firing) {
-      if (st.hits >= (iss.minConsecutive || 1)) {
+      if (st.hits >= (iss.minConsecutive || 1) && !quietWarning) {
         st.firing = true;
         st.firstFiredAt = t;
         st.lastNotified = t;
-        await sendAlert({ severity: iss.severity, title: iss.title, detail: iss.detail, area: iss.area });
+        const r = await sendAlert({
+          severity: iss.severity,
+          title: iss.title,
+          detail: iss.detail,
+          area: iss.area,
+        });
+        // Remember the thread root so reminders/resolve reply under it.
+        st.threadTs = (r && r.ts) || undefined;
       }
-      continue; // still debouncing
+      continue; // still debouncing (or deferred by quiet hours)
     }
 
     // Already firing — remind, with a longer cadence for warnings than criticals.
     const remindEvery =
       iss.severity === "critical" ? config.reminderMs : config.warningReminderMs;
-    if (remindEvery > 0 && t - st.lastNotified >= remindEvery) {
+    if (remindEvery > 0 && t - st.lastNotified >= remindEvery && !quietWarning) {
       st.lastNotified = t;
       const ongoing = `Ongoing for ${fmtDuration(t - (st.firstFiredAt || t))}.`;
       await sendAlert({
@@ -237,6 +273,7 @@ async function evaluate(stats) {
         title: `Still: ${iss.title}`,
         detail: iss.detail ? `${iss.detail}\n${ongoing}` : ongoing,
         area: iss.area,
+        thread_ts: st.threadTs, // reply in the incident thread
       });
     }
   }
@@ -251,6 +288,8 @@ async function evaluate(stats) {
           title: `Resolved: ${st.title}`,
           detail: `Was firing for ${fmtDuration(t - (st.firstFiredAt || t))}.`,
           area: st.area,
+          thread_ts: st.threadTs, // reply in the incident thread…
+          reply_broadcast: Boolean(st.threadTs), // …and surface it in-channel
         });
       }
       tracked.delete(key);
@@ -296,6 +335,40 @@ async function maybeHeartbeat(stats) {
   await sendHeartbeat({ status, detail: lines.join("\n") });
 }
 
+// Persist the tracked-issue map to Redis so a restart doesn't forget what's
+// already firing (and re-announce every ongoing issue). Best-effort.
+async function saveState() {
+  const redis = getCacheRedis();
+  if (!redis) return;
+  try {
+    await redis.set(
+      STATE_KEY,
+      JSON.stringify([...tracked.entries()]),
+      "EX",
+      STATE_TTL_SEC
+    );
+  } catch (e) {
+    console.warn("alerter: failed to persist state:", e.message);
+  }
+}
+
+async function loadState() {
+  const redis = getCacheRedis();
+  if (!redis) return;
+  try {
+    const raw = await redis.get(STATE_KEY);
+    if (!raw) return;
+    const entries = JSON.parse(raw);
+    if (Array.isArray(entries)) {
+      tracked.clear();
+      for (const [k, v] of entries) tracked.set(k, v);
+      console.log(`🔔 Alerter restored ${tracked.size} tracked issue(s) from Redis`);
+    }
+  } catch (e) {
+    console.warn("alerter: failed to restore state:", e.message);
+  }
+}
+
 async function tick() {
   if (running) return; // guard against overlap on a slow check
   if (now() - startedAt < config.graceMs) return; // boot grace window
@@ -304,6 +377,7 @@ async function tick() {
     const stats = await getStats(monitoredQueues);
     await evaluate(stats);
     await maybeHeartbeat(stats);
+    await saveState();
   } catch (error) {
     console.error("❌ Alerter tick failed:", error.message);
   } finally {
@@ -322,6 +396,9 @@ function startAlerter(queues = []) {
     console.log("🔕 Health alerter disabled (set ALERTS_ENABLED=true to enable)");
     return;
   }
+  // Restore prior tracked state so a restart doesn't re-announce ongoing issues.
+  // Completes in ms — well within the boot grace window before the first eval.
+  loadState().catch(() => {});
   if (!isConfigured()) {
     console.warn(
       "⚠️  ALERTS_ENABLED=true but SLACK_OAUTH_TOKEN is unset — alerter will run but cannot deliver"
