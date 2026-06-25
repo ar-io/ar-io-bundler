@@ -762,7 +762,7 @@ if confirm "Enable the two-tier MinIO HDD archive tier?" "n"; then
         prompt "SSD_CLEANUP_GRACE_DAYS" "Grace days to hold SSD copies after permanence" "${SSD_CLEANUP_GRACE_DAYS:-0}"
     fi
     print_success "Two-tier MinIO archive enabled (${CONFIG[ARCHIVE_DATA_ITEM_BUCKET]} @ ${CONFIG[ARCHIVE_S3_ENDPOINT]})"
-    print_warning "Bring up the HDD MinIO:  docker compose -f docker-compose.yml -f docker-compose.hdd.yml up -d"
+    print_warning "Bring up the HDD MinIO:  docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d"
     print_warning "Repoint the gateway's AWS_ENDPOINT to the HDD MinIO BEFORE SSD reclaim runs (runbook §13)."
     print_warning "Enabling on a DB that ALREADY has permanent bundles? Seed the 'archive-ssd-cleanup-cursor'"
     print_warning "config row to max(permanent_date) first, or the sweep wedges backfilling history (runbook §13)."
