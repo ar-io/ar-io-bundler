@@ -227,6 +227,22 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     });
   }
 
+  // SECURITY: reject DISABLED networks before verify/settle. getNetworkConfig()
+  // returns disabled configs too (e.g. base-sepolia testnet, off by default), so
+  // without this an attacker could settle a disabled-testnet USDC authorization
+  // and receive a server-signed data item + queued storage work. Mirrors the
+  // payment-service x402 routes' isNetworkEnabled() gate.
+  if (!ctx.state.x402Service.isNetworkEnabled(paymentPayload.network)) {
+    logger.warn("Rejected x402 upload on a disabled network", {
+      network: paymentPayload.network,
+      enabledNetworks: ctx.state.x402Service.getEnabledNetworks(),
+    });
+    return errorResponse(ctx, {
+      errorMessage: `Network ${paymentPayload.network} is not enabled`,
+      status: 400,
+    });
+  }
+
   const requirements = {
     scheme: "exact",
     network: paymentPayload.network,
@@ -598,8 +614,27 @@ async function send402PaymentRequired(
     process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
   const resourceUrl = `${uploadServicePublicUrl}/v1/tx`;
 
+  // Choose the network to quote. SECURITY: never advertise a DISABLED network —
+  // the paid path rejects disabled networks, and a testnet (base-sepolia, off by
+  // default) must not be quotable in production. Prefer the configured network if
+  // enabled, else fall back to the first enabled network, else refuse.
+  let network = process.env.X402_NETWORK || "base-sepolia";
+  if (!ctx.state.x402Service.isNetworkEnabled(network)) {
+    const enabledNetworks = ctx.state.x402Service.getEnabledNetworks();
+    if (enabledNetworks.length === 0) {
+      logger.error("x402 quote requested but no x402 network is enabled", { configured: network });
+      ctx.status = 503;
+      ctx.body = { error: "x402 payments are not currently available" };
+      return;
+    }
+    logger.warn("Configured X402_NETWORK is not enabled; quoting first enabled network instead", {
+      configured: network,
+      using: enabledNetworks[0],
+    });
+    network = enabledNetworks[0];
+  }
+
   // Get network config for correct USDC address
-  const network = process.env.X402_NETWORK || "base-sepolia";
   const networkConfig = ctx.state.x402Service.getNetworkConfig(network);
   const usdcAddress = networkConfig?.usdcAddress || process.env.USDC_CONTRACT_ADDRESS || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
