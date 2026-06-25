@@ -649,9 +649,12 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 
 ## 17. Monitoring & logs
 
-- **Metrics:** `OTEL_*` exporters + `PROMETHEUS_PORT=9090`; scrape with Prometheus, dashboard in Grafana.
-  Alert on queue depth (BullMQ), worker liveness (esp. payment-workers + upload-workers), DB pool saturation,
-  disk usage (MinIO/Postgres growth), and post/verify failure rates.
+- **Metrics:** see **`docs/operations/OBSERVABILITY.md`** for the full picture — app metrics
+  (`:3001/bundler_metrics`, `:4001/metrics`), MinIO native metrics (via nginx `/minio-metrics/{bundler,archive}/cluster`,
+  bearer-token gated), and **node_exporter** (`:9100`, host CPU/mem/disk; firewall-gated to the collector CIDRs and
+  auto-discovered by the fleet hcloud-SD job). Alert on queue depth (BullMQ), worker liveness (esp. payment-workers +
+  upload-workers), DB pool saturation, disk-fill (`node_filesystem_avail_bytes`, `minio_cluster_capacity_usable_free_bytes`),
+  and post/verify failure rates.
 - **Queues:** Bull Board / admin-dashboard at `:3002` (admin-only).
 - **Alerts:** the admin-dashboard's built-in **Slack health alerter** (`ALERTS_ENABLED=true` +
   `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID`) pushes the dashboard's health-rollup verdict to Slack

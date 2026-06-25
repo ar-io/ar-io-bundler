@@ -152,6 +152,15 @@ A second, HDD-backed MinIO (`minio-hdd`, `:9002`, `docker-compose.hdd.yml`) that
 | Admin dashboard `302` (→ `/admin/login`) | expected — session-auth-protected since the dashboard overhaul (#86); an unauthenticated request **redirects (302)**, it does NOT return 401. A redirect means it's up; a `200` on `/admin/dashboard` would mean it's wide open. |
 | Service won't boot, `ERR_REQUIRE_ESM` | Node < 22 (pitfall 1) |
 
+## Observability (metrics for an external collector)
+
+Full detail: **`docs/operations/OBSERVABILITY.md`**. Three metric sources, three exposure paths:
+- **App metrics** — `:3001/bundler_metrics` (pipeline) + `:4001/metrics` (payments), prom-client. Currently **ungated** (open on the public API ports).
+- **MinIO** (both tiers) — native Prometheus endpoint, surfaced through **nginx** at `:443/minio-metrics/{bundler,archive}/cluster`, gated by an nginx CIDR allowlist (`snippets/metrics-allowlist.conf`) **+** a MinIO bearer token (`mc admin prometheus generate`). One token serves both tiers.
+- **node_exporter** — `:9100` (host CPU/mem/disk-fill/net), apt `prometheus-node-exporter`. Gated by the **cloud firewall** (source-CIDR) to the collector EIPs + tailnet + private net — never `0.0.0.0/0` (it has no auth). Auto-scraped by the fleet's existing hcloud-SD `node_exporter` job; no new scrape job needed.
+
+Firewall model: cloud firewall (dev) / Robot firewall (prod) do coarse port×CIDR gating; nginx does L7 path-level gating (because metrics paths share the public `:3001/:4001/:443` ports a packet filter can't split). `ufw` is intentionally unused. postgres/redis exporters (`:9187`/`:9121`) follow the node_exporter pattern but need a **new** collector scrape job (not auto-discovered).
+
 ## Deployment (Hetzner)
 
 `docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md` is authoritative — single-node, deploy root `/opt/ar-io-bundler`, user `bundler`, **system Node 22 (nodesource), not nvm**, `corepack prepare yarn@3.6.0`, `npm i -g pm2`. Sequence: create `ar-io-network` → `yarn infra:up` → secrets/wallets/`.env` → `yarn db:migrate` → `./scripts/start.sh` → `./scripts/verify.sh` → `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save` → wire the gateway. (Plan/cleanup/redrive scheduling is in-process — no crontab needed; the only optional crontab entry is `trigger-verify.sh`.) Treat the runbook's open `⚠️ ACTION` items as deploy-blocking: pin Docker image tags + add `restart: unless-stopped`, rotate `minioadmin`/default creds, bind infra (Bull Board, MinIO console, Postgres, both Redis) to localhost/private not `0.0.0.0`, fold `PRICE_ORACLE_GATEWAY_URL`/`ARIO_GATEWAY_URL` into `.env.sample`, confirm no `/home/vilenarios` / LAN IP / nvm path leaks into PM2 or cron, and author a backup procedure (none exists yet).
