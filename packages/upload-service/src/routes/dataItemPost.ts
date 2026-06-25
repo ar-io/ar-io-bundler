@@ -494,14 +494,13 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
 
       await removeFromInFlight({ dataItemId, cacheService, logger });
 
-      // Payment IS required (no free allowance, no balance, no X-PAYMENT). The
-      // correct signal is 402 Payment Required — NOT 503. Even when we can't hand
-      // back full x402 requirements (payment method not configured, or the x402
-      // price endpoint erroring), the service itself is up; a 503 "unavailable"
-      // misleads the client and hides the real cause (the address simply has to
-      // pay). So we always return 402 here: with the x402 requirements when we can
-      // produce them, or a clear payment-required message when we can't (logged
-      // loudly for ops either way).
+      // Payment IS required (no free allowance, no balance, no X-PAYMENT). Three
+      // sub-cases, distinguished by what getX402PriceQuote returns:
+      //   • requirements present → 402 with the full x402 envelope (client can pay)
+      //   • null  (x402 not configured / payment service 4xx) → 402 "payment
+      //     required": a PERMANENT condition, retrying won't help.
+      //   • throws (payment x402-price endpoint 5xx) → 503: a potentially TRANSIENT
+      //     upstream failure, so retry-capable clients keep their safety net.
       const respondPaymentRequired = (detail: string) => {
         ctx.status = 402;
         // NOTE: deliberately NOT setting `X-Payment-Required: x402-1` here — that
@@ -553,15 +552,21 @@ export async function dataItemRoute(ctx: KoaContext, next: Next) {
         );
         return next();
       } catch (error) {
-        // The x402 price path threw (e.g. the payment service's x402 price
-        // endpoint returned 5xx). Log loudly for ops, but the client-facing status
-        // is still 402 — payment is required; the service is not down.
-        logger.error("Failed to get x402 price quote; returning 402 payment-required", {
+        // The x402 price path THREW (the payment service's x402-price endpoint
+        // returned 5xx / a non-JSON body) — a potentially TRANSIENT upstream
+        // failure. Return 503 (retryable) rather than a 402: clients that retry
+        // 5xx-with-backoff (incl. the Turbo SDK, which treats 4xx as permanent and
+        // stops) keep their safety net. A genuine payment-service OUTAGE is already
+        // caught earlier at checkBalanceForData; this is the narrower quote
+        // sub-failure. Logged loudly for ops.
+        logger.error("x402 price quote failed (payment x402-price 5xx); returning 503 for retry", {
           error,
         });
-        respondPaymentRequired(
-          "x402 payment requirements are temporarily unavailable — top up credits and retry, or contact the operator."
-        );
+        errorResponse(ctx, {
+          status: 503,
+          errorMessage: "Payment requirements temporarily unavailable; please retry",
+          error,
+        });
         return next();
       }
     }
