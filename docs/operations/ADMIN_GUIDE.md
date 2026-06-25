@@ -1045,6 +1045,8 @@ SLACK_ALERT_CHANNEL_ID=C0...          # ops/health alerts (also money-safety ale
 ALERTS_ENABLED=true                   # master switch (default off)
 ALERT_ENV_LABEL=bundler-prod          # deployment label on every message
 ADMIN_DASHBOARD_URL=                  # optional: dashboard link in the footer
+ALERT_RUNBOOK_URL=                    # optional: runbook link in the footer
+ALERT_MENTION=                        # optional: @-mention on CRITICALs (e.g. <!here>) so they page
 # Optional tuning (defaults shown):
 ALERT_CHECK_INTERVAL_MS=60000         # how often to evaluate (60s)
 ALERT_REMINDER_MS=1800000             # critical re-alert cadence (30m)
