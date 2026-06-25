@@ -81,8 +81,8 @@ check "MinIO is healthy" "docker ps | grep ar-io-bundler-minio | grep -q '(healt
 # Two-tier MinIO: only relevant when the HDD archive tier is enabled via ARCHIVE_*.
 # SSD-only deployments leave ARCHIVE_DATA_ITEM_BUCKET unset → these checks are skipped.
 if [ -f "$PROJECT_ROOT/.env" ] && grep -qE '^ARCHIVE_DATA_ITEM_BUCKET=.+' "$PROJECT_ROOT/.env"; then
-  check "Archive (HDD) MinIO container running" "docker ps | grep -q ar-io-bundler-minio-hdd"
-  check "Archive (HDD) MinIO is healthy" "docker ps | grep ar-io-bundler-minio-hdd | grep -q '(healthy)'"
+  check "Archive (HDD) MinIO container running" "docker ps | grep -q ar-io-bundler-minio-archive"
+  check "Archive (HDD) MinIO is healthy" "docker ps | grep ar-io-bundler-minio-archive | grep -q '(healthy)'"
 fi
 echo ""
 
