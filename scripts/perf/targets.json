@@ -15,8 +15,9 @@
   "legacy": {
     "upload": "https://upload.ardrive.io",
     "gateway": "https://turbo-gateway.com",
-    "env": "ardrive-legacy",
-    "_note": "Upstream ArDrive Turbo prod. Same API surface (this repo is a fork). Tiny items use the free path; deep runs that mine a bundle spend on the ArDrive wallet, not yours."
+    "env": "ardrive-prod",
+    "dns": "8.8.8.8",
+    "_note": "ArDrive Turbo PRODUCTION (upload.ardrive.io). Same API surface (this repo is a fork). Tiny items use the free path (no signer/cost); deep runs that mine a bundle spend on the ArDrive wallet, not yours. `dns: 8.8.8.8` required from the dev box: Optimum sinkholes turbo-gateway.com to 167.206.x (their ASN); Google DNS returns the real IP. Monitored every 10 min by cron via scripts/perf/run-canary.sh (Slack alerts on failure)."
   },
   "ario": {
     "upload": "https://upload.services.ar-io.dev",
