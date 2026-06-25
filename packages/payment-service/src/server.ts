@@ -96,15 +96,12 @@ function registerGracefulShutdown(server: HttpServer, log: Logger): void {
     if (finalizing) return;
     finalizing = true;
     log[level](message);
-    let exited = false;
-    const exit = () => {
-      if (exited) return;
-      exited = true;
-      process.exit(0);
-    };
-    log.on("finish", exit);
-    log.end(); // flush winston transports, then 'finish' fires → exit
-    setTimeout(exit, 1000).unref(); // backstop if 'finish' never fires
+    // Delay the hard exit briefly so this final line flushes through winston's
+    // async Console transport (and, under pm2 cluster mode, the log IPC to the
+    // pm2 daemon) before the event loop is torn down — a bare process.exit()
+    // truncates it. Only the already-draining instance waits; the cluster peer
+    // keeps serving, so there is no client impact.
+    setTimeout(() => process.exit(0), 250);
   };
 
   const drainAndExit = (signal: string) => {
@@ -148,6 +145,15 @@ export async function createServer(
   if (!STRIPE_SECRET_KEY) {
     throw new Error("Stripe secret key or webhook secret not set");
   }
+
+  // While draining (SIGTERM/SIGINT during a rolling reload) tell keepalive
+  // clients (incl. the upload service's inter-service HTTP pool) to retire this
+  // connection after the current response instead of reusing a socket we are
+  // about to close — reduces ECONNRESET on the next pooled request.
+  app.use(async (ctx: KoaContext, next: Next) => {
+    if (draining) ctx.set("Connection", "close");
+    await next();
+  });
 
   // Outermost error handler: map domain errors that propagate out of a route
   // to proper HTTP status codes. Several routes (e.g. x402) validate input and
