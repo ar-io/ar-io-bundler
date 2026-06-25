@@ -36,18 +36,30 @@ GATEWAY_ENV="${GATEWAY_ENV:-$(cd "$BUNDLER_PATH/.." 2>/dev/null && pwd)/ar-io-no
 
 section() { printf '\n=== %s ===\n' "$1"; }
 
-# --- locate a working pm2 -------------------------------------------------
-# The system `node` is often the wrong version (e.g. v12) while pm2 lives under
-# an nvm Node 22. Find a pm2 whose node actually runs the daemon.
+# --- locate a working pm2 + the user that actually owns the daemon --------
+# Two traps: (1) the system `node` is often the wrong version (e.g. v12) while
+# pm2 lives under an nvm Node 22; (2) the daemon may be owned by the *deploy*
+# user (e.g. `bundler`) while we run as root — a root `pm2 list` then queries an
+# empty root daemon and FALSELY shows "nothing online" though the APIs serve.
 PM2_BIN="$(command -v pm2 2>/dev/null || true)"
 if [[ -z "$PM2_BIN" ]]; then
   PM2_BIN="$(ls -t "$HOME"/.nvm/versions/node/*/bin/pm2 2>/dev/null | head -1 || true)"
 fi
+# If our own pm2 sees no processes, find the user that actually runs the app
+# (the owner of the running upload/payment node procs) and query that daemon.
+PM2_USER=""
+if [[ -n "$PM2_BIN" ]] && ! "$PM2_BIN" jlist 2>/dev/null | grep -q '"name"'; then
+  PM2_USER="$(ps -eo user,args 2>/dev/null | awk '/ar-io-bundler\/packages.*lib\/(index|workers\/allWorkers)\.js/{print $1; exit}')"
+  [[ "$PM2_USER" == "$(id -un)" ]] && PM2_USER=""
+fi
+# pm2cmd: run pm2 as the daemon-owning user when that isn't us.
+pm2cmd() { if [[ -n "$PM2_USER" ]]; then sudo -u "$PM2_USER" -H "$PM2_BIN" "$@"; else "$PM2_BIN" "$@"; fi; }
 
-section "pm2 processes (want 5 online: payment-service, upload-api, upload-workers, payment-workers, admin-dashboard)"
+section "pm2 processes (want 5 app names online: payment-service, upload-api, upload-workers, payment-workers, admin-dashboard)"
 if [[ -n "$PM2_BIN" ]]; then
-  "$PM2_BIN" list 2>/dev/null | grep -E 'payment-service|upload-api|upload-workers|payment-workers|admin-dashboard|name' \
-    || echo 'pm2 list returned nothing — daemon may be down or owned by another user'
+  [[ -n "$PM2_USER" ]] && echo "(querying pm2 daemon owned by user: $PM2_USER — not $(id -un))"
+  pm2cmd list 2>/dev/null | grep -E 'payment-service|upload-api|upload-workers|payment-workers|admin-dashboard|name' \
+    || echo 'pm2 list returned nothing — daemon may be down or owned by another user (set PM2_USER)'
 else
   echo 'pm2 not found on PATH or under ~/.nvm — set PM2_BIN or check the deploy user'
 fi
@@ -122,12 +134,13 @@ echo "bundler arweave wallet: ${gw_arweave:-<upload API down>}"
 # optical bridge target(s) from .env
 if [[ -f "$ENV_FILE" ]]; then
   ob="$(grep -E '^OPTICAL_BRIDGE_URL=' "$ENV_FILE" | cut -d= -f2-)"
-  echo "optical bridge URL   : ${ob:-<unset>}"
-  host="$(printf '%s' "$ob" | sed -E 's#^https?://([^/]+)/.*#\1#')"
-  if [[ -n "$host" ]]; then
-    base="$(printf '%s' "$ob" | sed -E 's#(https?://[^/]+).*#\1#')"
-    curl -sf -m4 "$base/ar-io/healthcheck" >/dev/null 2>&1 && echo "optical bridge reach : OK ($base)" || echo "optical bridge reach : UNREACHABLE ($base)"
-  fi
+  obo="$(grep -E '^OPTIONAL_OPTICAL_BRIDGE_URLS=' "$ENV_FILE" | cut -d= -f2-)"
+  echo "optical bridge URL(s) : primary=${ob:-<unset>}${obo:+ + optional=$obo}"
+  # reachability of EVERY configured optical target (primary + optional, comma-sep)
+  printf '%s,%s' "$ob" "$obo" | tr ',' '\n' | sed 's/[" ]//g' | grep -E '^https?://' | while read -r u; do
+    base="$(printf '%s' "$u" | sed -E 's#(https?://[^/]+).*#\1#')"
+    curl -sf -m4 "$base/ar-io/healthcheck" >/dev/null 2>&1 && echo "optical reach        : OK ($base)" || echo "optical reach        : UNREACHABLE ($base)"
+  done
   # admin-key match against the gateway's own .env, if we can see it
   if [[ -f "$GATEWAY_ENV" ]]; then
     bk="$(grep -E '^AR_IO_ADMIN_KEY=' "$ENV_FILE" | cut -d= -f2-)"
@@ -147,7 +160,7 @@ fi
 
 section "recent upload-workers errors (last 200 log lines)"
 if [[ -n "$PM2_BIN" ]]; then
-  "$PM2_BIN" logs upload-workers --lines 200 --nostream 2>/dev/null \
+  pm2cmd logs upload-workers --lines 200 --nostream 2>/dev/null \
     | grep -iE '"level":"error"|: error:' \
     | grep -ivE 'Job completed|workers started|Worker for queue' \
     | sed -E 's/\{.*//' | sort | uniq -c | sort -rn | head -8
