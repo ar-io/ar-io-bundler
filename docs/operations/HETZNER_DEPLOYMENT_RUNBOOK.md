@@ -638,12 +638,13 @@ the real public URL. (See `UNSIGNED_UPLOAD_TECHNICAL_BRIEF.md` for the x402 flow
 
 ## 16. Backups
 
-- **Postgres (both DBs):** scheduled `pg_dump payment_service` + `pg_dump upload_service` to off-box storage.
-- **MinIO:** `mc mirror` the `raw-data-items` (and backup) buckets to off-box/object storage; the 90-day
-  retention means cold data only exists here until it's permanent on Arweave — back up until verified permanent.
-- **Wallets + `.env`:** encrypted, off-box. Losing `wallet.json` loses the posting identity.
+**Full procedure: `docs/operations/BACKUP_RESTORE.md`** — measured sizing, the encrypted `restic` setup +
+systemd timer, the pgBackRest/WAL scale path with PITR, and the restore drill. Summary:
 
-⚠️ No executable backup procedure exists in the repo today — author one as part of this deploy.
+- **Tier 1 — money + identity (tiny, frequent, off-box):** `payment_service` DB + `wallet.json`/`rawWallet.json` + `.env`, encrypted. Losing `wallet.json` loses the posting identity.
+- **Tier 2 — bulk, chain-reconstructible:** `upload_service` DB — `restic` nightly to start, pgBackRest/WAL incremental at scale.
+- **MinIO object bytes: do NOT back up** — permanent data is on Arweave; in-flight is re-uploadable (mirroring 1–2 TB/mo is wasteful).
+- **Capacity:** at scale `permanent_data_items` + its indexes outgrow the SSD in ~1.5–2 yr — plan partition archival (detach old half-month partitions), not just larger backups.
 
 ---
 
