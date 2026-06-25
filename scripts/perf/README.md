@@ -13,9 +13,148 @@ endpoints; it never tears down infra, wipes a DB, or deletes anything. It
 
 | File | Role |
 |---|---|
-| `baseline.mjs` | the harness — drives uploads, tracks each stage, reports |
+| `canary.mjs` | **pass/fail** pipeline probe — one upload, per-stage ✓/✗ + exit code (see [Canary](#canary--passfail-pipeline-probe)) |
+| `baseline.mjs` | the load harness — drives many uploads, tracks each stage, reports latency/throughput |
+| `core.mjs` | shared core (upload paths + read-only probes) used by both `canary.mjs` and `baseline.mjs` |
+| `targets.json` | named targets (`dev`/`prod`/`legacy`) — bundler + gateway URLs + env label |
 | `mock-arweave-node.mjs` | a "sink" Arweave node so posts cost **$0 AR** (see backends) |
 | `purge-gateway.mjs` | removes the throwaway test data from the gateway afterward |
+
+> **`canary.mjs` vs `baseline.mjs`** — same upload engine, different jobs. The
+> canary uploads **one** item and answers "is the pipeline working **right now**,
+> yes/no?" (exit 0/1, per-stage verdict, Slack/Prometheus) — built to run every
+> few minutes against dev, prod, or legacy. `baseline.mjs` drives **load** and
+> answers "how fast, and where's the ceiling?" (latency percentiles, throughput
+> knee, saturation). Reach for the canary for monitoring/smoke; baseline for
+> capacity work.
+
+---
+
+## Canary — pass/fail pipeline probe
+
+`canary.mjs` uploads **one** size-tunable data item and walks it through every
+observable stage over plain HTTP, timing each and printing a per-stage ✓/✗
+verdict. It **exits 0** when all required stages pass, **1** when one fails or
+blows its deadline (`2` on a config error) — so cron/systemd/any monitor can
+consume it directly. It's black-box and pointable: no pm2/docker/psql, just an
+`--upload-url` (bundler) and `--gateway-url` (gateway). Works identically on
+**dev, prod, and legacy**.
+
+### Two tiers
+| Tier | Stages | Cost / speed | Cadence |
+|---|---|---|---|
+| **fast** (default) | accept → bundler status → optical access (**byte-verify**) → graphql index | free*, ~seconds | every ~10 min |
+| **deep** (`--deep`) | …fast… → bundled → bundle tx posted → bundle tx mined → permanent | mines a bundle → spends a little AR, ~minutes | hourly/daily |
+
+The **fast** tier catches the outages that matter most (upload down, payment/
+balance broken, MinIO broken, optical bridge broken, gateway down) in seconds and
+mines nothing. The **deep** tier additionally proves the bundle actually lands +
+confirms on Arweave and the bundler marks it permanent — run it rarely.
+
+\* "free" = the item must be accepted without you paying. There are two ways:
+the target has a **free tier** (`freeUploadLimitBytes > 0` on `/v1/info`, e.g.
+ArDrive legacy) and the item is under it; **or** you sign with an
+**allow-listed / funded** wallet. On a stack with `freeUploadLimitBytes: 0` and
+no allowlist, an unfunded signer gets **HTTP 402** at `accept` (by design) — give
+the canary a dedicated low-balance/allow-listed wallet via `--signer-key` (eth
+hex **or** an eth wallet JSON file like `ops-test-wallet.eth.json`) / `--signer-jwk`
+(arweave JWK), or env `CANARY_SIGNER_KEY` / `CANARY_SIGNER_JWK`.
+
+### Run it
+```bash
+NODE=~/.nvm/versions/node/v22.17.0/bin/node   # scripts need node 22, not the box default
+
+# fast, against a named target (dev/prod/legacy/ario from targets.json)
+$NODE scripts/perf/canary.mjs --target dev   --signer-key ops-test-wallet.eth.json
+$NODE scripts/perf/canary.mjs --target legacy --size 1KB         # ArDrive prod (free tier)
+$NODE scripts/perf/canary.mjs --target ario                      # ar.io dev (free tier, Google DNS)
+
+# explicit URLs (any environment)
+$NODE scripts/perf/canary.mjs --upload-url https://up.x --gateway-url https://gw.x
+
+# validate a new target WITHOUT uploading (reachability + signer + is-it-a-gateway)
+$NODE scripts/perf/canary.mjs --target ario --dry-run
+
+# deep run (mines a bundle — spends AR)
+$NODE scripts/perf/canary.mjs --target prod --deep --signer-key /path/canary-wallet.json
+```
+
+Edit `targets.json` to set your real `prod` URLs (the shipped values are
+placeholders); `legacy` = `upload.ardrive.io` + `turbo-gateway.com`, `ario` =
+`upload.services.ar-io.dev` + `ar-io.dev`, `dev` = localhost. Any field is
+overridable with `--upload-url` / `--gateway-url` / `--env-label` / `--dns`.
+
+### Pointing at a new target (gotchas these probes caught)
+- **`--dry-run` first.** It checks bundler `/health` + `/v1/info`, that the
+  signer loads, and that the gateway is a **real AR.IO gateway** (via
+  `/ar-io/info`) — *no upload*. It catches a misconfigured target before you
+  trust a live run.
+- **Gateway must be the gateway API, not the website.** `ar-io.dev` is the
+  gateway (`/ar-io/info` + `/graphql`); `arweave.ar-io.dev` is the *website* and
+  returns `200`/HTML for everything (a 1 KB upload then fails optical with "bytes
+  MISMATCH (4845B)" — that's the Nuxt page). The dry-run's "gateway is AR.IO"
+  check flags this.
+- **ISP DNS hijack → `--dns 8.8.8.8`.** Some resolvers (Optimum here) sinkhole
+  `*.ar-io.dev` to an IP in their own ASN, so connects time out. `--dns 8.8.8.8`
+  (or per-target `"dns"` in `targets.json`) resolves over Google DNS instead;
+  TLS/SNI still validates against the hostname (like `curl --resolve`). The
+  `ario` target sets this automatically.
+- **Optimistic reads need the gateway the bundler bridges to.** The fast tier
+  reads optimistic data, so point `--gateway-url` at the gateway the bundler
+  optical-bridges to (for `ario`, the public `ar-io.dev` serves it in ~1 s). A
+  bundler may advertise a *private* gateway in `/v1/info` (ar.io advertises
+  `10.83.0.2:3000`) that you can't reach — use the public one.
+
+### Outputs (all optional, combine freely)
+- **exit code + console table** — always. Per-stage `✓ OK` / `▲ WARN` (passed but
+  over its SLO) / `✗ FAIL`, latency from upload-start, and a `VERDICT: PASS/FAIL`.
+- **JSON** — `results/canary-<target>-<ts>.json` (full per-stage record). `--out
+  <path>` to pin it, `--no-out` to skip.
+- **Prometheus** — `--prom <file>` writes `bundler_canary_up`,
+  `bundler_canary_stage_ok{stage=…}`, `bundler_canary_stage_latency_ms{stage=…}`,
+  `bundler_canary_size_bytes`, `bundler_canary_run_timestamp_seconds` (atomic
+  write → safe for the node_exporter textfile collector / Grafana).
+- **Slack** — `--slack` reuses the admin-service notifier (`SLACK_OAUTH_TOKEN` +
+  `SLACK_ALERT_CHANNEL_ID`), so canary alerts use the **exact standard envelope**
+  as every other ops alert. **Anti-spam by design** (mirrors `admin/alerter.js`):
+  pages only after `--fail-threshold` (default **2**) consecutive failing runs
+  (a single blip never alerts); fires **one** top-level CRITICAL per incident;
+  ongoing-incident reminders reply **in-thread** at `ALERT_REMINDER_MS` (not new
+  messages); one **RESOLVED** reply when it clears. `WARN` (SLO breach) is never
+  paged. State is tracked in `results/canary-<target>.state.json`.
+
+A transient first-connection reset (the proxy/keepalive race this stack exhibits)
+is **retried** at the accept step (`--accept-retries`, default 3) so it never
+false-alarms; a real HTTP code (402/413/4xx/5xx) fails fast with no retry.
+
+### Schedule it (the "1 tiny tx every 10 min" canary)
+Cron — fast every 10 min, deep hourly, both alerting to Slack + writing Prometheus:
+```cron
+# m/10 — fast canary, alerts to Slack, metrics for node_exporter
+*/10 * * * *  cd /home/vilenarios/ar-io-bundler && SLACK_OAUTH_TOKEN=xoxb-… SLACK_ALERT_CHANNEL_ID=C0… \
+  ~/.nvm/versions/node/v22.17.0/bin/node scripts/perf/canary.mjs --target prod --quiet --slack \
+  --signer-key /etc/bundler/canary-wallet.json --prom /var/lib/node_exporter/textfile/canary_prod.prom \
+  >> /var/log/bundler-canary.log 2>&1
+
+# top of the hour — deep canary (mines + confirms; spends a little AR)
+17 * * * *  cd /home/vilenarios/ar-io-bundler && SLACK_OAUTH_TOKEN=xoxb-… SLACK_ALERT_CHANNEL_ID=C0… \
+  ~/.nvm/versions/node/v22.17.0/bin/node scripts/perf/canary.mjs --target prod --deep --quiet --slack \
+  --signer-key /etc/bundler/canary-wallet.json --prom /var/lib/node_exporter/textfile/canary_prod_deep.prom \
+  >> /var/log/bundler-canary.log 2>&1
+```
+For a systemd timer or the in-session `/loop`, run the same command — the exit
+code and `--slack` state file make it stateless across invocations. Point it at
+`--target dev`, `prod`, and `legacy` from three schedules to compare nodes.
+
+### Key flags
+`--target`, `--upload-url`, `--gateway-url`, `--env-label`, `--dns <server>`
+(resolve via a specific DNS, e.g. `8.8.8.8`), `--dry-run` (preflight only, no
+upload), `--size` (default `1KB`), `--deep`, `--signer-key`/`--signer-jwk`,
+`--slack`, `--prom <file>`, `--out <file>`/`--no-out`, `--quiet`, `--strict-slo`
+(WARN counts as FAIL), `--fail-threshold N`, `--remind-ms`, `--accept-retries`,
+and per-stage deadline overrides in seconds: `--status-deadline`,
+`--optical-deadline`, `--graphql-deadline`, `--bundled-deadline`,
+`--posted-deadline`, `--mined-deadline`, `--permanent-deadline`.
 
 ---
 

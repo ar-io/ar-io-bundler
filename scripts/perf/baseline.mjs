@@ -23,13 +23,19 @@
  */
 
 import { performance } from "node:perf_hooks";
-import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFileSync, mkdirSync } from "node:fs";
 import axios from "axios";
-import { createData, EthereumSigner, ArweaveSigner } from "@dha-team/arbundles";
-import { readFileSync } from "node:fs";
+import {
+  parseSize,
+  fmtMs,
+  fmtBytes,
+  summarize,
+  makeSigner,
+  uploadSingle,
+  uploadMultipart,
+} from "./core.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -49,22 +55,6 @@ function parseArgs(argv) {
   return a;
 }
 const args = parseArgs(process.argv.slice(2));
-
-const SIZE_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
-const parseSize = (s) => {
-  const m = String(s)
-    .trim()
-    .match(/^([\d.]+)\s*(B|KB|MB|GB)?$/i);
-  if (!m) throw new Error(`bad size: ${s}`);
-  return Math.round(parseFloat(m[1]) * (SIZE_UNITS[(m[2] || "B").toUpperCase()]));
-};
-const fmtMs = (ms) =>
-  ms == null ? "—" : ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(2)}s`;
-const fmtBytes = (b) => {
-  for (const [u, m] of [["GB", 1024 ** 3], ["MB", 1024 ** 2], ["KB", 1024]])
-    if (b >= m) return `${(b / m).toFixed(b / m < 10 ? 1 : 0)}${u}`;
-  return `${b}B`;
-};
 
 const CFG = {
   mode: args.mode || "latency", // latency | throughput | soak | large | mixed
@@ -102,137 +92,23 @@ function CFG_stamp() {
 }
 
 // ---------------------------------------------------------------------------
-// Signer
+// Signer + upload context (uploaders live in ./lib/core.mjs — shared with canary)
 // ---------------------------------------------------------------------------
-function makeSigner() {
-  if (CFG.signerJwk) {
-    const jwk = JSON.parse(readFileSync(CFG.signerJwk, "utf8"));
-    return { signer: new ArweaveSigner(jwk), token: "arweave", kind: "arweave" };
-  }
-  const key = CFG.signerKey || "0x" + randomBytes(32).toString("hex");
-  return {
-    signer: new EthereumSigner(key.startsWith("0x") ? key.slice(2) : key),
-    token: "ethereum",
-    kind: "ethereum",
-  };
-}
-const SIGNER = makeSigner();
-
-// ---------------------------------------------------------------------------
-// Stats helpers
-// ---------------------------------------------------------------------------
-function pct(sorted, p) {
-  if (!sorted.length) return null;
-  const i = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return sorted[i];
-}
-function summarize(values) {
-  const v = values.filter((x) => x != null).sort((a, b) => a - b);
-  if (!v.length) return { n: 0 };
-  const sum = v.reduce((a, b) => a + b, 0);
-  return {
-    n: v.length,
-    min: v[0],
-    p50: pct(v, 50),
-    p90: pct(v, 90),
-    p95: pct(v, 95),
-    p99: pct(v, 99),
-    max: v[v.length - 1],
-    mean: sum / v.length,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Uploaders
-// ---------------------------------------------------------------------------
-function makePayload(size) {
-  // Random bytes so each item is unique (distinct data-item ids). For very
-  // large sizes we still allocate once; the OS handles paging. Multi-GB cases
-  // are gated behind the `large` mode + RUN_GB explicitly.
-  return randomBytes(size);
-}
-
-function tagsFor(size) {
-  return [
-    { name: "App-Name", value: CFG.appName },
-    { name: "Perf-Run", value: CFG.runId },
-    { name: "Perf-Size", value: String(size) },
-    { name: "Content-Type", value: "application/octet-stream" },
-  ];
-}
-
-async function uploadSingle(size) {
-  const payload = makePayload(size);
-  const item = createData(payload, SIGNER.signer, { tags: tagsFor(size) });
-  await item.sign(SIGNER.signer);
-  const raw = Buffer.from(item.getRaw());
-  const t0 = performance.now();
-  let status = 0;
-  let err = null;
-  try {
-    const res = await axios.post(`${CFG.uploadUrl}/v1/tx`, raw, {
-      headers: { "Content-Type": "application/octet-stream" },
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      timeout: 600000,
-      validateStatus: () => true,
-    });
-    status = res.status;
-    if (status !== 200) err = `http ${status}: ${JSON.stringify(res.data).slice(0, 120)}`;
-  } catch (e) {
-    err = e.message;
-  }
-  const uploadMs = performance.now() - t0;
-  return { id: item.id, bytes: raw.length, uploadMs, status, err, t_upload: Date.now() };
-}
-
-async function uploadMultipart(size) {
-  // create → post chunks → finalize. token = signer kind.
-  const CHUNK = 25 * 1024 * 1024;
-  const t0 = performance.now();
-  const base = `${CFG.uploadUrl}/v1/chunks/${SIGNER.token}`;
-  let err = null;
-  try {
-    const create = await axios.get(`${base}/-1/-1`, { validateStatus: () => true });
-    if (create.status >= 300) throw new Error(`create ${create.status}`);
-    const uploadId = create.data?.id || create.data?.uploadId || create.data;
-    // Build + sign the full data item, then stream its raw bytes as chunks.
-    const payload = makePayload(size);
-    const item = createData(payload, SIGNER.signer, { tags: tagsFor(size) });
-    await item.sign(SIGNER.signer);
-    const raw = Buffer.from(item.getRaw());
-    for (let off = 0; off < raw.length; off += CHUNK) {
-      const chunk = raw.subarray(off, Math.min(off + CHUNK, raw.length));
-      const r = await axios.post(`${base}/${uploadId}/${off}`, chunk, {
-        headers: { "Content-Type": "application/octet-stream" },
-        maxBodyLength: Infinity,
-        validateStatus: () => true,
-      });
-      if (r.status >= 300) throw new Error(`chunk@${off} ${r.status}`);
-    }
-    const fin = await axios.post(`${base}/${uploadId}/finalize`, null, {
-      timeout: 600000,
-      validateStatus: () => true,
-    });
-    const uploadMs = performance.now() - t0;
-    return {
-      id: item.id,
-      bytes: raw.length,
-      uploadMs,
-      status: fin.status,
-      err: fin.status >= 300 ? `finalize ${fin.status}` : null,
-      t_upload: Date.now(),
-    };
-  } catch (e) {
-    err = e.message;
-    return { id: null, bytes: size, uploadMs: performance.now() - t0, status: 0, err, t_upload: Date.now() };
-  }
-}
+const SIGNER = makeSigner({ signerKey: CFG.signerKey, signerJwk: CFG.signerJwk });
+const UPLOAD_CTX = {
+  uploadUrl: CFG.uploadUrl,
+  signer: SIGNER,
+  multipartThreshold: CFG.multipartThreshold,
+  appName: CFG.appName,
+  runId: CFG.runId,
+};
 
 const uploadedIds = []; // every accepted id — fed to purge-gateway.mjs for cleanup
 async function upload(size) {
   const r =
-    size > CFG.multipartThreshold ? await uploadMultipart(size) : await uploadSingle(size);
+    size > CFG.multipartThreshold
+      ? await uploadMultipart(UPLOAD_CTX, size)
+      : await uploadSingle(UPLOAD_CTX, size);
   if (r.id && r.status === 200) uploadedIds.push(r.id);
   return r;
 }
