@@ -46,6 +46,12 @@ const ENV_LABEL =
   process.env.ALERT_ENV_LABEL || process.env.NODE_ENV || "ar-io-bundler";
 // Optional "where to look" link shown in the footer (e.g. the public dashboard).
 const DASHBOARD_URL = process.env.ADMIN_DASHBOARD_URL || "";
+// Optional runbook link shown in the footer (your hosted ops docs).
+const RUNBOOK_URL = process.env.ALERT_RUNBOOK_URL || "";
+// Optional Slack mention prepended to CRITICAL alerts so they actually notify
+// someone (a posted-but-unpinged critical is easy to miss). Examples:
+//   "<!here>" · "<!channel>" · a user group "<!subteam^S0XXXXXXX>" · "<@U0XXXXXXX>"
+const ALERT_MENTION = process.env.ALERT_MENTION || "";
 
 const channels = {
   // Ops/health alerts (service down, infra down, queue failures).
@@ -79,6 +85,7 @@ function buildEnvelope({ emoji, label, color, title, detail, area }) {
 
   const footer = [];
   if (DASHBOARD_URL) footer.push(`🔎 <${DASHBOARD_URL}|Dashboard>`);
+  if (RUNBOOK_URL) footer.push(`📖 <${RUNBOOK_URL}|Runbook>`);
   if (area) footer.push(`area: ${area}`);
   if (footer.length) {
     blocks.push({
@@ -100,6 +107,7 @@ async function sendSlackMessage({
   username = "Bundler Alerts",
   icon_emoji = ":rotating_light:",
   attachments,
+  text,
 } = {}) {
   const oAuthToken = process.env.SLACK_OAUTH_TOKEN;
   if (!oAuthToken) {
@@ -112,6 +120,8 @@ async function sendSlackMessage({
   }
 
   const payload = { channel, username, icon_emoji };
+  // Top-level text renders above the attachment; an @mention here reliably pings.
+  if (text) payload.text = text;
   if (attachments) {
     payload.attachments = attachments;
   } else {
@@ -159,6 +169,8 @@ async function sendAlert({ severity = "warning", title, detail, area } = {}) {
   return sendSlackMessage({
     channel: channels.alert,
     icon_emoji: sev.emoji,
+    // Ping someone on criticals so they're not missed; other severities stay quiet.
+    text: severity === "critical" && ALERT_MENTION ? ALERT_MENTION : undefined,
     attachments: [buildEnvelope({ ...sev, title, detail, area })],
   });
 }

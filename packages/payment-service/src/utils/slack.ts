@@ -51,6 +51,11 @@ const ALERT_SEVERITY = {
 const ENV_LABEL =
   process.env.ALERT_ENV_LABEL || process.env.NODE_ENV || "ar-io-bundler";
 
+// Optional Slack mention prepended to CRITICAL alerts so they actually notify
+// someone (e.g. "<!here>" or a user group "<!subteam^S0XXXXXXX>"). Shared with
+// the admin-service notifier via the root .env.
+const ALERT_MENTION = process.env.ALERT_MENTION || "";
+
 // Accent colors for the attachment bar, matching the admin notifier palette.
 const COLOR = { topUp: "#2EB67D", arns: "#2D9CDB" };
 
@@ -90,12 +95,14 @@ export const sendSlackMessage = async ({
   username = "Payment Service",
   icon_emoji = ":moneybag:",
   attachments,
+  text,
 }: {
   message?: string;
   channel?: string;
   username?: string;
   icon_emoji?: string;
   attachments?: SlackAttachment[];
+  text?: string;
 }) => {
   try {
     globalLogger.debug(`sending slack message`, { channel });
@@ -106,6 +113,8 @@ export const sendSlackMessage = async ({
       );
     }
     const payload: Record<string, unknown> = { channel, username, icon_emoji };
+    // Top-level text renders above the attachment; an @mention here reliably pings.
+    if (text) payload.text = text;
     if (attachments) {
       payload.attachments = attachments;
     } else {
@@ -147,6 +156,8 @@ export const sendAdminAlert = async ({
   return sendSlackMessage({
     channel: channel ?? slackChannels.alert ?? slackChannels.admin,
     icon_emoji: sev.emoji,
+    // Ping someone on criticals so a money-safety alert is never missed.
+    text: severity === "critical" && ALERT_MENTION ? ALERT_MENTION : undefined,
     attachments: [buildEnvelope({ ...sev, title, detail })],
   });
 };

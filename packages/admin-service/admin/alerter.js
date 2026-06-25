@@ -110,6 +110,16 @@ function now() {
   return Date.now();
 }
 
+// Human-readable elapsed time for "down for Xm" / "resolved after Xm".
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 // Normalize embedded numbers so an issue whose count changes keeps a stable key.
 function issueKey(area, message) {
   return `${area}:${String(message).replace(/\d[\d.,]*/g, "N")}`;
@@ -209,6 +219,7 @@ async function evaluate(stats) {
     if (!st.firing) {
       if (st.hits >= (iss.minConsecutive || 1)) {
         st.firing = true;
+        st.firstFiredAt = t;
         st.lastNotified = t;
         await sendAlert({ severity: iss.severity, title: iss.title, detail: iss.detail, area: iss.area });
       }
@@ -220,10 +231,11 @@ async function evaluate(stats) {
       iss.severity === "critical" ? config.reminderMs : config.warningReminderMs;
     if (remindEvery > 0 && t - st.lastNotified >= remindEvery) {
       st.lastNotified = t;
+      const ongoing = `Ongoing for ${fmtDuration(t - (st.firstFiredAt || t))}.`;
       await sendAlert({
         severity: iss.severity,
         title: `Still: ${iss.title}`,
-        detail: iss.detail,
+        detail: iss.detail ? `${iss.detail}\n${ongoing}` : ongoing,
         area: iss.area,
       });
     }
@@ -234,7 +246,12 @@ async function evaluate(stats) {
   for (const [key, st] of tracked) {
     if (!current.has(key)) {
       if (st.firing) {
-        await sendAlert({ severity: "recovered", title: `Resolved: ${st.title}`, area: st.area });
+        await sendAlert({
+          severity: "recovered",
+          title: `Resolved: ${st.title}`,
+          detail: `Was firing for ${fmtDuration(t - (st.firstFiredAt || t))}.`,
+          area: st.area,
+        });
       }
       tracked.delete(key);
     }
