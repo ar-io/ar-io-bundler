@@ -34,6 +34,7 @@ import {
   encodeTagsForOptical,
   signDataItemHeader,
 } from "../utils/opticalUtils";
+import { publicUrlForRequest } from "../utils/publicUrl";
 import {
   RawBodyTooLargeError,
   bufferRequestBodyWithLimit,
@@ -216,8 +217,9 @@ export async function handleRawDataUpload(ctx: KoaContext, rawBody: Buffer): Pro
     usdcAmountRequired,
   });
 
-  // Build payment requirements for verification
-  const uploadServicePublicUrl = process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
+  // Build payment requirements for verification. Resource must match the 402
+  // quote's resource (same request host → same value via publicUrlForRequest).
+  const uploadServicePublicUrl = publicUrlForRequest(ctx);
   const networkConfig = ctx.state.x402Service.getNetworkConfig(paymentPayload.network);
 
   if (!networkConfig) {
@@ -592,11 +594,11 @@ async function send402PaymentRequired(
     usdcAmountRequired,
   });
 
-  // Build absolute URL for the resource (required by x402 facilitator)
-  // IMPORTANT: Must match UPLOAD_SERVICE_PUBLIC_URL to ensure consistency with payment settlement
-  const uploadServicePublicUrl =
-    process.env.UPLOAD_SERVICE_PUBLIC_URL || "http://localhost:3001";
-  const resourceUrl = `${uploadServicePublicUrl}/v1/tx`;
+  // Build absolute URL for the resource (required by x402 facilitator).
+  // IMPORTANT: the 402 quote and the settle step must build this identically;
+  // both derive from the same request host via publicUrlForRequest, so they stay
+  // consistent for payment settlement.
+  const resourceUrl = `${publicUrlForRequest(ctx)}/v1/tx`;
 
   // Get network config for correct USDC address
   const network = process.env.X402_NETWORK || "base-sepolia";
