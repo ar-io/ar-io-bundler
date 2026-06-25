@@ -20,19 +20,35 @@ Code-level guidance lives in the repo's `CLAUDE.md` and `packages/*/CLAUDE.md`. 
 Always use the wrapper scripts. They reload `.env`, verify infra is up, check builds exist, and start things in the right order (infra → migrations → PM2). A bare `pm2 restart` can run stale code or boot with a half-loaded environment.
 
 ```bash
-./scripts/start.sh                  # start Docker infra (+migrate if pg was down) then PM2
+./scripts/deploy.sh                 # ROLLING code/env deploy — no client-facing outage (preferred for updates)
+./scripts/deploy.sh --api-only      # reload only the cluster APIs; leave workers running
+./scripts/deploy.sh --no-build      # reload existing lib/ artifacts (skip yarn build)
+./scripts/start.sh                  # start Docker infra (+migrate if pg was down) then PM2 — first boot / infra down
 ./scripts/stop.sh --services-only   # stop PM2 only, leave Docker infra up   ← normal "stop"
 ./scripts/stop.sh                   # stop PM2 AND docker compose down
-./scripts/restart.sh                # pm2 restart all (falls back to start.sh if nothing running)
+./scripts/restart.sh                # pm2 restart all (HARD restart = brief API outage; falls back to start.sh if down)
 ./scripts/restart.sh --with-docker  # also restart infra + re-run minio-init (and minio-hdd when archive on)
 ./scripts/verify.sh                 # read-only health check (exit 0/1)
 ```
 
-Rebuild-and-reload after a code change:
+**Rebuild-and-reload after a code change — use `deploy.sh` (zero client-facing downtime):**
 ```bash
-cd packages/upload-service && yarn build      # or payment-service
-cd ../.. && ./scripts/stop.sh --services-only && ./scripts/start.sh
+./scripts/deploy.sh                 # builds payment+upload, then rolling-reloads onto the new lib/
 ```
+`deploy.sh` `pm2 reload`s the **cluster** APIs (`upload-api`, `payment-service`) one
+instance at a time — the cluster master keeps the listening socket bound, so nginx
+never sees a refused connection. It passes the ecosystem file + `--update-env`, so it
+also re-reads `.env` (a bare `pm2 reload <name>` would not). The **fork** apps
+(`upload-workers`, `payment-workers`, `admin-dashboard`) can't be cluster-reloaded, so
+they hard-restart — that's **safe and client-invisible**: SIGTERM drains gracefully and
+BullMQ persists every job in Redis, so the pipeline resumes mid-flight with no loss
+(`--api-only` skips them entirely). The APIs added a graceful HTTP drain on SIGTERM/SIGINT
+(`SHUTDOWN_DRAIN_MS`, default 4s — keep it **under** the 5s `kill_timeout`).
+> ⚠️ Zero-downtime needs **`API_INSTANCES` ≥ 2** (the box default) — with a single
+> cluster instance there is no peer to hold the socket and the reload has a gap.
+> Use `deploy.sh` only on an already-running stack; for first boot / infra-down use
+> `start.sh`. The legacy `stop.sh --services-only && start.sh` rebuild still works but
+> takes a ~5s client outage — prefer `deploy.sh`.
 
 ## How the bundler works (the model an operator needs)
 
@@ -163,7 +179,7 @@ Firewall model: cloud firewall (dev) / Robot firewall (prod) do coarse port×CID
 
 ## Deployment (Hetzner)
 
-`docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md` is authoritative — single-node, deploy root `/opt/ar-io-bundler`, user `bundler`, **system Node 22 (nodesource), not nvm**, `corepack prepare yarn@3.6.0`, `npm i -g pm2`. Sequence: create `ar-io-network` → `yarn infra:up` → secrets/wallets/`.env` → `yarn db:migrate` → `./scripts/start.sh` → `./scripts/verify.sh` → `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save` → wire the gateway. (Plan/cleanup/redrive scheduling is in-process — no crontab needed; the only optional crontab entry is `trigger-verify.sh`.) Treat the runbook's open `⚠️ ACTION` items as deploy-blocking: pin Docker image tags + add `restart: unless-stopped`, rotate `minioadmin`/default creds, bind infra (Bull Board, MinIO console, Postgres, both Redis) to localhost/private not `0.0.0.0`, fold `PRICE_ORACLE_GATEWAY_URL`/`ARIO_GATEWAY_URL` into `.env.sample`, confirm no `/home/vilenarios` / LAN IP / nvm path leaks into PM2 or cron, and author a backup procedure (none exists yet).
+`docs/operations/HETZNER_DEPLOYMENT_RUNBOOK.md` is authoritative — single-node, deploy root `/opt/ar-io-bundler`, user `bundler`, **system Node 22 (nodesource), not nvm**, `corepack prepare yarn@3.6.0`, `npm i -g pm2`. **First boot** sequence: create `ar-io-network` → `yarn infra:up` → secrets/wallets/`.env` → `yarn db:migrate` → `./scripts/start.sh` → `./scripts/verify.sh` → `sudo ./scripts/setup-pm2-startup.sh` → `pm2 save` → wire the gateway. **Redeploys / config changes on an already-running box** use `./scripts/deploy.sh` (rolling, no client outage — see the restart-protocol section), not stop/start. Run it as the pm2 daemon owner (prod: `bundler`; the dev box: root) — `deploy.sh`'s pre-flight fails fast on the wrong-daemon trap. (Plan/cleanup/redrive scheduling is in-process — no crontab needed; the only optional crontab entry is `trigger-verify.sh`.) Treat the runbook's open `⚠️ ACTION` items as deploy-blocking: pin Docker image tags + add `restart: unless-stopped`, rotate `minioadmin`/default creds, bind infra (Bull Board, MinIO console, Postgres, both Redis) to localhost/private not `0.0.0.0`, fold `PRICE_ORACLE_GATEWAY_URL`/`ARIO_GATEWAY_URL` into `.env.sample`, confirm no `/home/vilenarios` / LAN IP / nvm path leaks into PM2 or cron, and author a backup procedure (none exists yet).
 
 ## Adjacent skills
 - **`ar-io-gateway-operator`** (in the `ar-io-node` repo) — the gateway side of the optical/reads/MinIO wiring; ANS-104 unbundle pipeline, filters, trust headers.

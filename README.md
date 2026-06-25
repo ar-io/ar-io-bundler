@@ -335,22 +335,28 @@ pm2 stop upload-api
 pm2 delete all
 ```
 
-### Restarting Services
+### Restarting / Redeploying Services
+
+**Deploy code or `.env` changes with `./scripts/deploy.sh` — it is zero client-facing
+downtime.** It rolling-`pm2 reload`s the cluster APIs one instance at a time (the socket
+stays bound, so nginx never sees a refused connection) and restarts the fork workers
+(safe — BullMQ jobs persist in Redis and resume). Passing the ecosystem file +
+`--update-env` re-reads `.env`.
 
 ```bash
-# Restart with script
+# Rolling deploy (preferred for any code/config update on a running stack)
+./scripts/deploy.sh                 # build all + rolling reload
+./scripts/deploy.sh --api-only      # reload only the cluster APIs
+./scripts/deploy.sh --no-build      # reload existing lib/ artifacts
+
+# Hard restart (brief API outage — use only when a full cycle is required)
 ./scripts/restart.sh
-
-# Restart all services
-pm2 restart all
-
-# Restart specific service
-pm2 restart payment-service
-pm2 restart upload-api
-
-# Graceful reload (zero-downtime)
-pm2 reload all
+./scripts/restart.sh --with-docker  # also restart infra
 ```
+
+> **Do not run `pm2 restart`/`pm2 reload` directly.** The wrapper scripts load `.env`,
+> verify infra, and check builds; a bare `pm2` call can run stale code or boot with a
+> half-loaded environment. Zero-downtime rolling reload requires `API_INSTANCES` ≥ 2.
 
 ### Monitoring Services
 

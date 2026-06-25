@@ -691,9 +691,45 @@ systemd timer, the pgBackRest/WAL scale path with PITR, and the restore drill. S
 
 ---
 
-## 18. Rollback
+## 18. Deploying updates & rollback
 
-- App: `git checkout <previous-tag>` in `/opt/ar-io-bundler`, `yarn install && yarn build`, `./scripts/restart.sh`.
+### Rolling redeploy (zero client-facing downtime) — the normal path
+
+On an **already-running** box, ship code/config changes with `./scripts/deploy.sh`:
+
+```bash
+cd /opt/ar-io-bundler
+git pull              # or: git checkout <tag>
+sudo -u bundler -H ./scripts/deploy.sh          # builds payment+upload, then rolling-reloads
+# variants:
+#   ./scripts/deploy.sh --api-only    # reload only the cluster APIs (leave workers running)
+#   ./scripts/deploy.sh --no-build    # reload already-built lib/ (e.g. after a manual yarn build)
+```
+
+`deploy.sh` `pm2 reload`s the **cluster** APIs (`upload-api`, `payment-service`) one
+instance at a time — the cluster master holds the listening socket throughout, so nginx
+never sees a refused upstream (no client outage). It passes the ecosystem file +
+`--update-env`, so `.env` changes are re-read (a bare `pm2 reload <name>` would not). The
+**fork** apps (`upload-workers`, `payment-workers`, `admin-dashboard`) hard-restart — that
+is safe and client-invisible: SIGTERM drains gracefully and BullMQ persists every job in
+Redis, so the pipeline resumes mid-flight with no loss. A post-reload health gate
+(30×1s against both `/v1/info`) gates success.
+
+Requirements & caveats:
+- **Run as the pm2 daemon owner** (`bundler` here). `deploy.sh`'s pre-flight aborts if
+  `upload-api` isn't found under the invoking user's pm2 daemon (the wrong-daemon trap).
+- **Zero-downtime needs `API_INSTANCES` ≥ 2** (cluster peer holds the socket). With 1
+  instance the reload has a gap — scale to ≥2 first.
+- The APIs drain in-flight HTTP on SIGTERM/SIGINT, bounded by `SHUTDOWN_DRAIN_MS`
+  (default 4s). **Keep it under the 5s pm2 `kill_timeout`** or a slow drain is SIGKILLed.
+- `deploy.sh` is for an up stack only. For **first boot / infra down**, use `start.sh`
+  (§9); it never touches BullMQ queues either way.
+
+### Rollback
+
+- App: `git checkout <previous-tag>` in `/opt/ar-io-bundler`, `yarn install`, then
+  `sudo -u bundler -H ./scripts/deploy.sh` (rolling). If the previous build's `lib/` is
+  still present, `./scripts/deploy.sh --no-build` rolls back without rebuilding.
 - DB: migrations have `down`/rollback paths (`db:migrate:rollback`); snapshot Postgres before migrating so you
   can restore if a migration misbehaves.
 - Keep the previous build's `lib/` or a tagged release to redeploy quickly.

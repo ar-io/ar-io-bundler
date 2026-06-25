@@ -2,7 +2,12 @@
 
 #############################
 # Restart AR.IO Bundler - FULL SYSTEM
-# Restarts Docker infrastructure AND PM2 services
+# Restarts Docker infrastructure AND PM2 services.
+#
+# NOTE: this is a HARD restart (`pm2 restart all`) and causes a brief client-facing
+# API outage. For routine code/.env updates on an already-running stack, prefer
+# ./scripts/deploy.sh — it rolling-reloads the cluster APIs with NO client outage
+# (and re-reads .env via --update-env). Use restart.sh when you need a full cycle.
 #############################
 
 set -e
@@ -26,6 +31,8 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  🔄 Restarting AR.IO Bundler"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "  ${YELLOW}hard restart — brief API outage. For zero-downtime code/.env"
+echo -e "  updates use ./scripts/deploy.sh instead.${NC}"
 echo ""
 
 # Restart Docker infrastructure if requested

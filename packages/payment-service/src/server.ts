@@ -15,6 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 // import cors from "@koa/cors"; // CORS handled by nginx
+import type { Server as HttpServer } from "node:http";
+
 import Koa, { DefaultState, Next, ParameterizedContext } from "koa";
 import bodyParser from "koa-bodyparser";
 import jwt from "koa-jwt";
@@ -67,15 +69,65 @@ process.on("uncaughtException", (error) => {
   logger.error("Uncaught exception:", error);
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received, exiting...");
-  process.exit(0);
-});
+// NOTE: graceful SIGTERM/SIGINT shutdown (drain in-flight HTTP, then exit) is
+// registered inside createServer() once the http server handle exists, so
+// `pm2 reload` is drop-free. Do not add bare process.exit(0) handlers here —
+// they would fire first and skip the drain.
 
-process.on("SIGINT", () => {
-  logger.info("SIGINT received, exiting...");
-  process.exit(0);
-});
+// Registered-once graceful shutdown used by createServer(). On SIGTERM/SIGINT
+// (pm2 cluster reload sends SIGINT to the OLD instance once the new one is
+// listening) it stops accepting new connections, lets in-flight requests finish,
+// then exits — so `pm2 reload` drops zero in-flight requests. Bounded by
+// SHUTDOWN_DRAIN_MS (validated; default 4s; MUST stay under the 5s pm2
+// kill_timeout or the OS SIGKILLs the drain mid-flight). The logger is flushed
+// before exit so the final line is actually written (a bare process.exit() races
+// winston's async file transport and silently drops it). Handlers are bound once
+// even if createServer() is called repeatedly (e.g. in tests).
+let drainServer: HttpServer | undefined;
+let drainHandlersBound = false;
+let draining = false;
+function registerGracefulShutdown(server: HttpServer, log: Logger): void {
+  drainServer = server; // always drain the latest server instance
+  if (drainHandlersBound) return;
+  drainHandlersBound = true;
+
+  let finalizing = false;
+  const finalize = (level: "info" | "warn", message: string) => {
+    if (finalizing) return;
+    finalizing = true;
+    log[level](message);
+    // Delay the hard exit briefly so this final line flushes through winston's
+    // async Console transport (and, under pm2 cluster mode, the log IPC to the
+    // pm2 daemon) before the event loop is torn down — a bare process.exit()
+    // truncates it. Only the already-draining instance waits; the cluster peer
+    // keeps serving, so there is no client impact.
+    setTimeout(() => process.exit(0), 250);
+  };
+
+  const drainAndExit = (signal: string) => {
+    if (draining) return;
+    draining = true;
+    const parsed = Number(process.env.SHUTDOWN_DRAIN_MS);
+    const drainMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
+    log.info(
+      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`
+    );
+    const force = setTimeout(
+      () => finalize("warn", "Drain timeout exceeded — forcing exit."),
+      drainMs
+    );
+    force.unref();
+    drainServer?.close(() => {
+      clearTimeout(force);
+      finalize("info", "HTTP server closed — exiting cleanly.");
+    });
+    // Drop idle keep-alive sockets so server.close() can complete promptly.
+    drainServer?.closeIdleConnections?.();
+  };
+
+  process.on("SIGTERM", () => drainAndExit("SIGTERM"));
+  process.on("SIGINT", () => drainAndExit("SIGINT"));
+}
 
 export async function createServer(
   arch: Partial<Architecture>,
@@ -93,6 +145,15 @@ export async function createServer(
   if (!STRIPE_SECRET_KEY) {
     throw new Error("Stripe secret key or webhook secret not set");
   }
+
+  // While draining (SIGTERM/SIGINT during a rolling reload) tell keepalive
+  // clients (incl. the upload service's inter-service HTTP pool) to retire this
+  // connection after the current response instead of reusing a socket we are
+  // about to close — reduces ECONNRESET on the next pooled request.
+  app.use(async (ctx: KoaContext, next: Next) => {
+    if (draining) ctx.set("Connection", "close");
+    await next();
+  });
 
   // Outermost error handler: map domain errors that propagate out of a route
   // to proper HTTP status codes. Several routes (e.g. x402) validate input and
@@ -261,5 +322,9 @@ export async function createServer(
     keepAliveTimeout,
     headersTimeout,
   });
+
+  // Graceful drain on reload/shutdown (see registerGracefulShutdown above).
+  registerGracefulShutdown(server, logger);
+
   return server;
 }
