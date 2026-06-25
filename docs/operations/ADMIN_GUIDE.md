@@ -1112,6 +1112,19 @@ result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 */5 * * * * curl -fsS --retry 3 http://localhost:3001/health || echo "Upload service down!" | mail -s "Alert: Upload Service Down" admin@example.com
 ```
 
+#### External upload-pipeline canary (black-box probe)
+
+Complementary to the admin-dashboard alerter (which watches the bundler **from
+the inside**), the canary (`scripts/perf/canary.mjs`) is a **black-box** probe:
+every 10 min it uploads one tiny free data item and walks it through the real
+HTTP path — accept → bundler status → optical access (SHA-256 byte-verified) →
+GraphQL index — and pages Slack on failure via the **same** notifier/envelope as
+the alerter. Because it runs **out-of-process** (cron, not the bundler), it still
+alerts when the bundler/PM2 is down — the one thing the in-process alerter can't.
+It reuses `SLACK_OAUTH_TOKEN`/`SLACK_ALERT_CHANNEL_ID` and the same anti-flap
+(page after 2 consecutive fails, fire-once, resolve-once). Setup, scheduling, and
+the pinned-worktree pattern: **`scripts/perf/README.md` → "Schedule it"**.
+
 ---
 
 ## Troubleshooting

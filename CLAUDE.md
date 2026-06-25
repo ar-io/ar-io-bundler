@@ -74,6 +74,11 @@ Note: upload integration is serial (`parallel: false`, 20s timeout); payment int
 - `test:e2e:aws-free` — the de-AWS path (MinIO/PostgreSQL/BullMQ)
 - `test:e2e:local` — brings up infra (incl. `arlocal`), runs the suite, tears down
 
+**Performance & smoke harness** (`scripts/perf/`, plain `.mjs`, non-destructive — only uploads + reads status/gateway/metrics): all share `core.mjs` (upload paths + read-only probes) and `targets.json` (named `dev`/`prod`/`legacy` bundler+gateway URLs).
+- `canary.mjs` — **pass/fail** pipeline probe: one upload, per-stage ✓/✗, exit 0/1, JSON/Prometheus/Slack output; built to run every few minutes for monitoring/smoke.
+- `baseline.mjs` — load harness: drives many uploads, reports latency percentiles + throughput knee for capacity work.
+- `mock-arweave-node.mjs` — a "sink" Arweave node so posts cost **$0 AR**; `purge-gateway.mjs` removes throwaway test data afterward. See `scripts/perf/README.md` and `SCALE_TEST_RUNBOOK.md`.
+
 ### Database
 ```bash
 yarn db:migrate                 # Migrate both databases
