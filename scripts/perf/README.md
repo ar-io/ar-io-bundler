@@ -128,23 +128,47 @@ is **retried** at the accept step (`--accept-retries`, default 3) so it never
 false-alarms; a real HTTP code (402/413/4xx/5xx) fails fast with no retry.
 
 ### Schedule it (the "1 tiny tx every 10 min" canary)
-Cron — fast every 10 min, deep hourly, both alerting to Slack + writing Prometheus:
-```cron
-# m/10 — fast canary, alerts to Slack, metrics for node_exporter
-*/10 * * * *  cd /home/vilenarios/ar-io-bundler && SLACK_OAUTH_TOKEN=xoxb-… SLACK_ALERT_CHANNEL_ID=C0… \
-  ~/.nvm/versions/node/v22.17.0/bin/node scripts/perf/canary.mjs --target prod --quiet --slack \
-  --signer-key /etc/bundler/canary-wallet.json --prom /var/lib/node_exporter/textfile/canary_prod.prom \
-  >> /var/log/bundler-canary.log 2>&1
 
-# top of the hour — deep canary (mines + confirms; spends a little AR)
-17 * * * *  cd /home/vilenarios/ar-io-bundler && SLACK_OAUTH_TOKEN=xoxb-… SLACK_ALERT_CHANNEL_ID=C0… \
-  ~/.nvm/versions/node/v22.17.0/bin/node scripts/perf/canary.mjs --target prod --deep --quiet --slack \
-  --signer-key /etc/bundler/canary-wallet.json --prom /var/lib/node_exporter/textfile/canary_prod_deep.prom \
-  >> /var/log/bundler-canary.log 2>&1
+**Recommended: the `run-canary.sh` wrapper + cron.** The wrapper exists because
+cron's environment is hostile to this script — its `PATH` finds the box's Node 12
+(can't run the ESM canary), it has no repo cwd, and it can't read `.env`. The
+wrapper fixes all three: absolute Node 22 path, repo-root cwd, a *safe*
+line-by-line `.env` parser for `SLACK_OAUTH_TOKEN`/`SLACK_ALERT_CHANNEL_ID`
+(sourcing `.env` would try to *execute* values like `"AR.IO Bundler"`), and a
+size-capped logfile. It takes a target name (default `legacy` = upload.ardrive.io).
+
+```cron
+# fast canary every 10 min → Slack alerts on failure/recovery. Output + state
+# (incl. the anti-flap state file) land in <repo>/scripts/perf/results/.
+*/10 * * * *  /home/vilenarios/canary-tree/scripts/perf/run-canary.sh legacy >> /home/vilenarios/canary-tree/scripts/perf/results/canary-cron.log 2>&1
 ```
-For a systemd timer or the in-session `/loop`, run the same command — the exit
-code and `--slack` state file make it stateless across invocations. Point it at
-`--target dev`, `prod`, and `legacy` from three schedules to compare nodes.
+
+**Run it from a pinned git worktree, NOT the shared repo checkout.** The cron
+reads the canary files (`targets.json`, `canary.mjs`) from whatever is checked
+out. On a shared box where branches switch under you, a switch to a branch
+missing the right `targets.json` (e.g. the `dns: 8.8.8.8` pin that `legacy`
+needs) would make the canary fail the gateway stages and false-page. Pin a
+dedicated worktree to `develop` and point cron at it:
+
+```bash
+git worktree add -B canary-pin ~/canary-tree origin/develop
+ln -sfn /path/to/repo/node_modules ~/canary-tree/node_modules   # canary needs axios + arbundles
+ln -sfn /path/to/repo/.env         ~/canary-tree/.env           # SLACK_* etc. (gitignored; absent in a fresh worktree)
+# pick up future canary changes:  git -C ~/canary-tree pull
+```
+
+Pass `dev`/`prod`/`ario` for other targets. For a **deep** run (mines a bundle →
+spends a little AR; ~30–60 min) schedule a separate, infrequent entry calling
+`canary.mjs … --deep` directly — never deep every 10 min. A funded
+`--signer-key`/`--signer-jwk` is only needed for targets whose free tier is off
+(e.g. ar.io `prod`); `legacy` honors the free path, so an ephemeral wallet
+uploads at **$0**. Add `--prom <file>` to also emit node_exporter metrics. For a
+systemd timer or in-session `/loop`, run the wrapper the same way — the exit code
+and `--slack` state file make it stateless across invocations.
+
+> Anti-spam: a **passing run posts nothing**. Alerting pages only after
+> `--fail-threshold` (default 2) consecutive fails, fires **once**, reminds
+> in-thread, and resolves **once** (see the Slack section below).
 
 ### Key flags
 `--target`, `--upload-url`, `--gateway-url`, `--env-label`, `--dns <server>`
