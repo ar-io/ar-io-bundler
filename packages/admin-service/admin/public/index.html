@@ -115,6 +115,9 @@
           <div class="spark"><div class="spark-title">Backlog (unbundled)</div><canvas id="spark-backlog"></canvas></div>
           <div class="spark"><div class="spark-title">Failures / hour</div><canvas id="spark-failed"></canvas></div>
           <div class="spark"><div class="spark-title">Bundles permanent / hour</div><canvas id="spark-bundles"></canvas></div>
+          <div class="spark"><div class="spark-title">Oldest backlog age (min)</div><canvas id="spark-backlog-age"></canvas></div>
+          <div class="spark"><div class="spark-title">In-flight bundles</div><canvas id="spark-inflight"></canvas></div>
+          <div class="spark"><div class="spark-title">Upload→permanent p50 (min)</div><canvas id="spark-latency"></canvas></div>
           <div class="spark"><div class="spark-title">Wallet balance (AR)</div><canvas id="spark-wallet"></canvas></div>
         </div>
       </section>
@@ -270,6 +273,16 @@
           <h2>x402 Payments by Network</h2>
           <div class="chart-container">
             <canvas id="network-chart"></canvas>
+          </div>
+        </section>
+      </div>
+
+      <!-- Failure reasons (operational triage) -->
+      <div class="charts-row">
+        <section class="section chart-section">
+          <h2>Failure Reasons (bundles + items)</h2>
+          <div class="chart-container">
+            <canvas id="failure-reasons-chart"></canvas>
           </div>
         </section>
       </div>

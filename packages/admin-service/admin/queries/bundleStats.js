@@ -32,23 +32,53 @@
  */
 async function getBundleStats(db) {
   try {
-    const [recentPermanent, recentPosted, recentFailed, planningStats] = await Promise.all([
+    const [recentPermanent, recentPosted, recentFailed, planningStats, failureReasons] = await Promise.all([
       getRecentPermanentBundles(db),
       getRecentPostedBundles(db),
       getRecentFailedBundles(db),
-      getBundlePlanningStats(db)
+      getBundlePlanningStats(db),
+      // best-effort: a failure-reasons query error must not blank bundle stats
+      getFailureReasons(db).catch(() => ({})),
     ]);
 
     return {
       recentPermanent,
       recentPosted,
       recentFailed,
-      planning: planningStats
+      planning: planningStats,
+      failureReasons
     };
   } catch (error) {
     console.error('Failed to get bundle stats:', error);
     throw error;
   }
+}
+
+/**
+ * Aggregate failure reasons across failed bundles + failed data items, so an
+ * admin can see WHY things are failing (not just how many). Returns a
+ * { reason: count } map of the top reasons (descending). Best-effort per source:
+ * a missing table/column contributes nothing rather than throwing.
+ * @param {object} db - Knex database connection (upload_service)
+ * @param {number} limit - max distinct reasons to return
+ */
+async function getFailureReasons(db, limit = 8) {
+  const sources = ['failed_bundle', 'failed_data_item'];
+  const counts = {};
+  for (const table of sources) {
+    if (!(await db.schema.hasTable(table))) continue;
+    if (!(await db.schema.hasColumn(table, 'failed_reason'))) continue;
+    const rows = await db(table).select('failed_reason').count('* as c').groupBy('failed_reason');
+    for (const row of rows) {
+      const reason = (row.failed_reason || 'unknown').toString().trim().slice(0, 80) || 'unknown';
+      counts[reason] = (counts[reason] || 0) + (parseInt(row.c) || 0);
+    }
+  }
+  const byReason = {};
+  for (const [reason, count] of Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit)) {
+    byReason[reason] = count;
+  }
+  return byReason;
 }
 
 /**
