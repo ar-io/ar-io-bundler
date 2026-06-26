@@ -79,6 +79,28 @@ describe("parseOpticalRoutingRules", () => {
     expect(rules[0].name).to.equal("good");
   });
 
+  it("skips a rule whose `match` is present but not an array", () => {
+    const raw = JSON.stringify([
+      { url: "https://gw/queue-data-item", match: { type: "tag", name: "x" } },
+    ]);
+    expect(parseOpticalRoutingRules(raw, silentLogger)).to.deep.equal([]);
+  });
+
+  it("skips a rule whose url is not a valid http(s) URL", () => {
+    expect(
+      parseOpticalRoutingRules(
+        JSON.stringify([{ url: "not a url" }]),
+        silentLogger
+      )
+    ).to.deep.equal([]);
+    expect(
+      parseOpticalRoutingRules(
+        JSON.stringify([{ url: "ftp://gw/x" }]),
+        silentLogger
+      )
+    ).to.deep.equal([]);
+  });
+
   it("skips a rule with an invalid matcher", () => {
     const raw = JSON.stringify([
       {

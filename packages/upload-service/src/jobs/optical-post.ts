@@ -500,17 +500,19 @@ const opticalBreakers = new Map<
 
 // TODO: Move this mapping to configuration
 function breakerNameForUrl(url: URLString): BreakerSource {
-  if (url.includes("goldsky")) {
-    return "optical_goldsky";
-  }
-  if (url.includes("ardrive")) {
-    return "optical_ardriveGateway";
-  }
+  // Match explicit/known URLs before the substring heuristics, so a custom rule
+  // URL that happens to contain "ardrive"/"goldsky" is still labeled correctly.
   if (url === primaryOpticalUrl) {
     return "optical_legacyGateway";
   }
   if (opticalRoutingRuleUrls.has(url)) {
     return "optical_custom";
+  }
+  if (url.includes("goldsky")) {
+    return "optical_goldsky";
+  }
+  if (url.includes("ardrive")) {
+    return "optical_ardriveGateway";
   }
   return "unknown";
 }

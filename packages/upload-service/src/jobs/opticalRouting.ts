@@ -136,11 +136,25 @@ function compileRule(
   if (typeof obj.url !== "string" || obj.url === "") {
     return skip("is missing a non-empty `url`");
   }
+  try {
+    const parsed = new URL(obj.url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return skip("`url` must be an http(s) URL");
+    }
+  } catch {
+    return skip("`url` is not a valid URL");
+  }
   const name =
     typeof obj.name === "string" && obj.name !== ""
       ? obj.name
       : `rule-${index}`;
 
+  // Only default `match` to [] (match-all) when it's actually absent; a present
+  // but non-array `match` (e.g. a typo'd object) is a malformed rule, not a
+  // batch-wide route — skip it.
+  if (obj.match !== undefined && !Array.isArray(obj.match)) {
+    return skip("`match` must be an array when present");
+  }
   const rawMatchers = Array.isArray(obj.match) ? obj.match : [];
   const matchers: CompiledMatch[] = [];
   for (const rawMatcher of rawMatchers) {
