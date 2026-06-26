@@ -28,6 +28,7 @@ import * as path from "path";
 import { defaultArchitecture } from "../arch/architecture";
 import { getWriterConfig } from "../arch/db/knexConfig";
 import { PostgresDatabase } from "../arch/db/postgres";
+import { startMetricsServer } from "../arch/metricsServer";
 import { TurboPaymentService } from "../arch/payment";
 import {
   ArchiveCopyMessage,
@@ -85,7 +86,7 @@ const planWorker = createWorker(
   async () => {
     await planBundleHandler(database);
   },
-  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "1", 10) },
+  { concurrency: parseInt(process.env.PLAN_WORKER_CONCURRENCY || "1", 10) }
 );
 
 // Prepare Bundle Worker - Prepares bundles for posting
@@ -98,7 +99,7 @@ const prepareWorker = createWorker<{ planId: string }>(
       cacheService: defaultArchitecture.cacheService,
     });
   },
-  { concurrency: parseInt(process.env.PREPARE_WORKER_CONCURRENCY || "3", 10) },
+  { concurrency: parseInt(process.env.PREPARE_WORKER_CONCURRENCY || "3", 10) }
 );
 
 // Post Bundle Worker - Posts bundles to Arweave
@@ -111,7 +112,7 @@ const postWorker = createWorker<{ planId: string }>(
       arweaveGateway: defaultArchitecture.arweaveGateway,
     });
   },
-  { concurrency: parseInt(process.env.POST_WORKER_CONCURRENCY || "2", 10) },
+  { concurrency: parseInt(process.env.POST_WORKER_CONCURRENCY || "2", 10) }
 );
 
 // Seed Bundle Worker - Seeds bundles to additional gateways
@@ -123,7 +124,7 @@ const seedWorker = createWorker<{ planId: string }>(
       objectStore: defaultArchitecture.objectStore,
     });
   },
-  { concurrency: 2 },
+  { concurrency: 2 }
 );
 
 // Verify Bundle Worker - Verifies bundle posting
@@ -136,7 +137,7 @@ const verifyWorker = createWorker<{ planId: string }>(
       arweaveGateway: defaultArchitecture.arweaveGateway,
     });
   },
-  { concurrency: parseInt(process.env.VERIFY_WORKER_CONCURRENCY || "3", 10) },
+  { concurrency: parseInt(process.env.VERIFY_WORKER_CONCURRENCY || "3", 10) }
 );
 
 // Put Offsets Worker - Writes offsets to PostgreSQL
@@ -145,7 +146,7 @@ const putOffsetsWorker = createWorker<EnqueuedOffsetsBatch>(
   async (job: Job<EnqueuedOffsetsBatch>) => {
     await putOffsetsHandler(job.data.offsets, knex, logger);
   },
-  { concurrency: 5 },
+  { concurrency: 5 }
 );
 
 // New Data Item Worker - Batch inserts new data items
@@ -158,7 +159,7 @@ const newDataItemWorker = createWorker<EnqueuedNewDataItem>(
       uploadDatabase: database,
     });
   },
-  { concurrency: 5 },
+  { concurrency: 5 }
 );
 
 // Optical Post Worker - Posts to optical bridge
@@ -171,7 +172,7 @@ const opticalWorker = createWorker<DatedSignedDataItemHeader>(
       logger,
     });
   },
-  { concurrency: 5 },
+  { concurrency: 5 }
 );
 
 // Unbundle BDI Worker - Unbundles nested bundle data items
@@ -181,10 +182,10 @@ const unbundleWorker = createWorker<UnbundleBDIMessageBody>(
     await unbundleBDIBatchHandler(
       [{ Body: JSON.stringify(job.data) } as any],
       logger,
-      defaultArchitecture.cacheService,
+      defaultArchitecture.cacheService
     );
   },
-  { concurrency: 2 },
+  { concurrency: 2 }
 );
 
 // Finalize Upload Worker - Finalizes multipart uploads
@@ -204,7 +205,7 @@ const finalizeWorker = createWorker<EnqueueFinalizeUpload>(
       paidBy: job.data.paidBy,
     });
   },
-  { concurrency: 3 },
+  { concurrency: 3 }
 );
 
 // Cleanup FS Worker - Cleans up temporary filesystem artifacts
@@ -213,7 +214,7 @@ const cleanupWorker = createWorker(
   async () => {
     await cleanupFsHandler();
   },
-  { concurrency: 1 },
+  { concurrency: 1 }
 );
 
 // Redrive Posted Worker - Re-drives bundles stranded in posted_bundle (seed
@@ -225,7 +226,7 @@ const redrivePostedWorker = createWorker(
   async () => {
     await redrivePostedHandler({ database });
   },
-  { concurrency: 1 },
+  { concurrency: 1 }
 );
 
 // Refund Balance Worker - durable retry for balance refunds. When a refund
@@ -245,10 +246,10 @@ const refundBalanceWorker = createWorker<RefundBalanceMessage>(
         dataItemId,
         signatureType,
       },
-      { throwOnFailure: true },
+      { throwOnFailure: true }
     );
   },
-  { concurrency: 3 },
+  { concurrency: 3 }
 );
 
 // Broadcast Chunks Worker — posts one staged chunk to an AR.IO distributor node
@@ -264,9 +265,9 @@ const broadcastChunksWorker = createWorker<ChunkHeader>(
   {
     concurrency: parseInt(
       process.env.BROADCAST_CHUNKS_WORKER_CONCURRENCY || "10",
-      10,
+      10
     ),
-  },
+  }
 );
 
 // Archive Copy Worker — mirrors one served object (raw-data-item or
@@ -287,7 +288,7 @@ const archiveCopyWorker = createWorker<ArchiveCopyMessage>(
     concurrency:
       Number.parseInt(process.env.ARCHIVE_COPY_WORKER_CONCURRENCY ?? "", 10) ||
       3,
-  },
+  }
 );
 
 // Ensure Partitions Worker — pre-creates upcoming permanent_data_items
@@ -298,7 +299,7 @@ const ensurePartitionsWorker = createWorker(
   async () => {
     await ensurePartitionsHandler({ knex });
   },
-  { concurrency: 1 },
+  { concurrency: 1 }
 );
 
 const allWorkers = [
@@ -355,13 +356,13 @@ async function registerJobSchedulers() {
     jobLabels.planBundle,
     "plan-bundle-scheduler",
     PLAN_SCHEDULE_CRON,
-    { planId: "scheduler" },
+    { planId: "scheduler" }
   );
   await upsertRepeatable(
     jobLabels.cleanupFs,
     "cleanup-fs-scheduler",
     CLEANUP_SCHEDULE_CRON,
-    {},
+    {}
   );
   // Re-driver for bundles stranded in posted_bundle (seed exhausted attempts).
   // redrivePostedHandler ignores job data and scans the DB itself.
@@ -369,14 +370,14 @@ async function registerJobSchedulers() {
     jobLabels.redrivePosted,
     "redrive-posted-scheduler",
     POSTED_REDRIVE_SCHEDULE_CRON,
-    {},
+    {}
   );
   // ensurePartitionsHandler ignores job data; it derives the window from now().
   await upsertRepeatable(
     jobLabels.ensurePartitions,
     "ensure-partitions-scheduler",
     ENSURE_PARTITIONS_SCHEDULE_CRON,
-    {},
+    {}
   );
   logger.info("Registered BullMQ job schedulers", {
     planBundle: PLAN_SCHEDULE_CRON || "(disabled)",
@@ -414,10 +415,21 @@ async function registerJobSchedulersWithRetry(attempt = 0): Promise<void> {
       logger.error(
         "Giving up registering BullMQ job schedulers after max retries; " +
           "restart upload-workers to re-attempt (plan/cleanup will not run until then)",
-        { maxRetries: SCHEDULER_REGISTRATION_MAX_RETRIES },
+        { maxRetries: SCHEDULER_REGISTRATION_MAX_RETRIES }
       );
     }
   }
 }
 
 void registerJobSchedulersWithRetry();
+
+// Expose this process's prom-client registry (the bundle-pipeline counters:
+// fulfillment_job_*, archive_copy_total, chunk_seed_post_total, posted_bundle_*,
+// optical failures, circuit breakers) for Prometheus scraping. upload-workers is
+// a single fork process, so no per-instance offset is needed in practice.
+startMetricsServer({
+  basePort:
+    Number.parseInt(process.env.UPLOAD_WORKERS_METRICS_PORT ?? "9311", 10) ||
+    9311,
+  name: "upload-workers",
+});
