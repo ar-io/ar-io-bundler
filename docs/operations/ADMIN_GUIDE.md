@@ -1129,8 +1129,19 @@ GraphQL index — and pages Slack on failure via the **same** notifier/envelope 
 the alerter. Because it runs **out-of-process** (cron, not the bundler), it still
 alerts when the bundler/PM2 is down — the one thing the in-process alerter can't.
 It reuses `SLACK_OAUTH_TOKEN`/`SLACK_ALERT_CHANNEL_ID` and the same anti-flap
-(page after 2 consecutive fails, fire-once, resolve-once). Setup, scheduling, and
-the pinned-worktree pattern: **`scripts/perf/README.md` → "Schedule it"**.
+(page after 2 consecutive fails, fire-once, resolve-once).
+
+It also verifies data actually **mines to permanence** without blocking each run:
+via deferred tracking it confirms items reach `FINALIZED` on the bundler
+(`/v1/tx/:id/status`) **and** that their bundle tx is **mined on independent tip
+nodes** (an on-chain cross-check, not just the bundler's word). It pages on a
+finalization stall past the SLO (`--finalize-slo`, default 4h; observed
+ArDrive-prod ~2.5h), a bundler-`FINALIZED`-but-not-mined trust gap, or a
+`FAILED` item — and stays quiet (inconclusive, no page) when a tip node or a
+status read is merely unreachable, so a third-party blip never false-alarms.
+
+Setup, scheduling, the pinned-worktree pattern, and all flags:
+**`scripts/perf/README.md` → "Schedule it"** and **"Deferred finalization tracking"**.
 
 ---
 
