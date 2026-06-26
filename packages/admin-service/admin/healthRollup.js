@@ -60,6 +60,12 @@ const DEFAULTS = {
   // keeps failed jobs until cleaned, so cumulative counts are mostly stale cruft.
   queueRecentFailedWarn: 10,
   queueRecentFailedCrit: 50,
+  // Best-effort queues self-recover (circuit breaker / safety nets) and never
+  // lose data — gateway warming/serving optimizations, not the on-chain path.
+  // Their failures cap at DEGRADED (never a CRITICAL page); a benign optical
+  // breaker-burst shouldn't read the same as a stuck post/seed/verify pileup.
+  bestEffortQueues: ['upload-optical-post', 'upload-archive-copy'],
+  bestEffortQueueFailedWarn: 25,
   // PM2 processes whose outage is critical to the pipeline / money path.
   criticalServices: ['upload-workers', 'payment-workers'],
 };
@@ -208,24 +214,41 @@ function computeHealthRollup(stats, overrides = {}) {
   });
 
   // --- Queue failures (RECENT rate, last hour — not lifetime totals) ---
+  // Split by queue class: core-pipeline failures (post/seed/verify/...) can
+  // strand or lose work → CRITICAL; best-effort failures (optical-post,
+  // archive-copy) self-recover and lose no data → DEGRADED at most.
   const q = (stats.system && stats.system.queues) || {};
-  const recentFailed = q.totalRecentFailed || 0;
-  if (recentFailed >= t.queueRecentFailedWarn) {
-    // Name the worst-offending queues so the alert is ACTIONABLE — i.e. tell the
-    // operator it's optical-post / verify-bundle / seed-bundle specifically,
-    // not just "something failed". (optical failures have no DB signal, so this
-    // queue breakdown is how they surface.)
-    const offenders = (Array.isArray(q.byQueue) ? q.byQueue : [])
+  const byQueue = Array.isArray(q.byQueue) ? q.byQueue : [];
+  const isBestEffort = (name) => t.bestEffortQueues.includes(name);
+  // Name the worst-offending queues so the alert is ACTIONABLE — i.e. tell the
+  // operator it's optical-post / verify-bundle / seed-bundle specifically.
+  const offendersOf = (list) =>
+    list
       .filter((x) => (x.recentFailed || 0) > 0)
       .sort((a, b) => (b.recentFailed || 0) - (a.recentFailed || 0))
       .slice(0, 4)
       .map((x) => `${x.name}: ${x.recentFailed}`)
       .join(', ');
+  const sumFailed = (list) =>
+    list.reduce((sum, x) => sum + (x.recentFailed || 0), 0);
+
+  const coreQueues = byQueue.filter((x) => !isBestEffort(x.name));
+  const coreFailed = sumFailed(coreQueues);
+  if (coreFailed >= t.queueRecentFailedWarn) {
+    const offenders = offendersOf(coreQueues);
     const detail = offenders ? ` (${offenders})` : '';
-    if (recentFailed >= t.queueRecentFailedCrit)
-      add('critical', 'queues', `${recentFailed}+ jobs failed in the last hour${detail}`);
+    if (coreFailed >= t.queueRecentFailedCrit)
+      add('critical', 'queues', `${coreFailed}+ core-pipeline jobs failed in the last hour${detail}`);
     else
-      add('degraded', 'queues', `${recentFailed} jobs failed in the last hour${detail}`);
+      add('degraded', 'queues', `${coreFailed} core-pipeline jobs failed in the last hour${detail}`);
+  }
+
+  const bestEffortQueues = byQueue.filter((x) => isBestEffort(x.name));
+  const bestEffortFailed = sumFailed(bestEffortQueues);
+  if (bestEffortFailed >= t.bestEffortQueueFailedWarn) {
+    const offenders = offendersOf(bestEffortQueues);
+    const detail = offenders ? ` (${offenders})` : '';
+    add('degraded', 'queues', `${bestEffortFailed} best-effort jobs failed in the last hour${detail} (self-recovering; no data loss)`);
   }
 
   // Overall status = worst issue.
