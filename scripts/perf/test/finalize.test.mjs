@@ -69,3 +69,33 @@ test("failed: bundler reports FAILED (takes precedence)", () => {
   const v = classifyFinalization(item(), sig({ failedByBundler: true }), now(60), SLO);
   assert.equal(v.state, "failed");
 });
+
+// ---- inconclusive guards: third-party / transient outages must NOT page ----
+
+test("NO false mismatch: bundler FINALIZED but tip nodes UNREACHABLE past SLO → pending", () => {
+  // tip-node outage (all errored) must not look like the bundle never mined.
+  const v = classifyFinalization(
+    item(),
+    sig({ finalizedByBundler: true, minedOnChain: false, tipResponded: false }),
+    now(SLO + 600),
+    SLO
+  );
+  assert.equal(v.state, "pending");
+  assert.match(v.reason, /unreachable/);
+});
+
+test("real mismatch still fires when tip nodes DID respond (not mined) past SLO", () => {
+  const v = classifyFinalization(
+    item(),
+    sig({ finalizedByBundler: true, minedOnChain: false, tipResponded: true }),
+    now(SLO + 600),
+    SLO
+  );
+  assert.equal(v.state, "mismatch");
+});
+
+test("NO false stuck: bundler status unreadable past SLO → pending (inconclusive)", () => {
+  const v = classifyFinalization(item(), sig({ bundlerResponded: false }), now(SLO + 600), SLO);
+  assert.equal(v.state, "pending");
+  assert.match(v.reason, /unreadable/);
+});

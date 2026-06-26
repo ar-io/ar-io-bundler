@@ -536,17 +536,20 @@ async function checkFinalization(current) {
     const finalizedByBundler = bs.ok && (bs.info === "permanent" || bs.status === "FINALIZED");
     const failedByBundler = bs.ok && (bs.info === "failed" || bs.status === "FAILED");
 
-    let mining = { anyMined: false, minedCount: 0, maxConfirmations: 0 };
+    let mining = { anyMined: false, minedCount: 0, respondedCount: 0, maxConfirmations: 0 };
     if (item.bundleId) mining = await probeTxStatusMulti(tipNodes, item.bundleId);
 
     const verdict = classifyFinalization(
       item,
       {
+        bundlerResponded: bs.ok, // unreadable status → inconclusive, never page
         finalizedByBundler,
         failedByBundler,
         minedOnChain: mining.anyMined,
         minedCount: mining.minedCount,
         minNodes: CFG.minTipNodes,
+        // inconclusive mining (all tip nodes errored) must NOT read as "not mined"
+        tipResponded: mining.respondedCount > 0,
       },
       nowEpoch,
       CFG.finalizeSloSec
