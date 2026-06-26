@@ -355,7 +355,8 @@ CDP_API_KEY_SECRET=<required-for-mainnet>
 The canonical config is `infrastructure/pm2/ecosystem.config.js` (what `yarn pm2:start`
 uses). It defines **five** processes:
 - `payment-service`: cluster mode, default 2 instances (`API_INSTANCES`), API :4001
-- `upload-api`: cluster mode, default 2 instances (`API_INSTANCES`), API :3001
+- `upload-api`: cluster mode, default 2 instances (`UPLOAD_API_INSTANCES`, falling
+  back to `API_INSTANCES`), API :3001
 - `upload-workers`: fork mode, 1 instance (`WORKER_INSTANCES`) — the BullMQ bundle
   pipeline; must not be clustered (avoids duplicate job processing)
 - `payment-workers`: fork mode, hardcoded 1 instance — finalizes pending crypto-

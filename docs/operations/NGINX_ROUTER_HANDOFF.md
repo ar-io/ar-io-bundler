@@ -26,9 +26,11 @@
   (same behavior, plus the new unified host), not adding duplicates.
 
 ## 1. Install the snippets (no effect until referenced)
-Copy the five files from `infrastructure/nginx/snippets/` to `/etc/nginx/snippets/`:
+Copy the core files from `infrastructure/nginx/snippets/` to `/etc/nginx/snippets/`:
 `bundler-ssl-params.conf`, `bundler-headers.conf`, `bundler-loc-upload.conf`, `bundler-loc-payment.conf`,
 `bundler-loc-unified.conf`. These are inert until a `server` block `include`s them.
+For the **external-payment split-route** variant (see the section below), also copy
+`bundler-loc-unified-extpay.conf` + `bundler-extpay.conf`.
 
 ## 2. Add ONE site file — `/etc/nginx/sites-available/ar-io-bundler.conf`
 Start from `infrastructure/nginx/ar-io-bundler.conf` and change exactly three things:
@@ -85,13 +87,69 @@ curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS https://$H/v1/tx   # -> 204 
 Default → **upload** (incl. `/`, `/info`, `/health`, `/tx`, `/chunks`, `/x402/upload`, `/bundler_metrics`).
 Explicit **payment** prefixes → payment: `/v1/balance`, `/v1/account/`, `/v1/price/`, `/v1/rates`,
 `/v1/currencies`, `/v1/countries`, `/v1/redeem`, `/v1/reserve-balance/`, `/v1/refund-balance/`,
-`/v1/check-balance/`, `/v1/x402/`, `/v1/arns/`, `/v1/stripe-webhook`, `/account/balance`, `/price/`.
+`/v1/check-balance/`, `/v1/x402/`, `/v1/arns/`, `/v1/stripe-webhook`, **`/v1/top-up/`**, `/account/`,
+`/price/`, `/x402/top-up`.
 Longest-prefix overrides send `/v1/price/x402/`, `/price/x402/`, `/v1/x402/upload/`, `/v1/x402/data-item/`
 back to **upload**. `/info` & `/v1/info` resolve to **upload** (intended).
+
+> ⚠️ **`/v1/top-up/` is the Stripe/fiat top-up family** (`/v1/top-up/payment-intent/…`,
+> `/v1/top-up/checkout-session/…`) — the primary credit-purchase flow. It was missing from the
+> original list and silently fell through to upload (404) until 2026-06-26. If you regenerate this
+> list, derive it from the payment service's **actual** route surface (see the split-route section
+> below), not memory.
 
 Settings baked into the snippets: CORS (`*`) + `OPTIONS`→204 (backends' own CORS is disabled, so no
 duplication); upload `client_max_body_size 100M` + `proxy_request_buffering off` + 300s; payment `10M` +
 `proxy_request_buffering on` + 60s and **no `Content-Type` override**; HTTP/1.1 keepalive; TLS 1.2/1.3.
+
+## Split-route variant — unified host, payment proxied to an EXTERNAL service
+
+Use this when a `turbo.<domain>` host must serve **uploads locally** but send **payment
+routes to an external/upstream payment service** instead of the local `:4001` — e.g. during
+an ArDrive cutover where the box's local payment service is idle and `payment.ardrive.io`
+(AWS CloudFront) stays authoritative for balances/top-ups. First proven on `turbo.ardrive.io`
+2026-06-26.
+
+**Snippets** (source-of-truth in `infrastructure/nginx/snippets/`):
+- `bundler-loc-unified-extpay.conf` — the unified mux, but payment prefixes `proxy_pass` to the
+  external host instead of `bundler_payment`. Use it **in place of** `bundler-loc-unified.conf`
+  in the unified server block.
+- `bundler-extpay.conf` — shared per-location directives for the payment→external hop.
+
+**The external-payment hop has five non-obvious requirements (all baked into `bundler-extpay.conf`):**
+1. **Host rewrite** — `proxy_set_header Host payment.ardrive.io` (CloudFront host-routes; sending the
+   client Host → 403). Setting Host here drops server-level header inheritance, so the snippet
+   **re-declares all forwarding headers**.
+2. **SNI** — `proxy_ssl_server_name on` + `proxy_ssl_name payment.ardrive.io` (else wrong/empty cert).
+3. **Runtime DNS** — `proxy_pass https://$pay$request_uri` (variable) + `resolver 127.0.0.53` so
+   rotating CloudFront IPs are re-resolved (a literal `proxy_pass` caches one IP forever). The
+   `$request_uri` form preserves path **and query string**.
+4. **CORS de-dupe** — the external service also returns `Access-Control-Allow-Origin: *`; nginx is the
+   single CORS authority, so `proxy_hide_header` strips the upstream's (else browsers reject 2× ACAO).
+5. **Upstream TLS verify** — `proxy_ssl_verify on` + `proxy_ssl_trusted_certificate
+   /etc/ssl/certs/ca-certificates.crt` (payment hop — authenticate it; the `*.ardrive.io`/Amazon chain
+   verifies clean).
+
+**Deriving the payment-prefix list (do NOT guess — this is where gaps hide):** the external service may
+expose routes the *local fork doesn't even define* (e.g. `/v1/top-up/payment-intent/…`). Enumerate the
+**upstream's** surface and test every family through the proxy:
+```bash
+# 1. authoritative route list from the upstream itself
+curl -s https://payment.ardrive.io/openapi.json | grep -oE '"/[^"]+"\s*:' | tr -d '":' | sort -u
+# 2. confirm each family routes to the upstream (cloudfront via-header) at BOTH /v1 and root
+for P in /v1/rates /v1/top-up/payment-intent/<addr>/usd/500?token=solana \
+         /v1/account/balance/<token>?address=<addr> /account/balance/<token>?address=<addr> \
+         /price/<token>/<amt> /x402/top-up ; do
+  echo "$P -> $(curl -s "https://turbo.<domain>$P" -D- -o/dev/null | grep -ci cloudfront && echo AWS || echo LOCAL)"
+done
+```
+Note the **root-form asymmetry**: this API serves `/account/*`, `/price/*`, `/x402/top-up` at root, but
+`rates`/`balance`/`redeem`/`currencies`/`countries`/`top-up` are **`/v1`-only** (404 at root on AWS too) —
+so only the real root routes are added. Verify against the upstream directly before adding any root form.
+
+> **Reload caveat:** `systemctl reload nginx` cycles workers asynchronously — a new `location` can read as
+> "not applied" for a second or two while old workers drain. Re-probe after ~3s before concluding a route is
+> mis-mapped.
 
 ## Logging — per-host access log (added 2026-06-26)
 
