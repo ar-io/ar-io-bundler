@@ -115,12 +115,13 @@ extending the standard *combined* format with four fields the default omits:
 
 Handy queries:
 ```bash
-# traffic by host
-awk -F'host=' '{print $2}' /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c | sort -rn
+# traffic by host  (anchored to the real log field: greedy `.*` lands on the LAST
+# host=…upstream=, so a `host=` inside a request URL or user-agent can't pollute it)
+sed -nE 's/.* host=([^ ]+) upstream=.*/\1/p' /var/log/nginx/access.log | sort | uniq -c | sort -rn
 # turbo.ardrive.io payment-proxy latency (upstream is a CloudFront IP, not 127.0.0.1)
-grep 'host=turbo.ardrive.io' /var/log/nginx/access.log | grep -v 'upstream=127.0.0.1' | grep -oE 'urt=[0-9.]+'
+grep -E ' host=turbo\.ardrive\.io upstream=' /var/log/nginx/access.log | grep -v 'upstream=127.0.0.1' | grep -oE 'urt=[0-9.]+'
 # 5xx by host
-grep -E '" 5[0-9][0-9] ' /var/log/nginx/access.log | grep -oE 'host=[^ ]+' | sort | uniq -c
+grep -E '" 5[0-9][0-9] ' /var/log/nginx/access.log | sed -nE 's/.* host=([^ ]+) upstream=.*/\1/p' | sort | uniq -c | sort -rn
 ```
 
 > `nginx.conf` is **box-local** (not tracked under `infrastructure/nginx/`, which holds the
