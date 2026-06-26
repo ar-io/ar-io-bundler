@@ -162,7 +162,25 @@ const newDataItemWorker = createWorker<EnqueuedNewDataItem>(
   { concurrency: 5 }
 );
 
-// Optical Post Worker - Posts to optical bridge
+// Optical Post Worker - Posts to optical bridge.
+// BDI unbundling (ArDrive emits one BDI per subfolder) fans out one optical post
+// per nested child, so a burst can dump tens of thousands of posts at the gateway
+// and saturate its optical endpoint (tripping the circuit breaker → permanent
+// failures). An optional BullMQ rate limiter (OPTICAL_POST_RATE_MAX posts per
+// OPTICAL_POST_RATE_DURATION_MS, enforced across the worker) smooths the burst to
+// a rate the gateway can absorb. Set OPTICAL_POST_RATE_MAX=0 to disable it
+// (unbounded — the legacy behavior).
+// NaN-guarded so a non-numeric env value falls back to the default rather than
+// handing NaN to BullMQ. Note 0 is a VALID value for the rate max (disables the
+// limiter), so we can't use `|| 50` here — distinguish NaN explicitly.
+const opticalPostRateMaxRaw = parseInt(process.env.OPTICAL_POST_RATE_MAX || "50", 10);
+const opticalPostRateMax = Number.isNaN(opticalPostRateMaxRaw)
+  ? 50
+  : opticalPostRateMaxRaw;
+const opticalPostRateDurationMs = Math.max(
+  1,
+  parseInt(process.env.OPTICAL_POST_RATE_DURATION_MS || "1000", 10) || 1000
+);
 const opticalWorker = createWorker<DatedSignedDataItemHeader>(
   jobLabels.opticalPost,
   async (job: Job<DatedSignedDataItemHeader>) => {
@@ -172,7 +190,20 @@ const opticalWorker = createWorker<DatedSignedDataItemHeader>(
       logger,
     });
   },
-  { concurrency: 5 }
+  {
+    concurrency: Math.max(
+      1,
+      parseInt(process.env.OPTICAL_WORKER_CONCURRENCY || "5", 10) || 5
+    ),
+    ...(opticalPostRateMax > 0
+      ? {
+          limiter: {
+            max: opticalPostRateMax,
+            duration: opticalPostRateDurationMs,
+          },
+        }
+      : {}),
+  }
 );
 
 // Unbundle BDI Worker - Unbundles nested bundle data items

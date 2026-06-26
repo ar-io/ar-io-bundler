@@ -35,6 +35,34 @@ if (!primaryOpticalUrl) {
   logger.warn("OPTICAL_BRIDGE_URL is not set.");
 }
 
+// Circuit-breaker tunables for the optical bridge POST (opossum). The timeout
+// default is raised from the original hardcoded 3000ms: a BDI optical fan-out
+// burst (ArDrive emits one BDI per subfolder, each fanning out one optical post
+// per nested child) can make the gateway's optical endpoint legitimately take
+// >3s, which tripped the breaker open for `resetTimeout` and made every BullMQ
+// retry inside that window fail-fast → the post was permanently lost. Pair with
+// the optical worker's rate limiter and OPTICAL_POST_ATTEMPTS/BACKOFF_MS.
+// NaN-guarded (a non-numeric env value must not reach opossum as NaN).
+const opticalBreakerTimeoutMs = Math.max(
+  1,
+  Number.parseInt(process.env.OPTICAL_BREAKER_TIMEOUT_MS || "10000", 10) || 10000
+);
+const opticalBreakerErrorThresholdPct = Math.min(
+  100,
+  Math.max(
+    1,
+    Number.parseInt(
+      process.env.OPTICAL_BREAKER_ERROR_THRESHOLD_PCT || "50",
+      10
+    ) || 50
+  )
+);
+const opticalBreakerResetTimeoutMs = Math.max(
+  1,
+  Number.parseInt(process.env.OPTICAL_BREAKER_RESET_TIMEOUT_MS || "30000", 10) ||
+    30000
+);
+
 // AWS SSM integration removed - admin keys now from environment variables
 const adminKeysCache = new Map<string, string>();
 
@@ -420,9 +448,10 @@ function breakerForOpticalUrl(url: URLString): {
       return task();
     },
     {
-      timeout: process.env.NODE_ENV === "local" ? 7777 : 3000,
-      errorThresholdPercentage: 50,
-      resetTimeout: 30_000,
+      timeout:
+        process.env.NODE_ENV === "local" ? 7777 : opticalBreakerTimeoutMs,
+      errorThresholdPercentage: opticalBreakerErrorThresholdPct,
+      resetTimeout: opticalBreakerResetTimeoutMs,
     }
   );
 
