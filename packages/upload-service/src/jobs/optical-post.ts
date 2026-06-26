@@ -42,17 +42,25 @@ if (!primaryOpticalUrl) {
 // >3s, which tripped the breaker open for `resetTimeout` and made every BullMQ
 // retry inside that window fail-fast → the post was permanently lost. Pair with
 // the optical worker's rate limiter and OPTICAL_POST_ATTEMPTS/BACKOFF_MS.
-const opticalBreakerTimeoutMs = Number.parseInt(
-  process.env.OPTICAL_BREAKER_TIMEOUT_MS || "10000",
-  10
+// NaN-guarded (a non-numeric env value must not reach opossum as NaN).
+const opticalBreakerTimeoutMs = Math.max(
+  1,
+  Number.parseInt(process.env.OPTICAL_BREAKER_TIMEOUT_MS || "10000", 10) || 10000
 );
-const opticalBreakerErrorThresholdPct = Number.parseInt(
-  process.env.OPTICAL_BREAKER_ERROR_THRESHOLD_PCT || "50",
-  10
+const opticalBreakerErrorThresholdPct = Math.min(
+  100,
+  Math.max(
+    1,
+    Number.parseInt(
+      process.env.OPTICAL_BREAKER_ERROR_THRESHOLD_PCT || "50",
+      10
+    ) || 50
+  )
 );
-const opticalBreakerResetTimeoutMs = Number.parseInt(
-  process.env.OPTICAL_BREAKER_RESET_TIMEOUT_MS || "30000",
-  10
+const opticalBreakerResetTimeoutMs = Math.max(
+  1,
+  Number.parseInt(process.env.OPTICAL_BREAKER_RESET_TIMEOUT_MS || "30000", 10) ||
+    30000
 );
 
 // AWS SSM integration removed - admin keys now from environment variables

@@ -170,13 +170,16 @@ const newDataItemWorker = createWorker<EnqueuedNewDataItem>(
 // OPTICAL_POST_RATE_DURATION_MS, enforced across the worker) smooths the burst to
 // a rate the gateway can absorb. Set OPTICAL_POST_RATE_MAX=0 to disable it
 // (unbounded — the legacy behavior).
-const opticalPostRateMax = parseInt(
-  process.env.OPTICAL_POST_RATE_MAX || "50",
-  10
-);
-const opticalPostRateDurationMs = parseInt(
-  process.env.OPTICAL_POST_RATE_DURATION_MS || "1000",
-  10
+// NaN-guarded so a non-numeric env value falls back to the default rather than
+// handing NaN to BullMQ. Note 0 is a VALID value for the rate max (disables the
+// limiter), so we can't use `|| 50` here — distinguish NaN explicitly.
+const opticalPostRateMaxRaw = parseInt(process.env.OPTICAL_POST_RATE_MAX || "50", 10);
+const opticalPostRateMax = Number.isNaN(opticalPostRateMaxRaw)
+  ? 50
+  : opticalPostRateMaxRaw;
+const opticalPostRateDurationMs = Math.max(
+  1,
+  parseInt(process.env.OPTICAL_POST_RATE_DURATION_MS || "1000", 10) || 1000
 );
 const opticalWorker = createWorker<DatedSignedDataItemHeader>(
   jobLabels.opticalPost,
@@ -188,7 +191,10 @@ const opticalWorker = createWorker<DatedSignedDataItemHeader>(
     });
   },
   {
-    concurrency: parseInt(process.env.OPTICAL_WORKER_CONCURRENCY || "5", 10),
+    concurrency: Math.max(
+      1,
+      parseInt(process.env.OPTICAL_WORKER_CONCURRENCY || "5", 10) || 5
+    ),
     ...(opticalPostRateMax > 0
       ? {
           limiter: {
