@@ -96,30 +96,25 @@ describe("parseOpticalRoutingRules", () => {
     expect(parseOpticalRoutingRules(raw, silentLogger)).to.deep.equal([]);
   });
 
-  it("applies defaults (required=false, excludeFromPrimary=false, derived name)", () => {
+  it("applies defaults (derived name, no matchers)", () => {
     const raw = JSON.stringify([{ url: "https://gw/queue-data-item" }]);
     const [rule] = parseOpticalRoutingRules(raw, silentLogger);
-    expect(rule.required).to.equal(false);
-    expect(rule.excludeFromPrimary).to.equal(false);
     expect(rule.name).to.equal("rule-0");
+    expect(rule.adminKeyName).to.equal(undefined);
     expect(rule.matchers).to.deep.equal([]);
   });
 
-  it("captures adminKeyName, required, and excludeFromPrimary when set", () => {
+  it("captures adminKeyName when set", () => {
     const raw = JSON.stringify([
       {
         name: "perma",
         url: "https://perma.online/queue-data-item",
         adminKeyName: "PERMA",
-        required: true,
-        excludeFromPrimary: true,
         match: [{ type: "tag", name: "App-Name", valuePrefix: "ArDrive" }],
       },
     ]);
     const [rule] = parseOpticalRoutingRules(raw, silentLogger);
     expect(rule.adminKeyName).to.equal("PERMA");
-    expect(rule.required).to.equal(true);
-    expect(rule.excludeFromPrimary).to.equal(true);
     expect(rule.matchers).to.have.length(1);
   });
 });
@@ -161,6 +156,21 @@ describe("headerMatchesRule", () => {
         r
       )
     ).to.equal(false);
+  });
+
+  it("matches a prefix on a later duplicate tag name (some, not find)", () => {
+    const r = rule([{ type: "tag", name: "App-Name", valuePrefix: "ArDrive" }]);
+    expect(
+      headerMatchesRule(
+        makeHeader({
+          tags: [
+            { name: "App-Name", value: "SomethingElse" },
+            { name: "App-Name", value: "ArDrive-Web" },
+          ],
+        }),
+        r
+      )
+    ).to.equal(true);
   });
 
   it("matches tag-exists regardless of value", () => {

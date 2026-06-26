@@ -891,12 +891,17 @@ TURBO_JWK_FILE=./turbo-wallet.json     # Turbo's ARIO wallet for purchases
      endpoint (additive alongside `OPTICAL_BRIDGE_URL`, unless `excludeFromPrimary`).
    - Matchers (ANDed; empty = match all): `tag` (`value` exact | `valuePrefix` |
      name-only = exists), `owner` (by `owner_address`), `target`.
-   - Per-rule: `adminKeyName` (→ `OPTICAL_ADMIN_KEY_<NAME>`), `required`
-     (default false; true → 429/5xx fails the job → BullMQ retry),
-     `excludeFromPrimary` (default false).
+   - Best-effort + fire-and-forget (like the optional/ArDrive bridges): a route
+     failure is logged + counted but never blocks or fails the optical job; only
+     the primary `OPTICAL_BRIDGE_URL` is must-succeed.
+   - Per-rule `adminKeyName` → `OPTICAL_ADMIN_KEY_<NAME>`. If set but unresolved,
+     the route is sent with no auth (the primary `AR_IO_ADMIN_KEY` is not inherited).
+   - `owner`/`target` match the data item's native address form per signature type
+     (0x-checksummed ETH, base58 Solana, base64url Arweave), case-sensitively.
+   - A rule whose url equals `OPTICAL_BRIDGE_URL` is skipped (already covered).
    - Fail-safe: unset/blank → no rules; invalid JSON → all custom routes disabled
      (logged); a single invalid rule is skipped, the rest load.
-   - Metric: `optical_custom_route_post_total{rule,result}`.
+   - Metric: `optical_custom_route_post_total{rule,result}` (worker-process registry).
 
 **Filtering:**
 - **Skipped:** Nested BDIs, allow-listed addresses (free uploads)

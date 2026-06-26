@@ -106,7 +106,18 @@ const arDriveGatewayOpticalUrlAndApiKeyPairs =
 
 // Configurable tag/owner/target-based optical routing (OPTICAL_ROUTING_RULES).
 // Parsed once at module load; empty => unchanged behavior. See opticalRouting.ts.
-const opticalRoutingRules = parseOpticalRoutingRules();
+// Drop any rule that targets the primary OPTICAL_BRIDGE_URL: those items already
+// go to the primary post, and a shared URL would also share the primary's
+// circuit breaker (a flaky route could trip the breaker the primary relies on).
+const opticalRoutingRules = parseOpticalRoutingRules().filter((rule) => {
+  if (rule.url === primaryOpticalUrl) {
+    logger.warn(
+      `Optical routing rule "${rule.name}" targets the primary OPTICAL_BRIDGE_URL; skipping (already covered by the primary post).`
+    );
+    return false;
+  }
+  return true;
+});
 const opticalRoutingRuleUrls = new Set(opticalRoutingRules.map((r) => r.url));
 
 let cachedAxios: AxiosInstance | undefined = undefined;
@@ -130,11 +141,11 @@ export const opticalPostHandler = async ({
     (headerString) => JSON.parse(headerString) as SignedDataItemHeader
   );
 
-  // Configurable custom routes (OPTICAL_ROUTING_RULES): compute the matching
-  // subset for each rule, plus the set of ids any rule wants diverted away from
-  // the primary post. NOTE: rules see the FULL batch, including low-priority AO
-  // messages the primary filter drops below — that's intentional (a rule can
-  // deliberately route those somewhere).
+  // Configurable custom routes (OPTICAL_ROUTING_RULES): the matching subset for
+  // each rule. Routes are additive — items still go to the primary post — and
+  // best-effort (fired below), so this never alters what the primary receives.
+  // NOTE: rules see the FULL batch, including low-priority AO messages the
+  // primary filter drops below — intentional (a rule can route those too).
   const customRoutes: {
     rule: CompiledOpticalRoutingRule;
     matched: SignedDataItemHeader[];
@@ -144,19 +155,9 @@ export const opticalPostHandler = async ({
       headerMatchesRule(header, rule)
     ),
   }));
-  const idsExcludedFromPrimary = new Set<string>();
-  for (const { rule, matched } of customRoutes) {
-    if (rule.excludeFromPrimary) {
-      matched.forEach((header) => idsExcludedFromPrimary.add(header.id));
-    }
-  }
 
   const dataItemStringifiedHeadersToSendToPrimaryOptical = dataItemHeaders
-    .filter((header) => {
-      if (idsExcludedFromPrimary.has(header.id)) {
-        return false;
-      }
-      const { tags } = header;
+    .filter(({ tags }) => {
       const dataProtocol = tags.find(
         (tag) => tag.name === b64UrlStrings["Data-Protocol"]
       )?.value;
@@ -325,11 +326,10 @@ export const opticalPostHandler = async ({
       );
     }
 
-    // Configurable custom routes (OPTICAL_ROUTING_RULES). Optional routes are
-    // fire-and-forget like the optional/ArDrive bridges above; required routes
-    // are awaited so a transient failure (429/5xx) fails the job and BullMQ
-    // retries (re-posting headers is idempotent on the gateway).
-    const requiredRoutePosts: Promise<void>[] = [];
+    // Configurable custom routes (OPTICAL_ROUTING_RULES): additive and
+    // best-effort, exactly like the optional/ArDrive bridges above. Fired
+    // detached so a slow/failing route never blocks or fails the optical job
+    // (the primary OPTICAL_BRIDGE_URL below is the only must-succeed target).
     for (const { rule, matched } of customRoutes) {
       if (matched.length === 0) {
         childLogger.debug(
@@ -340,35 +340,36 @@ export const opticalPostHandler = async ({
       const routePostBody = `[${matched
         .map((header) => JSON.stringify(header))
         .join(",")}]`;
-      const apiKey = rule.adminKeyName
-        ? getAdminKeyFromEnv(rule.adminKeyName)
-        : undefined;
-      const postPromise = breakerForOpticalUrl(rule.url)
+      // Auth: when adminKeyName is set, use OPTICAL_ADMIN_KEY_<NAME>. If it can't
+      // be resolved, send an empty Authorization rather than inheriting the
+      // instance default (the primary AR_IO_ADMIN_KEY) — that would silently leak
+      // the primary key to this route's URL. When adminKeyName is absent, omit
+      // per-request headers so the route inherits the default (matches the
+      // optional bridge's behavior for same-credential gateways).
+      let routeHeaders: Record<string, string> | undefined;
+      if (rule.adminKeyName) {
+        const apiKey = getAdminKeyFromEnv(rule.adminKeyName);
+        routeHeaders = { Authorization: apiKey ? `Bearer ${apiKey}` : "" };
+      }
+      void breakerForOpticalUrl(rule.url)
         .fire(async () => {
           return getAxios().post(rule.url, routePostBody, {
-            headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+            headers: routeHeaders,
           });
         })
         .then((response) => {
           const { status, statusText } = response;
           if (status < 200 || status >= 300) {
-            MetricRegistry.opticalCustomRoutePost.inc({
-              rule: rule.name,
-              result: "error",
-            });
-            // Required routes honor backpressure (mirrors the primary post):
-            // throw on 429/5xx so the job retries; permanent 4xx logs + gives up.
-            if (rule.required && (status === 429 || status >= 500)) {
-              throw Error(
-                `Optical route "${rule.name}" backpressure/transient: ${status} ${statusText}`
-              );
-            }
             childLogger.warn(`Optical route "${rule.name}" returned non-2xx`, {
               url: rule.url,
               status,
               statusText,
               responseBody: snippet(response.data),
               requestBodyPreview: routePostBody.slice(0, 512),
+            });
+            MetricRegistry.opticalCustomRoutePost.inc({
+              rule: rule.name,
+              result: "error",
             });
             return;
           }
@@ -379,21 +380,8 @@ export const opticalPostHandler = async ({
           childLogger.debug(
             `Successfully posted to optical route "${rule.name}"`
           );
-        });
-
-      if (rule.required) {
-        // Surface the failure (job-failing) while still counting it.
-        requiredRoutePosts.push(
-          postPromise.catch((error) => {
-            MetricRegistry.opticalCustomRoutePost.inc({
-              rule: rule.name,
-              result: "error",
-            });
-            throw error;
-          })
-        );
-      } else {
-        void postPromise.catch((error) => {
+        })
+        .catch((error) => {
           childLogger.error(
             `Failed to post to optical route "${rule.name}": ${error.message}`,
             { url: rule.url }
@@ -403,14 +391,6 @@ export const opticalPostHandler = async ({
             result: "error",
           });
         });
-      }
-    }
-    // Await required routes before the primary post's early-returns below so a
-    // required failure always fails the job. (A required-route throw propagates
-    // through the outer catch, which also increments the aggregate optical
-    // failure metric — intended: the job's optical work did not complete.)
-    if (requiredRoutePosts.length > 0) {
-      await Promise.all(requiredRoutePosts);
     }
 
     if (dataItemStringifiedHeadersToSendToPrimaryOptical.length === 0) {

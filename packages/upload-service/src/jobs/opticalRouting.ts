@@ -27,7 +27,10 @@ import { SignedDataItemHeader } from "../utils/opticalUtils";
  * optical-post.ts into a configurable, predicate-driven rule set declared via the
  * OPTICAL_ROUTING_RULES env var (a JSON array). Each rule mirrors the matching
  * subset of an optical batch to its own endpoint, additively alongside the
- * primary optical post (unless the rule opts into excludeFromPrimary).
+ * primary optical post. Like the OPTIONAL_OPTICAL_BRIDGE_URLS and
+ * ARDRIVE_GATEWAY_OPTICAL_URLS bridges, custom routes are best-effort and
+ * fire-and-forget: a route failure is logged + counted but never blocks or fails
+ * the optical job (only the primary OPTICAL_BRIDGE_URL is must-succeed).
  *
  * Unset/empty OPTICAL_ROUTING_RULES => no rules => behavior is unchanged.
  *
@@ -59,18 +62,6 @@ export type CompiledOpticalRoutingRule = {
    * getAdminKeyFromEnv in optical-post.ts.
    */
   adminKeyName?: string;
-  /**
-   * When true, a transient failure (429/5xx) fails the optical job so BullMQ
-   * retries with backoff (re-posting is idempotent on the gateway). When false
-   * (default) the route is fire-and-forget: failures are logged + counted only.
-   */
-  required: boolean;
-  /**
-   * When true, items matched by this rule are removed from the primary optical
-   * post (exclusive routing). Default false => additive (item goes to BOTH the
-   * primary gateway and this endpoint), matching the existing ArDrive semantics.
-   */
-  excludeFromPrimary: boolean;
   /** All matchers must pass (AND). An empty list matches every item. */
   matchers: CompiledMatch[];
 };
@@ -120,8 +111,6 @@ export function parseOpticalRoutingRules(
       rules: rules.map((r) => ({
         name: r.name,
         url: r.url,
-        required: r.required,
-        excludeFromPrimary: r.excludeFromPrimary,
         matchers: r.matchers.length,
       })),
     });
@@ -169,8 +158,6 @@ function compileRule(
       typeof obj.adminKeyName === "string" && obj.adminKeyName !== ""
         ? obj.adminKeyName
         : undefined,
-    required: obj.required === true,
-    excludeFromPrimary: obj.excludeFromPrimary === true,
     matchers,
   };
 }
@@ -225,15 +212,14 @@ export function headerMatchesRule(
           (tag) =>
             tag.name === matcher.encName && tag.value === matcher.encValue
         );
-      case "tagPrefix": {
-        const tag = header.tags.find((t) => t.name === matcher.encName);
-        if (!tag) {
-          return false;
-        }
-        return fromB64Url(tag.value)
-          .toString("utf-8")
-          .startsWith(matcher.prefix);
-      }
+      case "tagPrefix":
+        // some(), not find(): a data item may carry duplicate tag names, so a
+        // later tag whose value matches the prefix must still count.
+        return header.tags.some(
+          (tag) =>
+            tag.name === matcher.encName &&
+            fromB64Url(tag.value).toString("utf-8").startsWith(matcher.prefix)
+        );
       case "tagExists":
         return header.tags.some((tag) => tag.name === matcher.encName);
       case "owner":
