@@ -375,6 +375,13 @@ See the repo-root `.env.sample` for the full list. Commonly relevant here:
 - `PAYMENT_SERVICE_BASE_URL` (no protocol prefix), `PRIVATE_ROUTE_SECRET`
 - `ARWEAVE_GATEWAY` (reads + bundle-tx POST), `ARWEAVE_GATEWAYS` (failover),
   `OPTICAL_BRIDGING_ENABLED`, `OPTICAL_BRIDGE_URL`, `AR_IO_ADMIN_KEY`
+- Optical-post burst resilience (a BDI fan-out — ArDrive emits one BDI per
+  subfolder — can flood the gateway and trip the optical circuit breaker):
+  `OPTICAL_POST_RATE_MAX` (50/`OPTICAL_POST_RATE_DURATION_MS`, 0=off),
+  `OPTICAL_WORKER_CONCURRENCY` (5), `OPTICAL_BREAKER_TIMEOUT_MS` (10000, was a
+  hardcoded 3000), `OPTICAL_BREAKER_ERROR_THRESHOLD_PCT` (50),
+  `OPTICAL_BREAKER_RESET_TIMEOUT_MS` (30000), `OPTICAL_POST_ATTEMPTS` (5),
+  `OPTICAL_POST_BACKOFF_MS` (15000, exp — straddles the breaker window)
 - Chunk seeding: `AR_IO_NODE_URLS` (comma-separated distributor list; unset →
   single `ARWEAVE_UPLOAD_NODE`), `BROADCAST_CHUNKS_WORKER_CONCURRENCY` (10),
   `CHUNK_POST_MAX_TRIES` (3), `CHUNK_POST_RETRY_DELAY_MS` (2000),

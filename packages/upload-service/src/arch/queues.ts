@@ -74,14 +74,28 @@ export type RefundBalanceMessage = {
 
 export type QueueType = keyof QueueTypeToMessageType;
 
-export const enqueue = async <T extends QueueType>(
-  queueType: T,
-  message: QueueTypeToMessageType[T],
-  options?: { delay?: number; timeout?: number },
-) => {
-  const queue = getQueue(queueType);
+// Optical-post retry policy. More attempts + a longer exponential backoff than
+// the global default (3 / 5s, see queues/config.ts) so the retry schedule
+// STRADDLES the optical circuit-breaker's open window
+// (OPTICAL_BREAKER_RESET_TIMEOUT_MS, default 30s). Under a BDI optical fan-out
+// burst the breaker opens for ~30s; with the global default all 3 retries fell
+// inside that single window and the post was permanently lost. 15s exponential
+// → roughly 15s / 30s / 60s / 120s, so a later attempt lands after the gateway
+// recovers. Tunable via OPTICAL_POST_ATTEMPTS / OPTICAL_POST_BACKOFF_MS.
+const opticalPostAttempts = Math.max(
+  1,
+  Number.parseInt(process.env.OPTICAL_POST_ATTEMPTS || "5", 10) || 5,
+);
+const opticalPostBackoffMs = Math.max(
+  1000,
+  Number.parseInt(process.env.OPTICAL_POST_BACKOFF_MS || "15000", 10) || 15000,
+);
 
-  // Special handling for long-running jobs
+// Per-queue job options, centralized so BOTH enqueue() and the batched
+// enqueueBatch() apply the same policy. This matters for optical-post: the BDI
+// fan-out enqueues via enqueueBatch, which previously passed NO options, so
+// those posts silently inherited only the global default retry policy.
+const jobOptionsFor = (queueType: QueueType): Record<string, unknown> => {
   const jobOptions: Record<string, unknown> = {};
   if (queueType === jobLabels.seedBundle) {
     jobOptions.timeout = 300000; // 5 minutes for seed jobs
@@ -92,6 +106,21 @@ export const enqueue = async <T extends QueueType>(
     jobOptions.attempts = 50;
     jobOptions.backoff = { type: "exponential", delay: 30000 };
   }
+  if (queueType === jobLabels.opticalPost) {
+    jobOptions.attempts = opticalPostAttempts;
+    jobOptions.backoff = { type: "exponential", delay: opticalPostBackoffMs };
+  }
+  return jobOptions;
+};
+
+export const enqueue = async <T extends QueueType>(
+  queueType: T,
+  message: QueueTypeToMessageType[T],
+  options?: { delay?: number; timeout?: number },
+) => {
+  const queue = getQueue(queueType);
+
+  const jobOptions = jobOptionsFor(queueType);
 
   // Apply custom options if provided
   if (options?.delay) {
@@ -111,10 +140,12 @@ export const enqueueBatch = async <T extends QueueType>(
   if (messages.length === 0) return;
 
   const queue = getQueue(queueType);
+  const opts = jobOptionsFor(queueType);
   await queue.addBulk(
     messages.map((message) => ({
       name: queueType,
       data: message,
+      opts,
     })),
   );
 };
