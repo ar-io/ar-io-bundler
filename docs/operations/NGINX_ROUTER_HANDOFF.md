@@ -92,3 +92,37 @@ back to **upload**. `/info` & `/v1/info` resolve to **upload** (intended).
 Settings baked into the snippets: CORS (`*`) + `OPTIONS`→204 (backends' own CORS is disabled, so no
 duplication); upload `client_max_body_size 100M` + `proxy_request_buffering off` + 300s; payment `10M` +
 `proxy_request_buffering on` + 60s and **no `Content-Type` override**; HTTP/1.1 keepalive; TLS 1.2/1.3.
+
+## Logging — per-host access log (added 2026-06-26)
+
+`/etc/nginx/nginx.conf` defines a custom `log_format vhost` and `access_log … vhost`,
+extending the standard *combined* format with four fields the default omits:
+
+```
+… "$request" $status … host=$host upstream=$upstream_addr ustatus=$upstream_status urt=$upstream_response_time rt=$request_time
+```
+
+- **`host=`** — the vhost, so traffic is attributable per endpoint (`turbo.ardrive.io`
+  vs `upload.ardrive.io` vs `*.services.ar.io`). The default `combined` format has **no**
+  Host field — without this you cannot tell which endpoint a request hit (this gap is
+  exactly why per-host turbo traffic was invisible right after its cutover).
+- **`upstream=`** — the backend: `127.0.0.1:3001` (upload), `127.0.0.1:4001` (local
+  payment), or a **CloudFront IP** for `turbo.ardrive.io`'s payment routes proxied to
+  `payment.ardrive.io` (AWS, via `bundler-loc-unified-extpay.conf`). Confirms the
+  split-route is actually sending payments to AWS, not the idle local service.
+- **`ustatus=` / `urt=` / `rt=`** — upstream status, upstream response time, total request
+  time. `urt` on the payment-proxy lines = the live AWS round-trip latency.
+
+Handy queries:
+```bash
+# traffic by host
+awk -F'host=' '{print $2}' /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c | sort -rn
+# turbo.ardrive.io payment-proxy latency (upstream is a CloudFront IP, not 127.0.0.1)
+grep 'host=turbo.ardrive.io' /var/log/nginx/access.log | grep -v 'upstream=127.0.0.1' | grep -oE 'urt=[0-9.]+'
+# 5xx by host
+grep -E '" 5[0-9][0-9] ' /var/log/nginx/access.log | grep -oE 'host=[^ ]+' | sort | uniq -c
+```
+
+> `nginx.conf` is **box-local** (not tracked under `infrastructure/nginx/`, which holds the
+> site file + snippets only), so this `log_format` lives only on the box — **re-apply it
+> after any nginx reinstall**. Pre-change backup: `/etc/nginx/nginx.conf.bak-logfmt-*`.
