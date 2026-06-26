@@ -403,3 +403,96 @@ export async function probeUrl(url, timeout = 8000) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------
+// Mining verification across multiple independent "tip" nodes
+// ---------------------------------------------------------------------------
+/**
+ * Check a bundle tx's mined state on SEVERAL independent Arweave/AR.IO nodes and
+ * aggregate. Used to verify mining on-chain rather than trusting the bundler's
+ * self-reported "permanent" — a bundle is considered mined when at least
+ * `minNodes` tip nodes report it in a block. Confirmations are taken as the max
+ * across agreeing nodes (relative to each node's chain tip).
+ *
+ * Returns { anyMined, minedCount, total, maxConfirmations, blockHeight, perNode }.
+ */
+export async function probeTxStatusMulti(tipNodes, txid, timeout = 8000) {
+  const nodes = (tipNodes || []).filter(Boolean);
+  const results = await Promise.all(
+    nodes.map(async (node) => {
+      const r = await probeTxStatus(node, txid, timeout);
+      return { node, ...r };
+    })
+  );
+  const mined = results.filter((r) => r.ok && r.state === "mined");
+  // A node "responded" only if it gave a DEFINITE Arweave answer (mined / pending
+  // / notfound). A timeout/5xx is NOT a response — we must not read it as "not
+  // mined" or a tip-node outage would falsely look like the bundle never mined.
+  const responded = results.filter((r) => r.ok);
+  return {
+    anyMined: mined.length > 0,
+    minedCount: mined.length,
+    respondedCount: responded.length,
+    anyReachable: responded.length > 0,
+    total: nodes.length,
+    maxConfirmations: mined.reduce((m, r) => Math.max(m, r.confirmations || 0), 0),
+    blockHeight: mined.length ? mined[0].blockHeight ?? null : null,
+    perNode: results.map((r) => ({
+      node: r.node,
+      state: r.ok ? r.state : `err(${r.httpStatus || r.error})`,
+      confirmations: r.confirmations ?? null,
+    })),
+  };
+}
+
+/**
+ * PURE classifier for a tracked in-flight item's finalization. Given the item's
+ * resolved signals, decide its state — no I/O, so it's unit-testable.
+ *
+ * @param {{uploadedEpoch:number}} item
+ * @param {{ finalizedByBundler:boolean, failedByBundler:boolean, minedOnChain:boolean, minNodes:number, minedCount:number, tipResponded?:boolean }} sig
+ * @param {number} nowEpoch  seconds
+ * @param {number} sloSec    finalization SLO in seconds
+ * @returns {{ state:'verified'|'pending'|'stuck'|'mismatch'|'failed', ageSec:number, reason:string }}
+ *   verified  — bundler FINALIZED AND mined on >= minNodes tip nodes (healthy, drop it)
+ *   failed    — bundler reports the item FAILED (pipeline rejected it)
+ *   mismatch  — bundler says FINALIZED but reachable tip nodes do NOT show it mined (trust gap)
+ *   stuck     — neither finalized nor mined within the SLO (mining/finalization stalled)
+ *   pending   — still within the SLO, not yet finalized (normal); OR finalized but
+ *               tip nodes are unreachable so mining can't be confirmed (inconclusive,
+ *               NEVER pages — a tip-node outage must not look like ArDrive failing)
+ */
+export function classifyFinalization(item, sig, nowEpoch, sloSec) {
+  const ageSec = nowEpoch - (item.uploadedEpoch || nowEpoch);
+  const minedOk = sig.minedOnChain && sig.minedCount >= (sig.minNodes || 1);
+  // Default true for back-compat: only an explicit false means "tip nodes did not
+  // respond" (all timed out / errored), which makes the mining signal inconclusive.
+  const tipResponded = sig.tipResponded !== false;
+  // If we couldn't even read the bundler's status for this item, the finalization
+  // signal is inconclusive — stay pending and never page from here. Bundler
+  // liveness is already asserted by the fresh item's "bundler status" stage, so
+  // a transient status-read blip on an OLD item must not raise a finalize alarm.
+  if (sig.bundlerResponded === false) {
+    return { state: "pending", ageSec, reason: "bundler status unreadable — inconclusive" };
+  }
+  if (sig.failedByBundler) {
+    return { state: "failed", ageSec, reason: "bundler reports FAILED" };
+  }
+  if (sig.finalizedByBundler && minedOk) {
+    return { state: "verified", ageSec, reason: `FINALIZED + mined on ${sig.minedCount} node(s)` };
+  }
+  if (sig.finalizedByBundler && !minedOk) {
+    // Bundler claims permanence but we don't see it mined. If the tip nodes
+    // didn't actually respond, that's OUR blind spot — stay pending, never page.
+    if (!tipResponded)
+      return { state: "pending", ageSec, reason: "FINALIZED; tip nodes unreachable — mining unconfirmed" };
+    // Tip nodes responded and still don't show it mined past the SLO → real gap.
+    if (ageSec > sloSec)
+      return { state: "mismatch", ageSec, reason: "bundler FINALIZED but not mined on tip nodes" };
+    return { state: "pending", ageSec, reason: "FINALIZED; awaiting tip-node confirmation" };
+  }
+  if (ageSec > sloSec) {
+    return { state: "stuck", ageSec, reason: minedOk ? "mined but not FINALIZED past SLO" : "not finalized past SLO" };
+  }
+  return { state: "pending", ageSec, reason: minedOk ? "mined; awaiting FINALIZED" : "awaiting bundle/mine" };
+}

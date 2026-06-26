@@ -17,7 +17,8 @@
     "gateway": "https://turbo-gateway.com",
     "env": "ardrive-prod",
     "dns": "8.8.8.8",
-    "_note": "ArDrive Turbo PRODUCTION (upload.ardrive.io). Same API surface (this repo is a fork). Tiny items use the free path (no signer/cost); deep runs that mine a bundle spend on the ArDrive wallet, not yours. `dns: 8.8.8.8` required from the dev box: Optimum sinkholes turbo-gateway.com to 167.206.x (their ASN); Google DNS returns the real IP. Monitored every 10 min by cron via scripts/perf/run-canary.sh (Slack alerts on failure)."
+    "tipNodes": ["https://turbo-gateway.com", "https://permagate.io", "https://vilenarios.com"],
+    "_note": "ArDrive Turbo PRODUCTION (upload.ardrive.io). Same API surface (this repo is a fork). Tiny items use the free path (no signer/cost); deep runs that mine a bundle spend on the ArDrive wallet, not yours. `dns: 8.8.8.8` required from the dev box: Optimum sinkholes turbo-gateway.com to 167.206.x (their ASN); Google DNS returns the real IP. `tipNodes`: independent Arweave/AR.IO nodes used to confirm a bundle tx is MINED on-chain (deferred finalization tracking cross-checks these against the bundler's self-reported FINALIZED) — NOT arweave.net (blocked from this box). Monitored every 10 min by cron via scripts/perf/run-canary.sh (Slack alerts on failure + finalization-stall)."
   },
   "ario": {
     "upload": "https://upload.services.ar-io.dev",
