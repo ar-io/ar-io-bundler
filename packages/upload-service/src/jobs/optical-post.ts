@@ -98,6 +98,13 @@ const arDriveGatewayOpticalUrlAndApiKeyPairs =
 
 let cachedAxios: AxiosInstance | undefined = undefined;
 
+/** Bound an axios response/request body to a short string for diagnostic logs. */
+function snippet(data: unknown): string {
+  if (data == null) return "";
+  const s = typeof data === "string" ? data : JSON.stringify(data);
+  return (s ?? String(data)).slice(0, 512);
+}
+
 export const opticalPostHandler = async ({
   stringifiedDataItemHeaders,
   logger,
@@ -202,7 +209,22 @@ export const opticalPostHandler = async ({
         .fire(async () => {
           return getAxios().post(optionalUrl, optionalPostBody);
         })
-        .then(() => {
+        .then((response) => {
+          // getAxios() uses validateStatus:()=>true, so a gateway rejection
+          // (e.g. a 400 on a malformed body) resolves here rather than throwing.
+          // Surface it instead of logging a misleading "success".
+          const { status, statusText } = response;
+          if (status < 200 || status >= 300) {
+            childLogger.warn(`Optional optical bridge returned non-2xx`, {
+              optionalUrl,
+              status,
+              statusText,
+              responseBody: snippet(response.data),
+              requestBodyPreview: optionalPostBody.slice(0, 512),
+            });
+            MetricRegistry.goldskyOpticalFailure.inc();
+            return;
+          }
           childLogger.debug(`Successfully posted to optional optical bridge`);
         })
         .catch((error) => {
@@ -231,7 +253,22 @@ export const opticalPostHandler = async ({
               headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
             });
           })
-          .then(() => {
+          .then((response) => {
+            const { status, statusText } = response;
+            if (status < 200 || status >= 300) {
+              childLogger.warn(
+                `ArDrive gateway optical bridge returned non-2xx`,
+                {
+                  url,
+                  status,
+                  statusText,
+                  responseBody: snippet(response.data),
+                  requestBodyPreview: arDrivePostBody.slice(0, 512),
+                }
+              );
+              MetricRegistry.ardriveGatewayOpticalFailure.inc();
+              return;
+            }
             childLogger.debug(
               `Successfully posted to ardrive gateway optical bridge`
             );

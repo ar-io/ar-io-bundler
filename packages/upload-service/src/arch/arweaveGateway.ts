@@ -16,7 +16,7 @@
  */
 import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import Transaction from "arweave/node/lib/transaction";
-import axios, { AxiosInstance, AxiosResponse } from "axios";
+import axios, { AxiosError, AxiosInstance, AxiosResponse } from "axios";
 
 import { arweaveGatewayUrls, gatewayUrl, msPerMinute } from "../constants";
 import logger from "../logger";
@@ -321,9 +321,18 @@ export class ArweaveGateway implements Gateway {
           )
         );
       } catch (error) {
+        // Capture the gateway's HTTP status + response body (e.g. a queue-bundle
+        // 500's error message) so non-2xx admin-queue rejections are diagnosable
+        // from the bundler side, not just "Request failed with status code 500".
+        const response = (error as AxiosError | undefined)?.response;
         logger.error("Error posting bundle to admin queue", {
           bundleTxId,
           error: error instanceof Error ? error.message : "Unknown error",
+          responseStatus: response?.status,
+          responseBody:
+            typeof response?.data === "string"
+              ? response.data.slice(0, 512)
+              : response?.data,
         });
       }
     }
