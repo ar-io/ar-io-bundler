@@ -183,8 +183,8 @@ runs it advances the older tracked items and adds a `mined + finalized
    cross-check so we don't just trust the bundler's self-reported permanence.
 
 It pages (FAILs the run, via the normal anti-flap) when an item exceeds the
-finalization SLO (`--finalize-slo <sec>`, default 3h — observed ArDrive-prod
-finalize is ~2.5h), when the bundler says `FINALIZED` but no tip node sees it
+finalization SLO (`--finalize-slo <sec>`, default 4h — observed ArDrive-prod
+finalize is ~2.5h, so 4h leaves ~1.5h margin), when the bundler says `FINALIZED` but no tip node sees it
 mined (a trust gap), or when the bundler reports `FAILED`. Items are dropped
 after `--max-track-sec` (default 24h) as a backstop. Disable with `--no-finalize`
 (it's auto-skipped in `--deep`, which checks mining/permanence inline).

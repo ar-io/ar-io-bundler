@@ -122,8 +122,9 @@ const CFG = {
     ?.map((s) => s.trim().replace(/\/$/, ""))
     .filter(Boolean),
   // How long an item may take to finalize before it pages (seconds). Observed
-  // ArDrive-prod finalize time is ~2h, so 3h default leaves headroom; tunable.
-  finalizeSloSec: parseInt(args["finalize-slo"] || process.env.CANARY_FINALIZE_SLO_SEC || `${3 * 3600}`, 10),
+  // ArDrive-prod finalize time is ~2.5h, so 4h default leaves comfortable margin
+  // (~1.5h) to avoid chronic paging if finalize drifts; tunable.
+  finalizeSloSec: parseInt(args["finalize-slo"] || process.env.CANARY_FINALIZE_SLO_SEC || `${4 * 3600}`, 10),
   // Min tip nodes that must report the bundle mined to count it mined.
   minTipNodes: parseInt(args["min-tip-nodes"] || process.env.CANARY_MIN_TIP_NODES || "1", 10),
   // Absolute cap: drop a tracked item after this long even if never finalized,
