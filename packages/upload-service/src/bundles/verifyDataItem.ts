@@ -342,12 +342,25 @@ export function createVerifiedDataItemStream(
     currentOffset += chunk.byteLength;
   };
 
+  // Diagnostic-only idle warning: fires if the client's upload stream goes quiet
+  // for this long. It does NOT abort the upload — the connection is governed by
+  // the server/nginx request timeouts — so a slow or distant client that stalls
+  // briefly is benign and the SDK simply retries. Logged at WARN (not error) so a
+  // routine client-side network hiccup doesn't pollute error logs or trip alerts.
+  // Tunable via DATA_ITEM_CHUNK_STALL_LOG_MS (ms); set 0 to disable the log.
+  const chunkStallLogMs = Number(
+    process.env.DATA_ITEM_CHUNK_STALL_LOG_MS ?? 3000
+  );
   let timeoutId: NodeJS.Timeout;
   inputStream.on("data", (chunk) => {
     clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => {
-      logger?.error("Data item chunk not received within 3 seconds.");
-    }, 3000);
+    if (chunkStallLogMs > 0) {
+      timeoutId = setTimeout(() => {
+        logger?.warn(
+          `Data item upload stream idle for >${chunkStallLogMs}ms (client-side stall; not an abort).`
+        );
+      }, chunkStallLogMs);
+    }
     try {
       parseDataItemStream(chunk);
     } catch (error) {
