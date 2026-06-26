@@ -683,6 +683,11 @@ table td .copyable-id {
 
 /* Tables shared */
 .empty-cell { text-align: center; padding: 32px; color: var(--text-secondary); }
+.empty-cell.empty-ok { color: var(--text-secondary); }
+.empty-cell.empty-ok svg { vertical-align: -2px; margin-right: 4px; }
+/* Click-to-sort table headers (Top Uploaders). */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text-primary); }
 .reason-cell { max-width: 360px; color: var(--danger-color); font-size: 13px; word-break: break-word; }
 
 /* Sparklines */

@@ -58,7 +58,10 @@ const WINDOW_LABEL = { '1h': 'last hour', '24h': 'last 24h', '7d': 'last 7 days'
 function selectWindow(w) {
   if (!WINDOW_HOURS[w]) return;
   currentWindow = w;
-  document.querySelectorAll('#window-selector button').forEach((b) => {
+  // Sync EVERY time-window selector (Pipeline Health header + Trends header).
+  // The x402 tabs use the same .window-selector styling but have no data-window
+  // attribute, so they are untouched.
+  document.querySelectorAll('button[data-window]').forEach((b) => {
     b.classList.toggle('active', b.dataset.window === w);
   });
   refreshWindow();
@@ -156,6 +159,12 @@ function renderSparkline(canvasId, points, accessor, color) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      // Without this, pointRadius:0 + Chart.js's default intersect:true means the
+      // cursor must land exactly on an invisible point — so tooltips never show.
+      // 'index'/intersect:false makes the tooltip track the nearest x anywhere
+      // along the line.
+      interaction: { mode: 'index', intersect: false },
+      hover: { mode: 'index', intersect: false },
       plugins: { legend: { display: false }, tooltip: {
         callbacks: {
           // Labels are epoch-ms (Date.now()); Chart.js stringifies them for the
@@ -186,8 +195,22 @@ function renderSparkline(canvasId, points, accessor, color) {
 
 function renderSparklines(points) {
   const empty = document.getElementById('trends-empty');
-  if (points.length < 2) { if (empty) empty.style.display = 'block'; return; }
+  const range = document.getElementById('trends-range');
+  if (points.length < 2) {
+    if (empty) empty.style.display = 'block';
+    if (range) range.textContent = '';
+    return;
+  }
   if (empty) empty.style.display = 'none';
+  // Make the window legible: the x-axis is hidden, so without this the chart
+  // looks identical across 1h/24h/7d. Show the actual span the points cover.
+  if (range) {
+    const fmt = (ms) => new Date(Number(ms)).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+    const first = points[0].t, last = points[points.length - 1].t;
+    range.textContent = `${fmt(first)} → ${fmt(last)} · ${points.length} samples`;
+  }
   renderSparkline('spark-uploads', points, p => p.ar, '#2D9CDB');
   renderSparkline('spark-backlog', points, p => p.bk, '#f5a623');
   renderSparkline('spark-failed', points, p => p.rf, '#e74c3c');
@@ -258,8 +281,8 @@ async function fetchStats() {
     updateRecentTraditionalPayments(stats.payments?.recentPayments || []);
     updateRecentX402Payments(stats.x402Payments?.recentPayments || []);
     updateFailedPayments(stats.payments?.integrity?.failedCrypto?.recent || []);
-    updateFailedBundles(stats.bundles?.recentFailed || []);
-    updatePostedBundles(stats.bundles?.recentPosted || []);
+    updateFailedBundles(stats.bundles || {});
+    updatePostedBundles(stats.bundles || {});
     updateRecentBundles(stats.bundles?.recentPermanent || []);
 
     // Update last refresh time
@@ -497,10 +520,14 @@ function updateFailedPayments(rows) {
       <td>${formatTime(r.timestamp)}</td></tr>`).join('')}</tbody>`;
 }
 
-function updateFailedBundles(rows) {
+function updateFailedBundles(bundles) {
   const table = document.getElementById('failed-bundles-table');
-  if (!rows || rows.length === 0) {
-    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No failed bundles</td></tr>';
+  const rows = (bundles && bundles.recentFailed) || [];
+  if (rows.length === 0) {
+    // Idle = healthy here, so show reassuring context instead of a bare "none".
+    const plan = (bundles && bundles.planning) || {};
+    const ctx = `${(plan.totalPermanent || 0).toLocaleString()} bundles permanent · 0 awaiting review`;
+    table.innerHTML = `<tr><td colspan="4" class="empty-cell empty-ok">${icon('circle-check', { size: 14, color: '#16a34a' })} No failed bundles — ${ctx}</td></tr>`;
     return;
   }
   table.innerHTML = `
@@ -512,10 +539,17 @@ function updateFailedBundles(rows) {
       <td>${formatTime(b.failedDate)}</td></tr>`).join('')}</tbody>`;
 }
 
-function updatePostedBundles(rows) {
+function updatePostedBundles(bundles) {
   const table = document.getElementById('posted-bundles-table');
-  if (!rows || rows.length === 0) {
-    table.innerHTML = '<tr><td colspan="4" class="empty-cell">No bundles awaiting seed/verify</td></tr>';
+  const rows = (bundles && bundles.recentPosted) || [];
+  if (rows.length === 0) {
+    // Empty = the seed/verify path is keeping up. Anchor it with the last bundle
+    // that reached permanence (data already in stats.bundles — no extra query).
+    const last = ((bundles && bundles.recentPermanent) || [])[0];
+    const ctx = last
+      ? `last bundle permanent ${formatTime(last.permanentDate)}${last.blockHeight ? ` · block ${last.blockHeight}` : ''}`
+      : 'nothing in flight';
+    table.innerHTML = `<tr><td colspan="4" class="empty-cell empty-ok">${icon('circle-check', { size: 14, color: '#16a34a' })} Nothing awaiting seed/verify — ${ctx}</td></tr>`;
     return;
   }
   table.innerHTML = `
@@ -984,6 +1018,20 @@ function updateQueueStatus(queues) {
     </div>
   `;
 
+  // Idle context: five zeros read as "broken" unless we say otherwise. When
+  // nothing is active or waiting, state that the queues are healthy-idle, and
+  // clarify that any retained `failed` total is historical, not a live incident.
+  const note = document.getElementById('queue-note');
+  if (note) {
+    const idle = (queues.totalActive || 0) === 0 && (queues.totalWaiting || 0) === 0;
+    const staleFailed = (queues.totalFailed || 0) > 0 && recent === 0;
+    if (idle && recent === 0) {
+      note.innerHTML = `${icon('circle-check', { size: 14, color: '#16a34a' })} All queues idle — no active or waiting jobs.${staleFailed ? ` ${(queues.totalFailed || 0).toLocaleString()} retained failures are historical, not live.` : ''}`;
+    } else {
+      note.textContent = '';
+    }
+  }
+
   // Grid
   const grid = document.getElementById('queue-grid');
   grid.innerHTML = '';
@@ -1024,26 +1072,60 @@ function updateQueueStatus(queues) {
 }
 
 /**
- * Update top uploaders table
+ * Update top uploaders table — sortable by any column. Backend serves it sorted
+ * by upload count desc (the default); clicking a header re-sorts client-side.
  */
-function updateTopUploaders(uploaders) {
-  const table = document.getElementById('top-uploaders-table');
+let topUploadersData = [];
+let topUploadersSort = { key: 'uploadCount', dir: 'desc' };
 
-  if (uploaders.length === 0) {
+function updateTopUploaders(uploaders) {
+  topUploadersData = Array.isArray(uploaders) ? uploaders : [];
+  renderTopUploaders();
+}
+
+function sortTopUploaders(key) {
+  if (topUploadersSort.key === key) {
+    topUploadersSort.dir = topUploadersSort.dir === 'desc' ? 'asc' : 'desc';
+  } else {
+    // Numeric columns default to high→low; address defaults to A→Z.
+    topUploadersSort = { key, dir: key === 'address' ? 'asc' : 'desc' };
+  }
+  renderTopUploaders();
+}
+
+function renderTopUploaders() {
+  const table = document.getElementById('top-uploaders-table');
+  if (!table) return;
+
+  if (topUploadersData.length === 0) {
     table.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 40px; color: var(--text-secondary);">No data available</td></tr>';
     return;
   }
 
+  const { key, dir } = topUploadersSort;
+  const sorted = [...topUploadersData].sort((a, b) => {
+    if (key === 'address') {
+      const av = a.address || '', bv = b.address || '';
+      return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    }
+    // totalBytes is a numeric string from the query; coerce for a numeric sort.
+    const av = key === 'totalBytes' ? Number(a.totalBytes) || 0 : a.uploadCount || 0;
+    const bv = key === 'totalBytes' ? Number(b.totalBytes) || 0 : b.uploadCount || 0;
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+
+  const caret = (k) => (key === k ? (dir === 'desc' ? ' ▼' : ' ▲') : '');
+
   table.innerHTML = `
     <thead>
       <tr>
-        <th>Address</th>
-        <th style="text-align: right;">Upload Count</th>
-        <th style="text-align: right;">Total Size</th>
+        <th class="sortable" onclick="sortTopUploaders('address')">Address${caret('address')}</th>
+        <th class="sortable" style="text-align: right;" onclick="sortTopUploaders('uploadCount')">Upload Count${caret('uploadCount')}</th>
+        <th class="sortable" style="text-align: right;" onclick="sortTopUploaders('totalBytes')">Total Size${caret('totalBytes')}</th>
       </tr>
     </thead>
     <tbody>
-      ${uploaders.map(u => `
+      ${sorted.map(u => `
         <tr>
           <td>${makeCopyable(u.address, null, 'address')}</td>
           <td style="text-align: right;">${u.uploadCount.toLocaleString()}</td>
