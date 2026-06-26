@@ -143,6 +143,16 @@ one token serves both tiers):
 
 Generate the MinIO token: `mc admin prometheus generate <alias> cluster`.
 
+## nginx per-host access log (log-based, added 2026-06-26)
+
+`nginx.conf` runs a custom `log_format vhost` (standard *combined* + `host=` `upstream=`
+`ustatus=` `urt=` `rt=`). This is the **only** way to attribute traffic, errors, and
+latency **per hostname** (`turbo.ardrive.io` vs `upload.ardrive.io` vs `*.services.ar.io`)
+and to watch the `turbo.ardrive.io`→AWS **payment-proxy round-trip** (`urt` on lines whose
+`upstream` is a CloudFront IP, not `127.0.0.1`). Today it's grep/awk only — a promtail/Loki
+or `mtail` exporter could turn it into metrics later. Field reference + queries:
+`NGINX_ROUTER_HANDOFF.md` → Logging. (`nginx.conf` is box-local — re-apply after reinstall.)
+
 ## Not yet collected
 
 - **App metrics** (`/bundler_metrics`, `/metrics`) are emitted but ungated — open on the
