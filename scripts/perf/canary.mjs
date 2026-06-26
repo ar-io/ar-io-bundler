@@ -48,6 +48,8 @@ import {
   probeGatewayData,
   probeGatewayGraphql,
   probeTxStatus,
+  probeTxStatusMulti,
+  classifyFinalization,
   probeHealth,
   probeInfo,
   probeGatewayIdentity,
@@ -107,6 +109,27 @@ const CFG = {
   // Optimum does this to *.ar-io.dev). Comma-separate for multiple. TLS/SNI still
   // validates against the hostname, so this is just a name→IP override.
   dns: args.dns || target.dns || process.env.CANARY_DNS,
+  // Deferred finalization tracking (fast tier only): instead of blocking a run
+  // for an hour to mine, the canary records each item it uploads and, on LATER
+  // runs, verifies the older ones reached FINALIZED (bundler status) AND mined
+  // on-chain (independent tip nodes). Pages only when an item exceeds the SLO.
+  // Disable with --no-finalize.
+  trackFinalize: args["no-finalize"] !== "true",
+  // Independent Arweave/AR.IO nodes used to confirm a bundle tx is MINED (not
+  // just trusting the bundler's self-reported permanence). Comma-separated on the
+  // CLI; array in targets.json; falls back to the single gateway.
+  tipNodes: (args["tip-nodes"] ? args["tip-nodes"].split(",") : target.tipNodes || null)
+    ?.map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean),
+  // How long an item may take to finalize before it pages (seconds). Observed
+  // ArDrive-prod finalize time is ~2h, so 3h default leaves headroom; tunable.
+  finalizeSloSec: parseInt(args["finalize-slo"] || process.env.CANARY_FINALIZE_SLO_SEC || `${3 * 3600}`, 10),
+  // Min tip nodes that must report the bundle mined to count it mined.
+  minTipNodes: parseInt(args["min-tip-nodes"] || process.env.CANARY_MIN_TIP_NODES || "1", 10),
+  // Absolute cap: drop a tracked item after this long even if never finalized,
+  // so a permanently-broken pipeline can't grow the state file unbounded (the
+  // incident will already have paged + reminded for hours by then).
+  maxTrackSec: parseInt(args["max-track-sec"] || process.env.CANARY_MAX_TRACK_SEC || `${24 * 3600}`, 10),
   // anti-flap: require N consecutive failing runs before paging (a single blip
   // never alerts). Reminder cadence for an ONGOING incident is threaded under
   // the original message, so the channel only ever gets one top-level alert per
@@ -450,17 +473,117 @@ async function run() {
     await sleep(CFG.pollMs);
   }
 
+  // Deferred finalization tracking (fast tier only — deep tier checks mining/
+  // permanence inline). Records this item + advances older tracked items toward
+  // FINALIZED (bundler) + mined (tip nodes); produces a pass/fail row.
+  let finalizeRow = null;
+  if (CFG.trackFinalize && !CFG.deep) {
+    finalizeRow = await checkFinalization({ id: state.id, bundleId: state.bundleId });
+  }
+
   return finish({
     acceptOk: true,
     acceptDetail: rec.attempts > 1 ? `ok after ${rec.attempts} attempts` : "",
     acceptMs: rec.uploadMs,
     stageResults: results,
     stages,
+    finalizeRow,
     id: state.id,
     bundleId: state.bundleId,
     bytes: rec.bytes,
     uploadMs: rec.uploadMs,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Deferred finalization tracking
+// ---------------------------------------------------------------------------
+// State file: { tracked: [ { id, bundleId, uploadedEpoch, lastInfo } ] }. Each
+// run adds the just-uploaded item and re-checks every tracked item against the
+// bundler status (finalized?) + the tip nodes (mined?). Returns a row:
+//   OK   — no tracked item is stuck/mismatched (some may still be pending)
+//   FAIL — an item exceeded the finalization SLO, or the bundler claims FINALIZED
+//          while tip nodes don't see it mined, or the bundler reports FAILED.
+async function checkFinalization(current) {
+  const stateFile = join(HERE, "results", `canary-${CFG.target}.finalize.json`);
+  let tracked = [];
+  try {
+    tracked = JSON.parse(readFileSync(stateFile, "utf8")).tracked || [];
+  } catch {}
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const tipNodes = CFG.tipNodes && CFG.tipNodes.length ? CFG.tipNodes : [CFG.gatewayUrl];
+
+  // Register the freshly-uploaded item (dedupe by id).
+  if (current.id && !tracked.some((t) => t.id === current.id)) {
+    tracked.push({ id: current.id, bundleId: current.bundleId || null, uploadedEpoch: nowEpoch });
+  }
+
+  const summary = { verified: 0, pending: 0, stuck: 0, mismatch: 0, failed: 0 };
+  const problems = [];
+  let lastFinalizeMin = null;
+  const keep = [];
+
+  for (const item of tracked) {
+    // Hard cap: drop terminally-old items (already paged for hours by now).
+    if (nowEpoch - (item.uploadedEpoch || nowEpoch) > CFG.maxTrackSec) {
+      if (!CFG.quiet) console.log(`finalize: dropping item ${item.id} (exceeded max track ${CFG.maxTrackSec}s)`);
+      continue;
+    }
+
+    const bs = await probeBundlerStatus(CFG.uploadUrl, item.id);
+    if (bs.ok && bs.bundleId) item.bundleId = bs.bundleId;
+    const finalizedByBundler = bs.ok && (bs.info === "permanent" || bs.status === "FINALIZED");
+    const failedByBundler = bs.ok && (bs.info === "failed" || bs.status === "FAILED");
+
+    let mining = { anyMined: false, minedCount: 0, maxConfirmations: 0 };
+    if (item.bundleId) mining = await probeTxStatusMulti(tipNodes, item.bundleId);
+
+    const verdict = classifyFinalization(
+      item,
+      {
+        finalizedByBundler,
+        failedByBundler,
+        minedOnChain: mining.anyMined,
+        minedCount: mining.minedCount,
+        minNodes: CFG.minTipNodes,
+      },
+      nowEpoch,
+      CFG.finalizeSloSec
+    );
+
+    summary[verdict.state] = (summary[verdict.state] || 0) + 1;
+    const ageMin = Math.round(verdict.ageSec / 60);
+
+    if (verdict.state === "verified") {
+      lastFinalizeMin = ageMin; // healthy — record time-to-finalize and drop it
+      continue;
+    }
+    if (verdict.state === "stuck" || verdict.state === "mismatch" || verdict.state === "failed") {
+      problems.push(`${item.id.slice(0, 8)}… ${verdict.reason} (${ageMin}m, ${mining.minedCount}/${tipNodes.length} mined)`);
+    }
+    keep.push(item); // pending / stuck / mismatch / failed all stay tracked
+  }
+
+  try {
+    mkdirSync(dirname(stateFile), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify({ tracked: keep, updated: new Date().toISOString() }, null, 2));
+  } catch {}
+
+  const bad = summary.stuck + summary.mismatch + summary.failed;
+  const ok = bad === 0;
+  const detailParts = [`${keep.length + summary.verified} tracked`];
+  if (summary.verified) detailParts.push(`${summary.verified} verified${lastFinalizeMin != null ? ` (~${lastFinalizeMin}m)` : ""}`);
+  if (summary.pending) detailParts.push(`${summary.pending} pending`);
+  if (bad) detailParts.push(problems.join("; "));
+  return {
+    key: "finalize",
+    label: "mined + finalized (tip-verified)",
+    status: ok ? "OK" : "FAIL",
+    latencyMs: null,
+    detail: detailParts.join(" · "),
+    required: true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +613,10 @@ async function finish(o) {
       };
     }),
   ];
+
+  // Append the deferred finalization row (mined + finalized, tip-verified) when
+  // present — it counts toward the verdict like any other required stage.
+  if (o.finalizeRow) rows.push(o.finalizeRow);
 
   const failed = rows.filter((r) => r.status === "FAIL");
   const warned = rows.filter((r) => r.status === "WARN");

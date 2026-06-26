@@ -170,12 +170,33 @@ and `--slack` state file make it stateless across invocations.
 > `--fail-threshold` (default 2) consecutive fails, fires **once**, reminds
 > in-thread, and resolves **once** (see the Slack section below).
 
+### Deferred finalization tracking (fast tier)
+
+The fast tier doesn't block to mine, but it still verifies data **is** getting
+mined + finalized — *intelligently*, without an hour-long run. Each fast run
+records the item it uploads in `results/canary-<target>.finalize.json`; on LATER
+runs it advances the older tracked items and adds a `mined + finalized
+(tip-verified)` row. An item is **verified** (and dropped) only when **both**:
+1. the bundler reports it `FINALIZED` (`/v1/tx/:id/status`), **and**
+2. its bundle tx is **mined on ≥ `--min-tip-nodes` independent tip nodes**
+   (`targets.json` → `tipNodes`, or `--tip-nodes a,b,c`) — an on-chain
+   cross-check so we don't just trust the bundler's self-reported permanence.
+
+It pages (FAILs the run, via the normal anti-flap) when an item exceeds the
+finalization SLO (`--finalize-slo <sec>`, default 3h — observed ArDrive-prod
+finalize is ~2.5h), when the bundler says `FINALIZED` but no tip node sees it
+mined (a trust gap), or when the bundler reports `FAILED`. Items are dropped
+after `--max-track-sec` (default 24h) as a backstop. Disable with `--no-finalize`
+(it's auto-skipped in `--deep`, which checks mining/permanence inline).
+
 ### Key flags
 `--target`, `--upload-url`, `--gateway-url`, `--env-label`, `--dns <server>`
 (resolve via a specific DNS, e.g. `8.8.8.8`), `--dry-run` (preflight only, no
 upload), `--size` (default `1KB`), `--deep`, `--signer-key`/`--signer-jwk`,
 `--slack`, `--prom <file>`, `--out <file>`/`--no-out`, `--quiet`, `--strict-slo`
 (WARN counts as FAIL), `--fail-threshold N`, `--remind-ms`, `--accept-retries`,
+finalization tracking: `--tip-nodes a,b,c`, `--finalize-slo <sec>`,
+`--min-tip-nodes N`, `--max-track-sec <sec>`, `--no-finalize`,
 and per-stage deadline overrides in seconds: `--status-deadline`,
 `--optical-deadline`, `--graphql-deadline`, `--bundled-deadline`,
 `--posted-deadline`, `--mined-deadline`, `--permanent-deadline`.

@@ -403,3 +403,75 @@ export async function probeUrl(url, timeout = 8000) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------
+// Mining verification across multiple independent "tip" nodes
+// ---------------------------------------------------------------------------
+/**
+ * Check a bundle tx's mined state on SEVERAL independent Arweave/AR.IO nodes and
+ * aggregate. Used to verify mining on-chain rather than trusting the bundler's
+ * self-reported "permanent" — a bundle is considered mined when at least
+ * `minNodes` tip nodes report it in a block. Confirmations are taken as the max
+ * across agreeing nodes (relative to each node's chain tip).
+ *
+ * Returns { anyMined, minedCount, total, maxConfirmations, blockHeight, perNode }.
+ */
+export async function probeTxStatusMulti(tipNodes, txid, timeout = 8000) {
+  const nodes = (tipNodes || []).filter(Boolean);
+  const results = await Promise.all(
+    nodes.map(async (node) => {
+      const r = await probeTxStatus(node, txid, timeout);
+      return { node, ...r };
+    })
+  );
+  const mined = results.filter((r) => r.ok && r.state === "mined");
+  return {
+    anyMined: mined.length > 0,
+    minedCount: mined.length,
+    total: nodes.length,
+    maxConfirmations: mined.reduce((m, r) => Math.max(m, r.confirmations || 0), 0),
+    blockHeight: mined.length ? mined[0].blockHeight ?? null : null,
+    perNode: results.map((r) => ({
+      node: r.node,
+      state: r.ok ? r.state : `err(${r.httpStatus || r.error})`,
+      confirmations: r.confirmations ?? null,
+    })),
+  };
+}
+
+/**
+ * PURE classifier for a tracked in-flight item's finalization. Given the item's
+ * resolved signals, decide its state — no I/O, so it's unit-testable.
+ *
+ * @param {{uploadedEpoch:number}} item
+ * @param {{ finalizedByBundler:boolean, failedByBundler:boolean, minedOnChain:boolean, minNodes:number, minedCount:number }} sig
+ * @param {number} nowEpoch  seconds
+ * @param {number} sloSec    finalization SLO in seconds
+ * @returns {{ state:'verified'|'pending'|'stuck'|'mismatch'|'failed', ageSec:number, reason:string }}
+ *   verified  — bundler FINALIZED AND mined on >= minNodes tip nodes (healthy, drop it)
+ *   failed    — bundler reports the item FAILED (pipeline rejected it)
+ *   mismatch  — bundler says FINALIZED but the chain does NOT show it mined (trust gap)
+ *   stuck     — neither finalized nor mined within the SLO (mining/finalization stalled)
+ *   pending   — still within the SLO, not yet finalized (normal)
+ */
+export function classifyFinalization(item, sig, nowEpoch, sloSec) {
+  const ageSec = nowEpoch - (item.uploadedEpoch || nowEpoch);
+  const minedOk = sig.minedOnChain && sig.minedCount >= (sig.minNodes || 1);
+  if (sig.failedByBundler) {
+    return { state: "failed", ageSec, reason: "bundler reports FAILED" };
+  }
+  if (sig.finalizedByBundler && minedOk) {
+    return { state: "verified", ageSec, reason: `FINALIZED + mined on ${sig.minedCount} node(s)` };
+  }
+  if (sig.finalizedByBundler && !minedOk) {
+    // Bundler claims permanence but independent tip nodes don't see it mined.
+    // Only treat as a trust gap once past the SLO (gives chain propagation time).
+    if (ageSec > sloSec)
+      return { state: "mismatch", ageSec, reason: "bundler FINALIZED but not mined on tip nodes" };
+    return { state: "pending", ageSec, reason: "FINALIZED; awaiting tip-node confirmation" };
+  }
+  if (ageSec > sloSec) {
+    return { state: "stuck", ageSec, reason: minedOk ? "mined but not FINALIZED past SLO" : "not finalized past SLO" };
+  }
+  return { state: "pending", ageSec, reason: minedOk ? "mined; awaiting FINALIZED" : "awaiting bundle/mine" };
+}
