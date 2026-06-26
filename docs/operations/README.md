@@ -257,10 +257,15 @@ server {
 1. Backup database
 2. Pull latest code
 3. Install dependencies: `yarn install`
-4. Build: `yarn build`
-5. Run migrations: `yarn db:migrate`
-6. Restart services via the scripts (NEVER `pm2 restart` directly): `./scripts/stop.sh --services-only && ./scripts/start.sh`
-7. Verify: Check health endpoints (`./scripts/verify.sh`)
+4. Run migrations (if any): `yarn db:migrate`
+5. Build + rolling-reload with **no client-facing outage**: `./scripts/deploy.sh`
+   - `deploy.sh` builds payment+upload, then `pm2 reload`s the cluster APIs one instance
+     at a time (socket stays bound — nginx never sees a refused connection) and restarts
+     the fork workers (BullMQ jobs persist in Redis and resume). `--update-env` re-reads `.env`.
+   - Run as the pm2 daemon owner; zero-downtime needs `API_INSTANCES` ≥ 2.
+   - NEVER `pm2 restart`/`pm2 reload` directly. For **first boot / infra down** use
+     `./scripts/start.sh`; for a deliberate full hard cycle use `./scripts/restart.sh` (brief outage).
+6. Verify: `./scripts/verify.sh` (deploy.sh also runs its own post-reload health gate)
 
 ### Log Rotation
 

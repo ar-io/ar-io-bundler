@@ -496,10 +496,14 @@ The bundler runs 5 PM2 processes across the services (canonical config:
 ### Quick Commands
 
 ```bash
-# Start all services
+# Deploy code/.env changes with ZERO client-facing downtime (preferred for updates)
+./scripts/deploy.sh                 # build all + rolling reload of a running stack
+./scripts/deploy.sh --api-only      # reload only the cluster APIs
+
+# Start all services (first boot / infra down)
 ./scripts/start.sh
 
-# Restart services only (keeps Docker running)
+# Restart services only — HARD restart, brief API outage (keeps Docker running)
 ./scripts/restart.sh
 
 # Restart everything (Docker + PM2)
@@ -530,14 +534,12 @@ pm2 logs --err              # Errors only
 # Real-time monitoring
 pm2 monit
 
-# Restart services — ALWAYS via the wrapper scripts, never `pm2 restart` directly
-# (they reload .env, verify infra is up, and check the build first; see the
-# CRITICAL note below). Restarting one service still goes through the script.
-./scripts/restart.sh                 # restart all PM2 services
+# Restart/deploy — ALWAYS via the wrapper scripts, never `pm2 restart`/`pm2 reload`
+# directly (they reload .env, verify infra is up, and check the build first; a bare
+# pm2 reload <name> also would NOT re-read .env). See the CRITICAL note below.
+./scripts/deploy.sh                  # rolling, zero-downtime (preferred for code/.env updates)
+./scripts/restart.sh                 # HARD restart all PM2 services (brief API outage)
 ./scripts/restart.sh --with-docker   # also restart infra + re-run minio-init
-
-# Graceful reload (zero-downtime)
-pm2 reload all
 
 # Stop services
 pm2 stop all
@@ -582,16 +584,21 @@ NODE_ENV=production pm2 start lib/workers/allWorkers.js --name upload-workers
 
 #### Restarting Services
 
-**CRITICAL: Never use `pm2 restart` after code changes!**
+**CRITICAL: Never use `pm2 restart`/`pm2 reload` after code changes!**
 
 ```bash
 # WRONG - Stale code/env vars
 pm2 restart payment-service  # ❌
 
-# CORRECT - Rebuild and use scripts
-cd packages/payment-service && yarn build
-./scripts/restart.sh  # ✅
+# CORRECT - rolling, zero client-facing downtime (builds, then pm2 reload --update-env)
+./scripts/deploy.sh  # ✅ preferred — builds payment+upload, rolling-reloads onto new lib/
+
+# Also correct, but a HARD restart with a brief API outage — use when a full cycle is needed
+cd packages/payment-service && yarn build && cd ../.. && ./scripts/restart.sh
 ```
+
+Rolling reload keeps the APIs serving (cluster master holds the socket) and needs
+`API_INSTANCES` ≥ 2; the fork workers restart but resume from Redis with no job loss.
 
 **Why?** Scripts ensure:
 - Latest code is loaded
@@ -1111,6 +1118,19 @@ result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 # Add to cron (check every 5 minutes)
 */5 * * * * curl -fsS --retry 3 http://localhost:3001/health || echo "Upload service down!" | mail -s "Alert: Upload Service Down" admin@example.com
 ```
+
+#### External upload-pipeline canary (black-box probe)
+
+Complementary to the admin-dashboard alerter (which watches the bundler **from
+the inside**), the canary (`scripts/perf/canary.mjs`) is a **black-box** probe:
+every 10 min it uploads one tiny free data item and walks it through the real
+HTTP path — accept → bundler status → optical access (SHA-256 byte-verified) →
+GraphQL index — and pages Slack on failure via the **same** notifier/envelope as
+the alerter. Because it runs **out-of-process** (cron, not the bundler), it still
+alerts when the bundler/PM2 is down — the one thing the in-process alerter can't.
+It reuses `SLACK_OAUTH_TOKEN`/`SLACK_ALERT_CHANNEL_ID` and the same anti-flap
+(page after 2 consecutive fails, fire-once, resolve-once). Setup, scheduling, and
+the pinned-worktree pattern: **`scripts/perf/README.md` → "Schedule it"**.
 
 ---
 

@@ -104,6 +104,10 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       min_uptime: "10s",
+      // Give `pm2 reload` time to wait for the new instance to listen and the old
+      // one to drain in-flight requests (SHUTDOWN_DRAIN_MS, default 4s) before SIGKILL.
+      listen_timeout: 10000,
+      kill_timeout: 5000,
     },
 
     // Upload Service - HTTP API

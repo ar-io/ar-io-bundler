@@ -6,7 +6,7 @@
   "packageManager": "yarn@3.2.1",
   "type": "commonjs",
   "resolutions": {
-    "ioredis": "5.8.2"
+    "ioredis": "5.10.1"
   },
   "scripts": {
     "clean": "rimraf [ lib .nyc_output coverage ]",
@@ -102,8 +102,8 @@
     "@aws-sdk/node-http-handler": "3.374.0",
     "@aws-sdk/signature-v4-crt": "3.678.0",
     "@aws-sdk/util-retry": "3.374.0",
-    "@bull-board/api": "^6.13.1",
-    "@bull-board/koa": "^6.13.1",
+    "@bull-board/api": "^6.21.3",
+    "@bull-board/koa": "^6.21.3",
     "@coinbase/x402": "^0.7.1",
     "@cosmjs/amino": "^0.32.3",
     "@cosmjs/crypto": "^0.32.3",
@@ -127,12 +127,12 @@
     "axios-retry": "^3.4.0",
     "bignumber.js": "^9.1.0",
     "bs58": "^5.0.0",
-    "bullmq": "^5.61.0",
+    "bullmq": "^5.79.1",
     "cluster-key-slot": "^1.1.2",
     "dotenv": "^16.3.1",
     "ethers": "^6.11.1",
     "https": "^1.0.0",
-    "ioredis": "^5.8.2",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.0",
     "knex": "^2.5.1",
     "koa": "3.0.0-alpha.3",

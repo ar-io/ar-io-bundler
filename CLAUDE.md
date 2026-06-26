@@ -26,8 +26,9 @@ as the live architecture is legacy framing, not current behavior.
 **NEVER use `pm2 restart` directly! ALWAYS use these scripts:**
 
 ```bash
+./scripts/deploy.sh                 # Rolling code/env deploy — NO client outage (preferred for updates)
 ./scripts/stop.sh --services-only  # Stop PM2 only (keeps Docker running)
-./scripts/start.sh                  # Start everything (Docker + PM2)
+./scripts/start.sh                  # Start everything (Docker + PM2) — first boot / infra down
 ./scripts/restart.sh                # Restart PM2 services only
 ./scripts/restart.sh --with-docker  # Restart everything including Docker
 ./scripts/verify.sh                 # Verify system health
@@ -35,11 +36,26 @@ as the live architecture is legacy framing, not current behavior.
 
 **Why**: Scripts ensure proper environment variable loading, verify infrastructure health, check builds are up to date, and provide clear status output. Direct `pm2 restart` can lead to stale code or environment issues.
 
-**Rebuild workflow**:
+**Rebuild workflow (preferred — zero-downtime):** `deploy.sh` builds, then
+`pm2 reload`s the cluster APIs one instance at a time (the socket stays bound, so
+nginx never sees a refused connection → **no client-facing outage**) and restarts
+the fork workers (safe: graceful SIGTERM + Redis-persisted jobs resume mid-flight).
+`--update-env` re-reads `.env`, so it applies code AND env changes.
 ```bash
-cd packages/payment-service && yarn build
-./scripts/stop.sh --services-only && ./scripts/start.sh
+./scripts/deploy.sh                 # build all + rolling reload (most deploys)
+./scripts/deploy.sh --api-only      # reload only upload-api + payment-service, leave workers running
+./scripts/deploy.sh --no-build      # reload already-built artifacts
 ```
+Use the old hard-restart path (`./scripts/stop.sh --services-only && ./scripts/start.sh`)
+only for **first boot or when Docker infra is down** — it has a brief outage window.
+The APIs implement a graceful drain (`SHUTDOWN_DRAIN_MS`, default 4s — keep it **under**
+the 5s pm2 `kill_timeout`, else a slow drain is SIGKILLed) so the rolling reload drops
+zero in-flight requests. **Zero-downtime requires `API_INSTANCES` ≥ 2** (a cluster peer
+must hold the socket while one instance reloads); with a single instance the reload has a
+gap. The fork workers (`upload-workers`, `payment-workers`, `admin-dashboard`) hard-restart
+on a full `deploy.sh`, but that's loss-free (BullMQ jobs persist in Redis) and
+client-invisible. Single box, so this is the zero-downtime ceiling (no blue-green without
+a second node behind the LB).
 
 ## Common Commands
 
@@ -73,6 +89,11 @@ Note: upload integration is serial (`parallel: false`, 20s timeout); payment int
 - `test:e2e:ario` — ar.io optical-bridge integration
 - `test:e2e:aws-free` — the de-AWS path (MinIO/PostgreSQL/BullMQ)
 - `test:e2e:local` — brings up infra (incl. `arlocal`), runs the suite, tears down
+
+**Performance & smoke harness** (`scripts/perf/`, plain `.mjs`, non-destructive — only uploads + reads status/gateway/metrics): all share `core.mjs` (upload paths + read-only probes) and `targets.json` (named `dev`/`prod`/`legacy` bundler+gateway URLs).
+- `canary.mjs` — **pass/fail** pipeline probe: one upload, per-stage ✓/✗, exit 0/1, JSON/Prometheus/Slack output; built to run every few minutes for monitoring/smoke.
+- `baseline.mjs` — load harness: drives many uploads, reports latency percentiles + throughput knee for capacity work.
+- `mock-arweave-node.mjs` — a "sink" Arweave node so posts cost **$0 AR**; `purge-gateway.mjs` removes throwaway test data afterward. See `scripts/perf/README.md` and `SCALE_TEST_RUNBOOK.md`.
 
 ### Database
 ```bash

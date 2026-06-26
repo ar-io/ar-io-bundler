@@ -94,6 +94,7 @@ async function uploadedAggregate(db, sinceSql) {
   let totalUploads = 0;
   let totalBytes = 0n;
   const ownerSelects = [];
+  const paidOwnerSelects = [];
   for (const t of ITEM_STATE_TABLES) {
     if (!(await db.schema.hasTable(t))) continue;
     if (!(await db.schema.hasColumn(t, 'uploaded_date'))) continue;
@@ -104,19 +105,40 @@ async function uploadedAggregate(db, sinceSql) {
     totalUploads += parseInt(r.rows[0].c) || 0;
     totalBytes += BigInt(r.rows[0].b);
     ownerSelects.push(`SELECT owner_public_address FROM ${t} ${where}`);
+    // A "paid" upload is one assessed a non-zero Winston price; the free tier is 0
+    // (or NULL). assessed_winston_price is a varchar, so NULLIF guards empty
+    // strings before the numeric cast.
+    if (await db.schema.hasColumn(t, 'assessed_winston_price')) {
+      const paidPredicate = `CAST(NULLIF(assessed_winston_price, '') AS NUMERIC) > 0`;
+      const paidWhere = where ? `${where} AND ${paidPredicate}` : `WHERE ${paidPredicate}`;
+      paidOwnerSelects.push(`SELECT owner_public_address FROM ${t} ${paidWhere}`);
+    }
   }
-  let uniqueUploaders = 0;
-  if (ownerSelects.length) {
+  const countDistinctOwners = async (selects) => {
+    if (!selects.length) return 0;
     // UNION (distinct) dedupes an address that uploaded across multiple states.
-    const u = await db.raw(`SELECT COUNT(*) AS c FROM (${ownerSelects.join(' UNION ')}) z`);
-    uniqueUploaders = parseInt(u.rows[0].c) || 0;
+    const u = await db.raw(`SELECT COUNT(*) AS c FROM (${selects.join(' UNION ')}) z`);
+    return parseInt(u.rows[0].c) || 0;
+  };
+  const uniqueUploaders = await countDistinctOwners(ownerSelects);
+  // Paid users = distinct addresses that paid for >=1 upload; free = uploaded but
+  // never paid (an address with both free + paid uploads counts as paid). Wrapped
+  // so a bad price value can't blank the whole upload-stats card.
+  let paidUploaders = 0;
+  try {
+    paidUploaders = await countDistinctOwners(paidOwnerSelects);
+  } catch (e) {
+    paidUploaders = 0;
   }
+  const freeUploaders = Math.max(0, uniqueUploaders - paidUploaders);
   const averageSize = totalUploads > 0 ? Number(totalBytes) / totalUploads : 0;
   return {
     totalUploads,
     totalBytes: totalBytes.toString(),
     totalBytesFormatted: formatBytes(totalBytes.toString()),
     uniqueUploaders,
+    paidUploaders,
+    freeUploaders,
     averageSize: Math.round(averageSize),
     averageSizeFormatted: formatBytes(Math.round(averageSize)),
   };

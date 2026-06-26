@@ -189,8 +189,40 @@ if (missingQueues.length > 0) {
   uploadQueueLabels.push(...missingQueues);
 }
 
+// One-line description per queue, shown on the board so an admin knows what each
+// queue does at a glance. Keyed by the queue label.
+const QUEUE_DESCRIPTIONS = {
+  [jobLabels.newDataItem]: "Ingests accepted uploads and records them as new data items.",
+  [jobLabels.planBundle]: "Groups pending data items into bundle plans (scheduled ~every 5 min).",
+  [jobLabels.prepareBundle]: "Assembles the ANS-104 bundle from object storage.",
+  [jobLabels.postBundle]: "Posts the bundle transaction header to Arweave.",
+  [jobLabels.seedBundle]: "Stages the bundle's chunks and fans out broadcast-chunks jobs.",
+  [jobLabels.broadcastChunks]: "Broadcasts each staged chunk to an AR.IO chunk-distributor node.",
+  [jobLabels.verifyBundle]: "Confirms the bundle is mined and permanent on Arweave.",
+  [jobLabels.opticalPost]: "Pushes data-item headers to the gateway optical bridge (optimistic cache).",
+  [jobLabels.putOffsets]: "Writes data-item offsets to PostgreSQL for gateway retrieval.",
+  [jobLabels.unbundleBdi]: "Unbundles nested bundle data items (BDIs) and fans out their children.",
+  [jobLabels.finalizeUpload]: "Finalizes multipart uploads into a single data item.",
+  [jobLabels.cleanupFs]: "Tiered-retention cleanup of local + MinIO copies (scheduled daily).",
+  [jobLabels.redrivePosted]: "Re-drives stale posted bundles that failed to seed (recovery).",
+  [jobLabels.refundBalance]: "Durably retries balance refunds to the payment service.",
+  [jobLabels.archiveCopy]: "Mirrors served content to the archive MinIO (two-tier storage).",
+  [jobLabels.ensurePartitions]: "Pre-creates upcoming permanent_data_items partitions (scheduled daily).",
+  "payment-pending-tx": "Credits accounts once their on-chain payment transaction confirms.",
+  "payment-admin-credit": "Admin bulk credit-adjustment operations.",
+};
+
+// Set BULL_BOARD_READONLY=true (recommended for prod) to make the board view-only
+// — disables the destructive per-queue actions (empty / clean / remove / retry),
+// so an admin can't accidentally wipe queued pipeline work.
+const BULL_BOARD_READONLY = process.env.BULL_BOARD_READONLY === "true";
+const adapterOptions = (label) => ({
+  description: QUEUE_DESCRIPTIONS[label] || "",
+  readOnlyMode: BULL_BOARD_READONLY,
+});
+
 const uploadQueues = uploadQueueLabels.map(
-  (label) => new BullMQAdapter(getQueue(label))
+  (label) => new BullMQAdapter(getQueue(label), adapterOptions(label))
 );
 
 // Payment service queues (2 queues)
@@ -201,8 +233,14 @@ const paymentRedisConfig = {
 };
 
 const paymentQueues = [
-  new BullMQAdapter(new Queue("payment-pending-tx", { connection: paymentRedisConfig })),
-  new BullMQAdapter(new Queue("payment-admin-credit", { connection: paymentRedisConfig })),
+  new BullMQAdapter(
+    new Queue("payment-pending-tx", { connection: paymentRedisConfig }),
+    adapterOptions("payment-pending-tx")
+  ),
+  new BullMQAdapter(
+    new Queue("payment-admin-credit", { connection: paymentRedisConfig }),
+    adapterOptions("payment-admin-credit")
+  ),
 ];
 
 // Combine all queues
@@ -211,6 +249,11 @@ const queues = [...uploadQueues, ...paymentQueues];
 createBullBoard({
   queues,
   serverAdapter,
+  options: {
+    uiConfig: {
+      boardTitle: "AR.IO Bundler — Queues",
+    },
+  },
 });
 
 // --- Public auth routes (no session required) ---------------------------------
