@@ -25,6 +25,7 @@ const breakerSourceNames = [
   "optical_goldsky",
   "optical_legacyGateway",
   "optical_ardriveGateway",
+  "optical_custom",
   "unknown",
 ] as const;
 export type BreakerSource = (typeof breakerSourceNames)[number];
@@ -315,6 +316,15 @@ export class MetricRegistry {
   public static ardriveGatewayOpticalFailure = MetricRegistry.createCounter({
     name: "ardrive_gateway_optical_failure_count",
     help: "Number of times the service failure to post to the ardrive gateway optical bridge",
+  });
+
+  // Custom tag/owner/target-routed optical posts (OPTICAL_ROUTING_RULES).
+  // result="indexed" : the destination accepted the routed headers (2xx)
+  // result="error"   : the POST threw or returned non-2xx
+  public static opticalCustomRoutePost = MetricRegistry.createCounter({
+    name: "optical_custom_route_post_total",
+    help: "Custom tag/owner-routed optical posts by rule name and result",
+    labelNames: ["rule", "result"],
   });
 
   // --- Optimistic surface 2: best-effort optimistic L1 tx-header push ---

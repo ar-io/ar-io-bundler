@@ -879,15 +879,34 @@ TURBO_JWK_FILE=./turbo-wallet.json     # Turbo's ARIO wallet for purchases
    - Purpose: Test new gateway versions
    - Failure: Logged but doesn't fail job
 
-4. **ArDrive Gateways** (Dedicated)
+4. **ArDrive Gateways** (Dedicated, legacy)
    - URLs: `ARDRIVE_GATEWAY_OPTICAL_URLS` (format: `url|keyName`)
-   - Per-gateway admin keys: `ARDRIVE_ADMIN_KEY_${keyName}`
-   - Routes ArDrive-specific data items
+   - Per-gateway admin keys: `OPTICAL_ADMIN_KEY_${keyName}` (legacy `ARDRIVE_ADMIN_KEY_${keyName}` still honored)
+   - Routes data items whose `App-Name` tag starts with `ArDrive`
+   - Superseded by the general routing rules below; prefer `OPTICAL_ROUTING_RULES` for new setups
+
+5. **Custom routing rules** (`OPTICAL_ROUTING_RULES`)
+   - A JSON array generalizing the ArDrive route to arbitrary predicates.
+   - For each rule, the matching subset of a batch is ALSO posted to that rule's
+     endpoint (additive alongside `OPTICAL_BRIDGE_URL`, unless `excludeFromPrimary`).
+   - Matchers (ANDed; empty = match all): `tag` (`value` exact | `valuePrefix` |
+     name-only = exists), `owner` (by `owner_address`), `target`.
+   - Best-effort + fire-and-forget (like the optional/ArDrive bridges): a route
+     failure is logged + counted but never blocks or fails the optical job; only
+     the primary `OPTICAL_BRIDGE_URL` is must-succeed.
+   - Per-rule `adminKeyName` → `OPTICAL_ADMIN_KEY_<NAME>`. If set but unresolved,
+     the route is sent with no auth (the primary `AR_IO_ADMIN_KEY` is not inherited).
+   - `owner`/`target` match the data item's native address form per signature type
+     (0x-checksummed ETH, base58 Solana, base64url Arweave), case-sensitively.
+   - A rule whose url equals `OPTICAL_BRIDGE_URL` is skipped (already covered).
+   - Fail-safe: unset/blank → no rules; invalid JSON → all custom routes disabled
+     (logged); a single invalid rule is skipped, the rest load.
+   - Metric: `optical_custom_route_post_total{rule,result}` (worker-process registry).
 
 **Filtering:**
 - **Skipped:** Nested BDIs, allow-listed addresses (free uploads)
-- **AO Filtering:** Low-priority AO messages excluded from optical posting
-- **ArDrive Routing:** ArDrive data routed to dedicated ArDrive gateways only
+- **AO Filtering:** Low-priority AO messages excluded from the primary optical post
+- **ArDrive Routing:** ArDrive data also routed to dedicated ArDrive gateways
 
 **Circuit Breakers:**
 - Library: `opossum`
@@ -896,7 +915,7 @@ TURBO_JWK_FILE=./turbo-wallet.json     # Turbo's ARIO wallet for purchases
   - Error threshold: 50%
   - Reset timeout: 30 seconds
   - Volume threshold: 5 requests
-- Sources: `optical_goldsky`, `optical_legacyGateway`, `optical_ardriveGateway`
+- Sources: `optical_goldsky`, `optical_legacyGateway`, `optical_ardriveGateway`, `optical_custom`
 - Metrics: `circuit_breaker_open_count`, `circuit_breaker_state`
 
 **Bundle Queue Posting:**
@@ -912,8 +931,9 @@ AR_IO_ADMIN_KEY=your-admin-key
 OPTIONAL_OPTICAL_BRIDGE_URLS=http://<GATEWAY_PRIVATE_IP>:4000/ar-io/admin/queue-data-item
 CANARY_OPTICAL_BRIDGE_URL=http://canary-gateway:4000/ar-io/admin/queue-data-item
 CANARY_OPTICAL_SAMPLE_RATE=10  # 10% of uploads
-ARDRIVE_GATEWAY_OPTICAL_URLS=https://gateway.ardrive.io/ar-io/admin/queue-data-item|ardrive-gateway
-ARDRIVE_ADMIN_KEY_ARDRIVE_GATEWAY=ardrive-admin-key
+# General tag/owner/target routing (preferred over the legacy ArDrive vars):
+OPTICAL_ROUTING_RULES=[{"name":"vilenarios","url":"https://vilenarios.com/ar-io/admin/queue-data-item","adminKeyName":"VILENARIOS","match":[{"type":"tag","name":"App-Name","value":"MyApp"}]}]
+OPTICAL_ADMIN_KEY_VILENARIOS=vilenarios-admin-key
 ```
 
 ### 4.6 Data Storage Architecture

@@ -28,6 +28,11 @@ import {
 import { fromB64Url, toB64Url } from "../utils/base64";
 import { getOpticalPubKey } from "../utils/getArweaveWallet";
 import { SignedDataItemHeader } from "../utils/opticalUtils";
+import {
+  CompiledOpticalRoutingRule,
+  headerMatchesRule,
+  parseOpticalRoutingRules,
+} from "./opticalRouting";
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const primaryOpticalUrl = process.env.OPTICAL_BRIDGE_URL!;
@@ -71,14 +76,17 @@ function getAdminKeyFromEnv(keyName: string): string {
     return adminKeysCache.get(keyName)!;
   }
 
-  const envVarName = `ARDRIVE_ADMIN_KEY_${keyName
-    .toUpperCase()
-    .replace(/-/g, "_")}`;
-  const key = process.env[envVarName];
+  const suffix = keyName.toUpperCase().replace(/-/g, "_");
+  // OPTICAL_ADMIN_KEY_<NAME> is the canonical name for this fork. The legacy
+  // ARDRIVE_ADMIN_KEY_<NAME> is kept only as a fallback so any pre-existing
+  // config keeps working; new deployments should use the OPTICAL_ prefix.
+  const envVarName = `OPTICAL_ADMIN_KEY_${suffix}`;
+  const legacyEnvVarName = `ARDRIVE_ADMIN_KEY_${suffix}`;
+  const key = process.env[envVarName] ?? process.env[legacyEnvVarName];
 
   if (!key) {
     logger.warn(
-      `Admin key ${keyName} not found in environment variable ${envVarName}`
+      `Admin key ${keyName} not found in environment variable ${envVarName} (or legacy ${legacyEnvVarName})`
     );
     return "";
   }
@@ -113,9 +121,9 @@ const optionalOpticalUrls =
   process.env.OPTIONAL_OPTICAL_BRIDGE_URLS?.split(",");
 
 // Each pair is "url|adminKeyName"; adminKeyName is looked up via
-// getAdminKeyFromEnv (ARDRIVE_ADMIN_KEY_<NAME>). The "|name" part is an
-// env-var key reference now — it was an AWS SSM parameter name in the original
-// (pre-de-AWS) code, hence the historical "ssmParamName" framing.
+// getAdminKeyFromEnv (OPTICAL_ADMIN_KEY_<NAME>, legacy ARDRIVE_ADMIN_KEY_<NAME>).
+// The "|name" part is an env-var key reference now — it was an AWS SSM parameter
+// name in the original (pre-de-AWS) code, hence the historical "ssmParamName" framing.
 const arDriveGatewayOpticalUrlAndApiKeyPairs =
   process.env.ARDRIVE_GATEWAY_OPTICAL_URLS?.split(",")
     ?.map((pair) => {
@@ -123,6 +131,22 @@ const arDriveGatewayOpticalUrlAndApiKeyPairs =
       return { url, adminKeyName };
     })
     ?.filter(({ url }) => !!url) ?? [];
+
+// Configurable tag/owner/target-based optical routing (OPTICAL_ROUTING_RULES).
+// Parsed once at module load; empty => unchanged behavior. See opticalRouting.ts.
+// Drop any rule that targets the primary OPTICAL_BRIDGE_URL: those items already
+// go to the primary post, and a shared URL would also share the primary's
+// circuit breaker (a flaky route could trip the breaker the primary relies on).
+const opticalRoutingRules = parseOpticalRoutingRules().filter((rule) => {
+  if (rule.url === primaryOpticalUrl) {
+    logger.warn(
+      `Optical routing rule "${rule.name}" targets the primary OPTICAL_BRIDGE_URL; skipping (already covered by the primary post).`
+    );
+    return false;
+  }
+  return true;
+});
+const opticalRoutingRuleUrls = new Set(opticalRoutingRules.map((r) => r.url));
 
 let cachedAxios: AxiosInstance | undefined = undefined;
 
@@ -144,6 +168,21 @@ export const opticalPostHandler = async ({
   const dataItemHeaders = stringifiedDataItemHeaders.map(
     (headerString) => JSON.parse(headerString) as SignedDataItemHeader
   );
+
+  // Configurable custom routes (OPTICAL_ROUTING_RULES): the matching subset for
+  // each rule. Routes are additive — items still go to the primary post — and
+  // best-effort (fired below), so this never alters what the primary receives.
+  // NOTE: rules see the FULL batch, including low-priority AO messages the
+  // primary filter drops below — intentional (a rule can route those too).
+  const customRoutes: {
+    rule: CompiledOpticalRoutingRule;
+    matched: SignedDataItemHeader[];
+  }[] = opticalRoutingRules.map((rule) => ({
+    rule,
+    matched: dataItemHeaders.filter((header) =>
+      headerMatchesRule(header, rule)
+    ),
+  }));
 
   const dataItemStringifiedHeadersToSendToPrimaryOptical = dataItemHeaders
     .filter(({ tags }) => {
@@ -315,6 +354,73 @@ export const opticalPostHandler = async ({
       );
     }
 
+    // Configurable custom routes (OPTICAL_ROUTING_RULES): additive and
+    // best-effort, exactly like the optional/ArDrive bridges above. Fired
+    // detached so a slow/failing route never blocks or fails the optical job
+    // (the primary OPTICAL_BRIDGE_URL below is the only must-succeed target).
+    for (const { rule, matched } of customRoutes) {
+      if (matched.length === 0) {
+        childLogger.debug(
+          `No data items to send to optical route "${rule.name}". Skipping.`
+        );
+        continue;
+      }
+      const routePostBody = `[${matched
+        .map((header) => JSON.stringify(header))
+        .join(",")}]`;
+      // Auth: when adminKeyName is set, use OPTICAL_ADMIN_KEY_<NAME>. If it can't
+      // be resolved, send an empty Authorization rather than inheriting the
+      // instance default (the primary AR_IO_ADMIN_KEY) — that would silently leak
+      // the primary key to this route's URL. When adminKeyName is absent, omit
+      // per-request headers so the route inherits the default (matches the
+      // optional bridge's behavior for same-credential gateways).
+      let routeHeaders: Record<string, string> | undefined;
+      if (rule.adminKeyName) {
+        const apiKey = getAdminKeyFromEnv(rule.adminKeyName);
+        routeHeaders = { Authorization: apiKey ? `Bearer ${apiKey}` : "" };
+      }
+      void breakerForOpticalUrl(rule.url)
+        .fire(async () => {
+          return getAxios().post(rule.url, routePostBody, {
+            headers: routeHeaders,
+          });
+        })
+        .then((response) => {
+          const { status, statusText } = response;
+          if (status < 200 || status >= 300) {
+            childLogger.warn(`Optical route "${rule.name}" returned non-2xx`, {
+              url: rule.url,
+              status,
+              statusText,
+              responseBody: snippet(response.data),
+              requestBodyPreview: routePostBody.slice(0, 512),
+            });
+            MetricRegistry.opticalCustomRoutePost.inc({
+              rule: rule.name,
+              result: "error",
+            });
+            return;
+          }
+          MetricRegistry.opticalCustomRoutePost.inc({
+            rule: rule.name,
+            result: "indexed",
+          });
+          childLogger.debug(
+            `Successfully posted to optical route "${rule.name}"`
+          );
+        })
+        .catch((error) => {
+          childLogger.error(
+            `Failed to post to optical route "${rule.name}": ${error.message}`,
+            { url: rule.url }
+          );
+          MetricRegistry.opticalCustomRoutePost.inc({
+            rule: rule.name,
+            result: "error",
+          });
+        });
+    }
+
     if (dataItemStringifiedHeadersToSendToPrimaryOptical.length === 0) {
       childLogger.debug(
         `No data items to send to primary optical bridge. Skipping.`
@@ -422,14 +528,19 @@ const opticalBreakers = new Map<
 
 // TODO: Move this mapping to configuration
 function breakerNameForUrl(url: URLString): BreakerSource {
+  // Match explicit/known URLs before the substring heuristics, so a custom rule
+  // URL that happens to contain "ardrive"/"goldsky" is still labeled correctly.
+  if (url === primaryOpticalUrl) {
+    return "optical_legacyGateway";
+  }
+  if (opticalRoutingRuleUrls.has(url)) {
+    return "optical_custom";
+  }
   if (url.includes("goldsky")) {
     return "optical_goldsky";
   }
   if (url.includes("ardrive")) {
     return "optical_ardriveGateway";
-  }
-  if (url === primaryOpticalUrl) {
-    return "optical_legacyGateway";
   }
   return "unknown";
 }
