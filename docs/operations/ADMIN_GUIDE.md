@@ -960,15 +960,24 @@ docker compose logs -f
 
 **Prometheus metrics endpoints:**
 ```
-http://localhost:3001/bundler_metrics   # upload service
+http://localhost:9311/metrics           # upload-workers (bundle pipeline — fulfillment_job_*,
+                                        #   chunk_seed_post_*, optical_custom_route_post_total, …)
+http://localhost:9301..:930N/metrics    # upload-api, one per PM2 cluster instance (9301 + NODE_APP_INSTANCE)
+http://localhost:3001/bundler_metrics   # upload API route (one instance; worker counters read 0 here)
 http://localhost:4001/metrics           # payment service (path differs!)
 ```
+> ⚠️ Worker/pipeline counters (including `optical_custom_route_post_total`) are emitted by the
+> `upload-workers` fork process and appear ONLY on `:9311` — **not** on `:3001/bundler_metrics`.
+> Scrape the per-process ports. These bind `0.0.0.0` and are unauthenticated; firewall them to the
+> collector CIDR (`METRICS_BIND_ADDRESS` / `METRICS_SERVER_ENABLED` tune this). See
+> `docs/operations/OBSERVABILITY.md`.
 
 **Key metrics:**
 - Data item upload rate
 - Bundle posting success/failure
 - Queue lengths
 - Worker processing times
+- Custom optical routing (`optical_custom_route_post_total{rule,result}`)
 - Payment processing rate
 - x402 payment success rate
 
@@ -978,7 +987,8 @@ http://localhost:4001/metrics           # payment service (path differs!)
 scrape_configs:
   - job_name: 'ar-io-bundler'
     static_configs:
-      - targets: ['localhost:3001', 'localhost:4001']
+      # workers + each clustered upload-api instance (extend :930N to API_INSTANCES) + payment
+      - targets: ['localhost:9311', 'localhost:9301', 'localhost:9302', 'localhost:4001']
 ```
 
 ### OpenTelemetry Tracing

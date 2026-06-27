@@ -132,6 +132,7 @@ internet. Everything else binds to localhost or the private network to the gatew
 | 5432 | Postgres | localhost only |
 | 6379 / 6381 | Redis cache / queues | localhost only |
 | 9090 | Prometheus metrics | admin only |
+| 9301..930N / 9311 | upload-api (per cluster instance) / upload-workers per-process metrics | **collector CIDR only** — binds `0.0.0.0`, unauthenticated; firewall it (see OBSERVABILITY.md) |
 
 ⚠️ ACTION: the default `docker-compose.yml` publishes Bull Board, MinIO console, Postgres, and both
 Redis on `0.0.0.0`. On Hetzner, bind infra to `127.0.0.1` / the private gateway interface and firewall
@@ -666,9 +667,12 @@ systemd timer, the pgBackRest/WAL scale path with PITR, and the restore drill. S
 ## 17. Monitoring & logs
 
 - **Metrics:** see **`docs/operations/OBSERVABILITY.md`** for the full picture — app metrics
-  (`:3001/bundler_metrics`, `:4001/metrics`), MinIO native metrics (via nginx `/minio-metrics/{bundler,archive}/cluster`,
+  (per-process: upload-workers `:9311`, upload-api `:9301..:930N`; plus the legacy `:3001/bundler_metrics`
+  and `:4001/metrics` API routes), MinIO native metrics (via nginx `/minio-metrics/{bundler,archive}/cluster`,
   bearer-token gated), and **node_exporter** (`:9100`, host CPU/mem/disk; firewall-gated to the collector CIDRs and
-  auto-discovered by the fleet hcloud-SD job). Alert on queue depth (BullMQ), worker liveness (esp. payment-workers +
+  auto-discovered by the fleet hcloud-SD job). ⚠️ **Worker/pipeline counters (`fulfillment_job_*`,
+  `chunk_seed_post_*`, `optical_custom_route_post_total`, …) appear ONLY on `:9311`, not on `:3001`** — scrape the
+  per-process ports or they read 0. Alert on queue depth (BullMQ), worker liveness (esp. payment-workers +
   upload-workers), DB pool saturation, disk-fill (`node_filesystem_avail_bytes`, `minio_cluster_capacity_usable_free_bytes`),
   and post/verify failure rates.
 - **Queues:** Bull Board / admin-dashboard at `:3002` (admin-only).

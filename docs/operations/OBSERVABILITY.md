@@ -8,8 +8,10 @@ equivalent. Three independent metric sources, three different exposure paths.
 
 | Source | Endpoint (on the box) | What it covers | Exposed to the collector via | Gating |
 |---|---|---|---|---|
-| **App (upload)** | `:3001/bundler_metrics` | bundle pipeline (`fulfillment_job_*`, `circuit_breaker_*`, `chunk_seed_post_*`, `archive_copy_total`, …) + Node process | the public API port `:3001` | ⚠️ none yet (world-readable) |
-| **App (payment)** | `:4001/metrics` | payments/Stripe/x402/chargebacks + Node process | the public API port `:4001` | ⚠️ none yet (world-readable) |
+| **App (upload-workers)** | `:9311/metrics` | bundle pipeline (`fulfillment_job_*`, `circuit_breaker_*`, `chunk_seed_post_*`, `archive_copy_total`, `optical_custom_route_post_total`, …) + Node process | the port `:9311` | ⚠️ firewall only (binds `0.0.0.0`) |
+| **App (upload-api)** | per-instance `:9301..:930N` (`9301 + NODE_APP_INSTANCE`) | HTTP/API + Node process per clustered API instance | the per-instance ports `:9301..:930N` | ⚠️ firewall only (binds `0.0.0.0`) |
+| **App (upload, legacy route)** | `:3001/bundler_metrics` | the API instance that the `:3001` LB happened to hit — **API-process metrics only**; worker pipeline counters read 0 here | the public API port `:3001` | ⚠️ none yet (world-readable) |
+| **App (payment)** | `:4001/metrics` | payments/Stripe/x402/chargebacks + Node process. Payment runs PM2 **cluster** mode, so a `:4001` scrape lands on a random instance and flip-flops (no per-process server yet) | the public API port `:4001` | ⚠️ none yet (world-readable) |
 | **MinIO** (both tiers) | private `:9000` / `:9002` `…/minio/v2/metrics/cluster` | capacity/disk-fill, S3 request rates/errors/latency, ILM expiry, drives/health | **nginx** `:443` → `/minio-metrics/{bundler,archive}/cluster` | nginx CIDR allowlist **+** MinIO bearer token |
 | **node_exporter** | `:9100/metrics` | host CPU, memory, **disk/filesystem fill**, network, load | the port `:9100` directly | **cloud firewall** (source-CIDR) |
 | **postgres_exporter** | `:9187/metrics` | connections, xacts, locks, DB/table/index sizes, per-DB `pg_stat_*` | the port `:9187` directly | **cloud firewall** (source-CIDR) |
@@ -17,6 +19,43 @@ equivalent. Three independent metric sources, three different exposure paths.
 
 > The MinIO scrape setup (bearer token, paths, collector job) is documented in
 > `docs/architecture/TWO_TIER_MINIO.md` → "Observability: scraping MinIO metrics".
+
+## Per-process app metrics servers (upload) — scrape these, not just `:3001`
+
+`packages/upload-service/src/arch/metricsServer.ts` starts a dedicated metrics
+HTTP server **inside each upload process**, exposing that process's own
+prom-client registry at `/metrics` (and `/bundler_metrics`):
+
+| Process | Port | Why a per-process server |
+|---|---|---|
+| `upload-workers` (fork, 1) | `:9311` (`UPLOAD_WORKERS_METRICS_PORT`) | The BullMQ pipeline lives here and increments **most** interesting counters — `fulfillment_job_*`, `chunk_seed_post_*`, `archive_copy_total`, `posted_bundle_*`, `optical_custom_route_post_total`. As a fork process it never exposed them over the Koa `:3001` route, so a `:3001` scrape reported them as **0**. |
+| `upload-api` (cluster, N) | `:9301 + NODE_APP_INSTANCE` → `:9301..:930N` (`UPLOAD_API_METRICS_PORT`) | `:3001` is a PM2 cluster LB; a scrape lands on a random instance and flip-flops. Each instance exposes its own port so Prometheus `sum()`s the per-instance series. |
+
+**Consequence:** to see worker/pipeline metrics (including `optical_custom_route_post_total`)
+you **must** scrape `:9311` and `:9301..:930N` — the legacy `:3001/bundler_metrics`
+route only reflects one API instance and reports worker counters as 0.
+
+- Disable with `METRICS_SERVER_ENABLED=false`; never binds under `NODE_ENV=test`.
+- **Binds `METRICS_BIND_ADDRESS` (default `0.0.0.0`)** — like the other plaintext
+  exporters these ports are unauthenticated, so they MUST be gated by the cloud
+  firewall (source-CIDR to the collector) or set `METRICS_BIND_ADDRESS` to a
+  private/loopback interface. Never leave `:9301..:930N`/`:9311` open to `0.0.0.0/0`.
+
+Firewall (same source set as `:9100`), and one scrape job covering the small port range:
+
+```bash
+hcloud firewall add-rule ar-io-bundler-fw --direction in --protocol tcp --port 9301-9311 \
+  --source-ips 10.83.0.0/24 --source-ips 100.64.0.0/10 --source-ips fd7a:115c:a1e0::/48 \
+  --source-ips 34.205.91.20/32 --source-ips 34.192.58.42/32 --source-ips 54.166.111.219/32
+```
+
+```yaml
+- job_name: ar_io_dev_bundler_upload_app
+  scrape_interval: 30s
+  static_configs:
+    # workers (:9311) + each clustered upload-api instance (:9301..:930N — extend to API_INSTANCES)
+    - targets: ['178.105.217.148:9311', '178.105.217.148:9301', '178.105.217.148:9302']
+```
 
 ## Exposure model — three layers, not one
 
@@ -155,9 +194,12 @@ or `mtail` exporter could turn it into metrics later. Field reference + queries:
 
 ## Not yet collected
 
-- **App metrics** (`/bundler_metrics`, `/metrics`) are emitted but ungated — open on the
-  public API ports. To gate them, front the app on `:443` only (close direct
-  `:3001/:4001` in the firewall) and clamp the two paths in nginx with
+- **App metrics** (`/bundler_metrics`, `/metrics` on `:3001/:4001`) are emitted but
+  ungated — open on the public API ports. To gate them, front the app on `:443` only
+  (close direct `:3001/:4001` in the firewall) and clamp the two paths in nginx with
   `metrics-allowlist.conf`.
+- **Per-process metrics ports** (`:9311`, `:9301..:930N`) bind `0.0.0.0` by default and
+  are unauthenticated. Gate them with the cloud-firewall rule above (or set
+  `METRICS_BIND_ADDRESS` to a private/loopback interface) before relying on them in prod.
 - **Tracing** — OpenTelemetry → Honeycomb is wired (`packages/upload-service/src/arch/tracing.ts`)
   but dormant until `HONEYCOMB_API_KEY` is set.
