@@ -2119,6 +2119,38 @@ export class PostgresDatabase implements Database {
       .update({ status: "bought" });
   }
 
+  // Persist a Turbo-provisioned (custodial Model A) ANT for a buyer and backfill
+  // the purchase receipt's process_id, atomically. Idempotent on process_id so a
+  // retried request can't create a duplicate mapping row.
+  public async recordSpawnedAnt({
+    nonce,
+    owner,
+    processId,
+    name,
+  }: {
+    nonce: string;
+    owner: string;
+    processId: string;
+    name: string;
+  }): Promise<void> {
+    await this.writer.transaction(async (knexTransaction) => {
+      await knexTransaction(tableNames.userAnt)
+        .insert({
+          [columnNames.owner]: owner,
+          [columnNames.processId]: processId,
+          [columnNames.name]: name,
+        })
+        .onConflict(columnNames.processId)
+        .ignore();
+
+      await knexTransaction<ArNSPurchaseDBResult>(
+        tableNames.arNSPurchaseReceipt,
+      )
+        .where({ nonce })
+        .update({ process_id: processId });
+    });
+  }
+
   public async getArNSPurchaseQuote(
     nonce: string,
   ): Promise<{ quote: ArNSPurchaseQuote }> {

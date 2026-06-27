@@ -105,7 +105,6 @@ import {
   stripe,
   testAddress,
   testArweaveWallet,
-  testEthereumWallet,
 } from "./helpers/testHelpers";
 
 describe("Router tests", () => {
@@ -3333,23 +3332,9 @@ describe("Router tests", () => {
       expect(statusText).to.equal("Bad Request");
     });
 
-    it("rejects buy-name intent with no processId present", async () => {
-      // The `type` price param is validated before the purchase-specific
-      // processId check (src/utils/validators.ts:664-669 before :726-729), so a
-      // valid `type` must be supplied to actually exercise the missing-processId
-      // path (otherwise the request fails earlier on the missing type).
-      const { status, statusText, data } = await axios.post(
-        `/v1/arns/purchase/buy-name/testName?token=ethereum&type=permabuy`,
-        "",
-        {
-          headers: await signedRequestHeadersFromEthWallet(testEthereumWallet),
-        },
-      );
-
-      expect(data).to.equal("Missing required parameter: processId");
-      expect(status).to.equal(400);
-      expect(statusText).to.equal("Bad Request");
-    });
+    // NOTE: a Buy-Name with no processId is no longer rejected — it provisions a
+    // Turbo-owned ANT (custodial Model A). That behavior is covered by
+    // "provisions + records a Turbo-owned ANT when Buy-Name has no processId".
 
     it("rejects buy-name intent with no type present", async () => {
       const { status, statusText, data } = await axios.post(
@@ -3463,6 +3448,73 @@ describe("Router tests", () => {
         .knex(tableNames.arNSPurchaseReceipt)
         .where({ name });
       expect(pending.length).to.equal(0);
+    });
+
+    it("provisions + records a Turbo-owned ANT when Buy-Name has no processId", async () => {
+      const name = "spawn-on-buy-no-processid";
+      const spawnedProcessId = "spawned-ant-process-id";
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      // Simulate the gateway provisioning a fresh ANT (Model A custodial).
+      stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
+        id: "stubbedId",
+        spawnedProcessId,
+      });
+      await dbTestHelper.knex(tableNames.userAnt).where({ name }).del();
+      await dbTestHelper.insertStubUser({
+        user_address: stubArweaveUserAddress,
+        winston_credit_balance: "1000000000",
+      });
+
+      // Note: NO processId in the query.
+      const { status, data } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/${name}?type=permabuy`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      expect(status).to.equal(200);
+      // The response surfaces the provisioned ANT's processId.
+      expect(data.purchaseReceipt.processId).to.equal(spawnedProcessId);
+
+      // The user↔ANT mapping was persisted.
+      const mapping = await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: spawnedProcessId });
+      expect(mapping.length).to.equal(1);
+      expect(mapping[0].name).to.equal(name);
+
+      // The receipt's process_id was backfilled.
+      const receipt = await dbTestHelper
+        .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+        .where({ nonce: data.purchaseReceipt.nonce })
+        .first();
+      expect(receipt?.process_id).to.equal(spawnedProcessId);
+    });
+
+    it("does not record a mapping when a processId is supplied (BYO-ANT)", async () => {
+      const name = "byo-ant-no-spawn";
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      // No spawnedProcessId → no ANT was provisioned.
+      stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
+        id: "stubbedId",
+      });
+      await dbTestHelper.knex(tableNames.userAnt).where({ name }).del();
+      await dbTestHelper.insertStubUser({
+        user_address: stubArweaveUserAddress,
+        winston_credit_balance: "1000000000",
+      });
+
+      const { status } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/${name}?type=permabuy&processId=byo-process-id`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      expect(status).to.equal(200);
+      const mapping = await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ name });
+      expect(mapping.length).to.equal(0);
     });
   });
 

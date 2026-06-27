@@ -2975,6 +2975,51 @@ describe("PostgresDatabase class", () => {
       });
     });
 
+    describe("recordSpawnedAnt method", () => {
+      it("records the user↔ANT mapping, backfills the receipt process_id, and is idempotent", async () => {
+        const nonce = "spawn-ant -- recordSpawnedAnt";
+        const processId = "spawned-ant-asset -- recordSpawnedAnt";
+        const name = "spawned-name -- recordSpawnedAnt";
+
+        // A receipt created without a processId (the spawn-on-buy case).
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(100),
+          name,
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "permabuy",
+          wincQty: W(100),
+          processId: undefined,
+          intent: "Buy-Name",
+          paidBy: [],
+        });
+
+        await db.recordSpawnedAnt({ nonce, owner, processId, name });
+
+        const mapping = await dbTestHelper
+          .knex(tableNames.userAnt)
+          .where({ process_id: processId });
+        expect(mapping.length).to.equal(1);
+        expect(mapping[0].owner).to.equal(owner);
+        expect(mapping[0].name).to.equal(name);
+
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        expect(receipt?.process_id).to.equal(processId);
+
+        // Idempotent: a retried call neither errors nor duplicates the mapping.
+        await db.recordSpawnedAnt({ nonce, owner, processId, name });
+        const mappingAfter = await dbTestHelper
+          .knex(tableNames.userAnt)
+          .where({ process_id: processId });
+        expect(mappingAfter.length).to.equal(1);
+      });
+    });
+
     describe("getArNSPurchaseStatus method", () => {
       it("gets the ArNS name purchase status as expected", async () => {
         const name = "Name -- Get ArNS Purchase Status Test";

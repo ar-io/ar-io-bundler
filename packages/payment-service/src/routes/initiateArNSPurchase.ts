@@ -121,6 +121,36 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       );
     }
 
+    // Custodial Model A: if a fresh Turbo-owned ANT was provisioned for this
+    // buy, record the user↔ANT mapping + backfill the receipt's process_id.
+    // Best-effort: the name is already bought and the receipt (owner + name) is
+    // returned with the processId, so a failure here is loud but non-fatal — the
+    // mapping is an index that can be rebuilt from the receipt.
+    if (arioWriteResult.spawnedProcessId !== undefined) {
+      try {
+        await paymentDatabase.recordSpawnedAnt({
+          nonce: purchaseReceipt.nonce,
+          owner: purchaseReceipt.owner,
+          processId: arioWriteResult.spawnedProcessId,
+          name: purchaseReceipt.name,
+        });
+      } catch (mappingError) {
+        logger.error(
+          "CRITICAL: ArNS name bought + ANT spawned but failed to record user↔ANT mapping — manual reconciliation may be needed",
+          {
+            nonce: purchaseReceipt.nonce,
+            owner: purchaseReceipt.owner,
+            processId: arioWriteResult.spawnedProcessId,
+            name: purchaseReceipt.name,
+            error:
+              mappingError instanceof Error
+                ? mappingError.message
+                : mappingError,
+          },
+        );
+      }
+    }
+
     // Write succeeded — name is bought. Recording the message_id must not refund;
     // on failure, durably retry storing it (the reconciler would otherwise treat
     // this paid-for receipt as an orphan).
@@ -160,7 +190,14 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     ctx.response.message = "ArNS Purchase Successful";
 
     ctx.body = {
-      purchaseReceipt: { ...purchaseReceipt, messageId: arioWriteResult.id },
+      purchaseReceipt: {
+        ...purchaseReceipt,
+        messageId: arioWriteResult.id,
+        // Reflect the provisioned ANT (if one was spawned) so the client learns
+        // the processId its name resolves to.
+        processId:
+          arioWriteResult.spawnedProcessId ?? purchaseReceipt.processId,
+      },
       arioWriteResult,
     };
   } catch (error) {

@@ -45,6 +45,7 @@ export const tableNames = {
   arNSPurchaseQuote: "arns_purchase_quote",
   arNSPurchaseReceipt: "arns_purchase_receipt",
   failedArNSPurchase: "failed_arns_purchase",
+  userAnt: "user_ant",
 
   x402PaymentTransaction: "x402_payment_transaction",
   x402PaymentReservation: "x402_payment_reservation",
