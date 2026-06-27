@@ -2838,6 +2838,88 @@ describe("PostgresDatabase class", () => {
           errorType: "ArNSPurchaseNotFound",
         });
       });
+
+      it("does NOT refund a receipt that already recorded a message_id (succeeded purchase)", async () => {
+        const nonce = "guard-nonce -- succeeded ArNS receipt";
+
+        // Debit 300 of the owner's 1000 winc.
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(300),
+          name: "guard-name",
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "lease",
+          wincQty: W(300),
+          processId: stubTxId1,
+          intent: "Buy-Name",
+          years: 1,
+          paidBy: [],
+        });
+        // Mark it succeeded (the on-chain write landed).
+        await db.addMessageIdToPurchaseReceipt({
+          nonce,
+          messageId: "on-chain-signature",
+        });
+
+        // A stale/duplicate refund must be a no-op, never a credit-back.
+        await expectAsyncErrorThrow({
+          promiseToError: db.updateFailedArNSPurchase(
+            nonce,
+            "SHOULD_NOT_REFUND",
+          ),
+          errorType: "ArNSPurchaseNotFound",
+        });
+
+        // Balance stays debited (700), NOT refunded back to 1000.
+        const user = await db.getUser(owner);
+        expect(user.winstonCreditBalance.toString()).to.equal("700");
+
+        // Receipt is untouched; nothing moved to the failed table.
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce });
+        expect(receipt.length).to.equal(1);
+        const failed = await dbTestHelper
+          .knex<FailedArNSPurchaseDBResult>(tableNames.failedArNSPurchase)
+          .where({ nonce });
+        expect(failed.length).to.equal(0);
+      });
+    });
+
+    describe("getStalePendingArNSPurchases method", () => {
+      it("returns only pending (no message_id) receipts older than the threshold", async () => {
+        const staleNonce = "stale-pending -- getStalePendingArNSPurchases";
+        const recentNonce = "recent-pending -- getStalePendingArNSPurchases";
+        const succeededNonce = "succeeded -- getStalePendingArNSPurchases";
+
+        // Pending (no message_id) by default; succeeded one opts into a message_id.
+        await dbTestHelper.insertStubArNSPurchase({ nonce: staleNonce, owner });
+        await dbTestHelper.insertStubArNSPurchase({
+          nonce: recentNonce,
+          owner,
+        });
+        await dbTestHelper.insertStubArNSPurchase({
+          nonce: succeededNonce,
+          owner,
+          message_id: "on-chain-signature",
+        });
+
+        // Age the stale + succeeded receipts to an hour ago; recent stays "now".
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        await dbTestHelper
+          .knex(tableNames.arNSPurchaseReceipt)
+          .whereIn("nonce", [staleNonce, succeededNonce])
+          .update({ created_date: oneHourAgo });
+
+        const stale = await db.getStalePendingArNSPurchases(30 * 60 * 1000);
+        const nonces = stale.map((p) => p.nonce);
+
+        expect(nonces).to.include(staleNonce); // old + pending → orphaned debit
+        expect(nonces).to.not.include(recentNonce); // pending but too recent
+        expect(nonces).to.not.include(succeededNonce); // old but already succeeded
+      });
     });
 
     describe("getArNSPurchaseStatus method", () => {

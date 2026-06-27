@@ -22,13 +22,18 @@
 // config validation, so the worker process must self-load its env first.
 import { config as loadEnvFile } from "dotenv";
 import * as path from "path";
-loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
 
 import globalLogger from "../logger";
+import {
+  scheduleArNSReconcile,
+  schedulePendingTxCheck,
+} from "../queues/producers";
 import { loadSecretsToEnv } from "../utils/loadSecretsToEnv";
-import { schedulePendingTxCheck } from "../queues/producers";
 import { createAdminCreditWorker } from "./adminCreditTool.worker";
+import { createArNSRefundWorker } from "./arnsRefund.worker";
 import { createPendingTxWorker } from "./creditPendingTx.worker";
+
+loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
 
 async function main() {
   globalLogger.info("Starting payment service workers");
@@ -37,12 +42,19 @@ async function main() {
   await loadSecretsToEnv();
 
   // Create workers
-  const workers = [createAdminCreditWorker(), createPendingTxWorker()];
+  const workers = [
+    createAdminCreditWorker(),
+    createPendingTxWorker(),
+    createArNSRefundWorker(),
+  ];
 
   globalLogger.info(`Started ${workers.length} workers`);
 
   // Schedule the recurring pending TX check job
   await schedulePendingTxCheck();
+
+  // Schedule the ArNS orphaned-debit reconcile backstop
+  await scheduleArNSReconcile();
 
   // Graceful shutdown
   const shutdown = async () => {

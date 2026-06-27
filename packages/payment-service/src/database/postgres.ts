@@ -1972,6 +1972,12 @@ export class PostgresDatabase implements Database {
     failedReason: string,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
+      // Guard: only refund a receipt that has NOT recorded an on-chain
+      // message_id. A receipt with a message_id is a *succeeded* purchase, and
+      // refunding it would credit the user back for a name they actually
+      // bought. With this guard a stale/duplicate refund for a now-succeeded
+      // purchase deletes 0 rows and surfaces as ArNSPurchaseNotFound, which the
+      // durable refund worker treats as a terminal no-op.
       const pendingArNSPurchaseDbResult =
         await knexTransaction<ArNSPurchaseDBResult>(
           tableNames.arNSPurchaseReceipt,
@@ -1979,6 +1985,7 @@ export class PostgresDatabase implements Database {
           .where({
             nonce: nonce,
           })
+          .whereNull(columnNames.messageId)
           .del()
           .returning("*");
 
@@ -2006,6 +2013,23 @@ export class PostgresDatabase implements Database {
 
       await knexTransaction(tableNames.failedArNSPurchase).insert(dbInsert);
     });
+  }
+
+  // Receipts that debited the buyer's credits but never recorded an on-chain
+  // message_id and are older than the threshold — i.e. the request died
+  // between the debit and either the on-chain write or its refund/retry. The
+  // reconciler refunds these so a debit can never be silently orphaned.
+  public async getStalePendingArNSPurchases(
+    staleThresholdMs: number,
+  ): Promise<ArNSPurchase[]> {
+    const cutoff = new Date(Date.now() - staleThresholdMs);
+    const rows = await this.reader<ArNSPurchaseDBResult>(
+      tableNames.arNSPurchaseReceipt,
+    )
+      .whereNull(columnNames.messageId)
+      .andWhere(columnNames.createdDate, "<", cutoff);
+
+    return rows.map(arnsPurchaseReceiptDBMap);
   }
 
   public async getArNSPurchaseStatus(

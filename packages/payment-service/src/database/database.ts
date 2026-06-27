@@ -74,7 +74,7 @@ export interface Database {
 
   updatePromoInfo: (
     userAddress: UserAddress,
-    promoInfo: PromotionalInfo
+    promoInfo: PromotionalInfo,
   ) => Promise<void>;
 
   getPromoInfo: (userAddress: UserAddress) => Promise<PromotionalInfo>;
@@ -84,46 +84,46 @@ export interface Database {
   getBalance: (userAddress: UserAddress) => Promise<GetBalanceResult>;
 
   createPaymentReceipt: (
-    paymentReceipt: CreatePaymentReceiptParams
+    paymentReceipt: CreatePaymentReceiptParams,
   ) => Promise<void | UnredeemedGift>;
 
   createBypassedPaymentReceipts(
-    paymentReceipts: CreateBypassedPaymentReceiptParams[]
+    paymentReceipts: CreateBypassedPaymentReceiptParams[],
   ): Promise<UnredeemedGift[]>;
 
   getPaymentReceipt: (
-    paymentReceiptId: PaymentReceiptId
+    paymentReceiptId: PaymentReceiptId,
   ) => Promise<PaymentReceipt>;
 
   reserveBalance: (
-    createBalanceReservationParams: CreateBalanceReservationParams
+    createBalanceReservationParams: CreateBalanceReservationParams,
   ) => Promise<void>;
 
   refundBalance: (
     userAddress: UserAddress,
     winstonCreditAmount: WC,
-    dataItemId: TransactionId
+    dataItemId: TransactionId,
   ) => Promise<void>;
 
   createChargebackReceipt: (
-    createChargebackReceiptParams: CreateChargebackReceiptParams
+    createChargebackReceiptParams: CreateChargebackReceiptParams,
   ) => Promise<void>;
 
   getChargebackReceiptsForAddress: (
-    userAddress: UserAddress
+    userAddress: UserAddress,
   ) => Promise<ChargebackReceipt[]>;
 
   getChargebackReceipt: (
-    chargebackReceiptId: ChargebackReceiptId
+    chargebackReceiptId: ChargebackReceiptId,
   ) => Promise<ChargebackReceipt>;
 
   checkForExistingPaymentByTopUpQuoteId: (
-    topUpQuoteId: TopUpQuoteId
+    topUpQuoteId: TopUpQuoteId,
   ) => Promise<boolean>;
 
   getSingleUsePromoCodeAdjustments: (
     promoCodes: string[],
-    userAddress: UserAddress
+    userAddress: UserAddress,
   ) => Promise<SingleUseCodePaymentCatalog[]>;
 
   getUploadAdjustmentCatalogs: () => Promise<UploadAdjustmentCatalog[]>;
@@ -142,7 +142,7 @@ export interface Database {
    * incoming payment transaction, but are waiting more blocks to confirm
    */
   createPendingTransaction: (
-    params: CreatePendingTransactionParams
+    params: CreatePendingTransactionParams,
   ) => Promise<void>;
 
   /**
@@ -150,7 +150,7 @@ export interface Database {
    * This will credit a user's balance and add a payment notation to the audit log
    */
   createNewCreditedTransaction: (
-    params: CreateNewCreditedTransactionParams
+    params: CreateNewCreditedTransactionParams,
   ) => Promise<void>;
 
   /** Get all `new` and `pending` payment transactions for processing credited/failed payments */
@@ -158,7 +158,7 @@ export interface Database {
 
   /** Get any existing payment transaction from the the database */
   checkForPendingTransaction: (
-    transactionId: TransactionId
+    transactionId: TransactionId,
   ) => Promise<
     | PendingPaymentTransaction
     | FailedPaymentTransaction
@@ -171,7 +171,7 @@ export interface Database {
    */
   creditPendingTransaction: (
     transactionId: TransactionId,
-    blockHeight: number
+    blockHeight: number,
   ) => Promise<void>;
 
   /**
@@ -179,15 +179,15 @@ export interface Database {
    */
   failPendingTransaction: (
     transactionId: TransactionId,
-    failedReason: string
+    failedReason: string,
   ) => Promise<void>;
 
   getWincUsedForUploadAdjustmentCatalog(
-    params: WincUsedForUploadAdjustmentParams
+    params: WincUsedForUploadAdjustmentParams,
   ): Promise<WC>;
 
   createDelegatedPaymentApproval: (
-    params: CreateDelegatedPaymentApprovalParams
+    params: CreateDelegatedPaymentApprovalParams,
   ) => Promise<DelegatedPaymentApproval>;
 
   revokeDelegatedPaymentApprovals: (params: {
@@ -198,7 +198,7 @@ export interface Database {
 
   getApprovalsFromPayerForAddress: (
     params: { payingAddress: UserAddress; approvedAddress: UserAddress },
-    knexTransaction?: Knex.Transaction
+    knexTransaction?: Knex.Transaction,
   ) => Promise<DelegatedPaymentApproval[]>;
 
   getAllApprovalsForUserAddress: (userAddress: string) => Promise<{
@@ -207,7 +207,7 @@ export interface Database {
   }>;
 
   createArNSPurchaseReceipt: (
-    createPendingArNSPurchaseParams: ArNSPurchaseParams
+    createPendingArNSPurchaseParams: ArNSPurchaseParams,
   ) => Promise<ArNSPurchase>;
 
   addMessageIdToPurchaseReceipt: (p: {
@@ -217,19 +217,23 @@ export interface Database {
 
   updateFailedArNSPurchase: (
     nonce: string,
-    failedReason: string
+    failedReason: string,
   ) => Promise<void>;
 
+  getStalePendingArNSPurchases: (
+    staleThresholdMs: number,
+  ) => Promise<ArNSPurchase[]>;
+
   getArNSPurchaseStatus: (
-    nonce: string
+    nonce: string,
   ) => Promise<ArNSPurchaseStatusResult | undefined>;
 
   createArNSPurchaseQuote: (
-    params: ArNSPurchaseQuoteParams
+    params: ArNSPurchaseQuoteParams,
   ) => Promise<ArNSPurchaseQuote>;
 
   getArNSPurchaseQuote: (
-    nonce: string
+    nonce: string,
   ) => Promise<{ quote: ArNSPurchaseQuote }>;
   updateArNSPurchaseQuoteToSuccess: (p: {
     nonce: string;
@@ -237,7 +241,7 @@ export interface Database {
   }) => Promise<void>;
   updateArNSPurchaseQuoteToFailure: (
     nonce: string,
-    failedReason: string
+    failedReason: string,
   ) => Promise<void>;
 
   // x402 Payment Methods
@@ -246,23 +250,29 @@ export interface Database {
    * Create a new x402 payment transaction
    */
   createX402Payment: (
-    params: CreateX402PaymentParams
+    params: CreateX402PaymentParams,
   ) => Promise<X402PaymentTransaction>;
 
   /**
    * Get an x402 payment transaction by ID
    */
-  getX402Payment: (paymentId: string) => Promise<X402PaymentTransaction | undefined>;
+  getX402Payment: (
+    paymentId: string,
+  ) => Promise<X402PaymentTransaction | undefined>;
 
   /**
    * Get an x402 payment transaction by transaction hash
    */
-  getX402PaymentByTxHash: (txHash: string) => Promise<X402PaymentTransaction | undefined>;
+  getX402PaymentByTxHash: (
+    txHash: string,
+  ) => Promise<X402PaymentTransaction | undefined>;
 
   /**
    * Get an x402 payment transaction by data item ID
    */
-  getX402PaymentByDataItemId: (dataItemId: DataItemId) => Promise<X402PaymentTransaction | undefined>;
+  getX402PaymentByDataItemId: (
+    dataItemId: DataItemId,
+  ) => Promise<X402PaymentTransaction | undefined>;
 
   /**
    * Finalize an x402 payment after upload validation
@@ -282,7 +292,9 @@ export interface Database {
   /**
    * Get an x402 payment reservation by data item ID
    */
-  getX402PaymentReservation: (dataItemId: DataItemId) => Promise<X402PaymentReservation | undefined>;
+  getX402PaymentReservation: (
+    dataItemId: DataItemId,
+  ) => Promise<X402PaymentReservation | undefined>;
 
   /**
    * Delete an x402 payment reservation

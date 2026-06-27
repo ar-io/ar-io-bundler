@@ -23,6 +23,11 @@ import {
   Unauthorized,
   UserNotFoundWarning,
 } from "../database/errors";
+import { durableRefundArNSPurchase } from "../jobs/arnsRefund";
+import {
+  enqueueArNSRefund,
+  enqueueStoreArNSMessageId,
+} from "../queues/producers";
 import { KoaContext } from "../server";
 import { W } from "../types";
 import {
@@ -83,12 +88,57 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       referer: getSanitizedReferer(ctx),
     });
 
-    const arioWriteResult = await ario.initiateArNSPurchase(purchaseReceipt);
+    // The buyer's credits are now debited. The on-chain write is the point of
+    // no return: if it FAILS, the name was not bought → refund durably. If it
+    // SUCCEEDS, the name is paid for on-chain → we must NEVER refund, even if a
+    // later step (recording the message_id) fails.
+    let arioWriteResult: Awaited<ReturnType<typeof ario.initiateArNSPurchase>>;
+    try {
+      arioWriteResult = await ario.initiateArNSPurchase(purchaseReceipt);
+    } catch (writeError) {
+      await durableRefundArNSPurchase(
+        { paymentDatabase, logger },
+        enqueueArNSRefund,
+        purchaseReceipt.nonce,
+        "PURCHASE_FAILED",
+      );
+      throw writeError;
+    }
 
-    await paymentDatabase.addMessageIdToPurchaseReceipt({
-      messageId: arioWriteResult.id,
-      nonce: purchaseReceipt.nonce,
-    });
+    // Write succeeded — name is bought. Recording the message_id must not refund;
+    // on failure, durably retry storing it (the reconciler would otherwise treat
+    // this paid-for receipt as an orphan).
+    try {
+      await paymentDatabase.addMessageIdToPurchaseReceipt({
+        messageId: arioWriteResult.id,
+        nonce: purchaseReceipt.nonce,
+      });
+    } catch (storeError) {
+      logger.error(
+        "ArNS write succeeded but storing message_id failed — enqueuing durable retry (NOT refunding)",
+        {
+          nonce: purchaseReceipt.nonce,
+          messageId: arioWriteResult.id,
+          error: storeError instanceof Error ? storeError.message : storeError,
+        },
+      );
+      await enqueueStoreArNSMessageId({
+        nonce: purchaseReceipt.nonce,
+        messageId: arioWriteResult.id,
+      }).catch((enqueueError) => {
+        logger.error(
+          "CRITICAL: failed to enqueue ArNS store-message-id retry — receipt risks being reconciled despite a paid name; manual check required",
+          {
+            nonce: purchaseReceipt?.nonce,
+            messageId: arioWriteResult.id,
+            error:
+              enqueueError instanceof Error
+                ? enqueueError.message
+                : enqueueError,
+          },
+        );
+      });
+    }
 
     ctx.response.status = 200;
     ctx.response.message = "ArNS Purchase Successful";
@@ -123,16 +173,12 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
         error instanceof Error ? error.message : "Internal server error";
     }
 
-    if (purchaseReceipt) {
-      try {
-        await paymentDatabase.updateFailedArNSPurchase(
-          purchaseReceipt.nonce,
-          "PURCHASE_FAILED"
-        );
-      } catch (error) {
-        logger.error("Error updating failed ArNS Name purchase", error);
-      }
-    }
+    // NOTE: the refund is NOT issued here. A debited purchase is refunded
+    // durably on the on-chain-write failure path above (durableRefundArNSPurchase
+    // → inline refund, else the arns-refund queue). Errors that reach here
+    // before the debit (validation / pricing / insufficient balance) created no
+    // receipt, so there is nothing to refund. Issuing a refund here too would
+    // risk double-handling a receipt already refunded on the write path.
   }
 
   return next();

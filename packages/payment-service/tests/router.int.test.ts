@@ -3386,12 +3386,69 @@ describe("Router tests", () => {
       expect(createdDate).to.exist;
       expect(arioWriteResult.id).to.equal("stubbedId");
     });
+
+    it("refunds the buyer's credits when the on-chain write fails", async () => {
+      // The signer resolves to this owner address (see the success test above).
+      const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+      const name = "refund-on-write-fail";
+
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      stub(gatewayMap.ario, "initiateArNSPurchase").rejects(
+        new Error("on-chain write boom"),
+      );
+
+      // Clean slate for this name + a known balance for the signer.
+      await dbTestHelper
+        .knex(tableNames.failedArNSPurchase)
+        .where({ name })
+        .del();
+      await dbTestHelper
+        .knex(tableNames.arNSPurchaseReceipt)
+        .where({ name })
+        .del();
+      const startingBalance = "1000000000";
+      await dbTestHelper
+        .knex(tableNames.user)
+        .where({ user_address: signerAddress })
+        .del();
+      await dbTestHelper.insertStubUser({
+        user_address: signerAddress,
+        winston_credit_balance: startingBalance,
+      });
+
+      const { status } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/${name}?type=permabuy&processId=stubProcessId`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      // The write failed → 503, and the buyer must be made whole.
+      expect(status).to.equal(503);
+
+      // Credits debited then FULLY refunded (inline durable-refund path) → net zero.
+      const user = await dbTestHelper
+        .knex<UserDBResult>(tableNames.user)
+        .where({ user_address: signerAddress })
+        .first();
+      expect(user?.winston_credit_balance).to.equal(startingBalance);
+
+      // A failed_arns_purchase row was recorded, and no pending receipt remains.
+      const failed = await dbTestHelper
+        .knex(tableNames.failedArNSPurchase)
+        .where({ name });
+      expect(failed.length).to.equal(1);
+      const pending = await dbTestHelper
+        .knex(tableNames.arNSPurchaseReceipt)
+        .where({ name });
+      expect(pending.length).to.equal(0);
+    });
   });
 
   describe("GET /v1/arns/purchase/:nonce", () => {
     it("should return success status for valid purchase in the database", async () => {
       await dbTestHelper.insertStubArNSPurchase({
         nonce: "my-great-nonce",
+        message_id: "The Stubbiest Message",
       });
 
       const { status, statusText, data } = await axios.get(
