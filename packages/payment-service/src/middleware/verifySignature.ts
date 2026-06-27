@@ -53,6 +53,8 @@ export async function verifySignature(ctx: Context, next: Next): Promise<void> {
     const supportedSignatureTypes: SignatureConfig[] = [
       SignatureConfig.ARWEAVE,
       SignatureConfig.ETHEREUM,
+      SignatureConfig.SOLANA,
+      SignatureConfig.ED25519,
     ];
     if (
       !signature ||
@@ -68,7 +70,7 @@ export async function verifySignature(ctx: Context, next: Next): Promise<void> {
           nonce: !!nonce,
           signatureType,
           supportedSignatureTypes,
-        }
+        },
       );
       return next();
     }
@@ -101,7 +103,7 @@ export async function verifySignature(ctx: Context, next: Next): Promise<void> {
       const token = jwt.sign(
         { walletAddress: ctx.state.walletAddress },
         JWT_SECRET,
-        { expiresIn: "1h" }
+        { expiresIn: "1h" },
       );
 
       ctx.set("Authorization", `Bearer ${token}`);
@@ -114,7 +116,7 @@ export async function verifySignature(ctx: Context, next: Next): Promise<void> {
 
 export async function addressFromQuery(
   ctx: Context,
-  next: Next
+  next: Next,
 ): Promise<void> {
   const address = (ctx.request.query["address"] as string) || "";
 

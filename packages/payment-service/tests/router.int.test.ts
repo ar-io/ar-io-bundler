@@ -18,12 +18,14 @@ import { ARIOToken, mARIOToken } from "@ar.io/sdk";
 import Arweave from "arweave/node/common";
 import axiosPackage from "axios";
 import BigNumber from "bignumber.js";
+import bs58 from "bs58";
 import { expect } from "chai";
 import { Server } from "http";
 import { sign } from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { spy, stub, useFakeTimers } from "sinon";
 import Stripe from "stripe";
+import nacl from "tweetnacl";
 
 import {
   CurrencyLimitations,
@@ -70,6 +72,7 @@ import { arweaveRSAModulusToAddress } from "../src/utils/jwkUtils";
 import {
   signedRequestHeadersFromEthWallet,
   signedRequestHeadersFromJwk,
+  signedRequestHeadersFromSolanaKeypair,
 } from "../tests/helpers/signData";
 import {
   oneHourAgo,
@@ -683,6 +686,25 @@ describe("Router tests", () => {
     expect(statusText).to.equal("OK");
 
     expect(balance).to.equal(5000000);
+  });
+
+  it("GET /balance returns 200 for a Solana-signed request (bs58 address)", async () => {
+    const keypair = nacl.sign.keyPair();
+    const address = bs58.encode(keypair.publicKey);
+    await dbTestHelper.insertStubUser({
+      user_address: address,
+      winston_credit_balance: "4242",
+    });
+
+    const { status, statusText, data } = await axios.get(`/v1/balance`, {
+      headers: signedRequestHeadersFromSolanaKeypair(keypair),
+    });
+
+    // The middleware verified the ed25519 signature and resolved the wallet to
+    // the base58 public key, so the balance for that address is returned.
+    expect(status).to.equal(200);
+    expect(statusText).to.equal("OK");
+    expect(Number(data.winc)).to.equal(4242);
   });
 
   it("GET /balance returns 200 and all approvals for a user with given and received delegated payment approvals", async () => {
