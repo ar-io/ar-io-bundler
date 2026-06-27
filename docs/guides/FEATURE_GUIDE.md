@@ -936,6 +936,21 @@ OPTICAL_ROUTING_RULES=[{"name":"vilenarios","url":"https://vilenarios.com/ar-io/
 OPTICAL_ADMIN_KEY_VILENARIOS=vilenarios-admin-key
 ```
 
+**Custom routing — production rollout checklist:**
+1. Define `OPTICAL_ROUTING_RULES` (+ any `OPTICAL_ADMIN_KEY_<NAME>`) in the prod `.env`.
+   It's a single JSON line; keep `#` out of every value (unquoted `.env` treats `#` as a
+   comment and would truncate the rule, silently disabling all routes).
+2. Load the new vars with a full restart or `./scripts/deploy.sh --update-env` —
+   **`scripts/restart.sh` does NOT pick up changed `.env` vars** (it reuses the cached
+   PM2 environment). Confirm with `tr '\0' '\n' < /proc/<upload-workers-pid>/environ | grep OPTICAL_ROUTING_RULES`.
+3. Confirm rules loaded: the worker logs `Loaded N custom optical routing rule(s)` at startup.
+4. Verify delivery: scrape `optical_custom_route_post_total{rule,result}` on the
+   **upload-workers metrics port `:9311`** (NOT `:3001`), or query the target gateway's
+   GraphQL for a freshly-uploaded, rule-matching data item id.
+5. Routes are additive + best-effort: a route failure is logged/counted but never blocks the
+   upload or the primary optical post. Watch `result="error"` for a misconfigured key or a
+   down gateway.
+
 ### 4.6 Data Storage Architecture
 
 **Triple-Store Replication:**
