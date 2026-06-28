@@ -346,6 +346,18 @@ export class SolanaARIOGateway extends Gateway {
   // Self-custody exit (custodial Model A): transfer a Turbo-owned ANT to a
   // Solana pubkey the user designates. The server signer is the ANT owner, so
   // this owner-only op succeeds. Returns the on-chain message id.
+  private async getAntWriteable(
+    processId: string,
+  ): Promise<SolanaANTWriteable> {
+    const signer = await this.getServerSigner();
+    return new SolanaANTWriteable({
+      processId,
+      signer,
+      rpc: createSolanaRpc(this.rpcUrl),
+      rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
+    });
+  }
+
   public async transferAnt({
     antId,
     target,
@@ -353,16 +365,47 @@ export class SolanaARIOGateway extends Gateway {
     antId: string;
     target: string;
   }): Promise<string> {
-    const signer = await this.getServerSigner();
-    const ant = new SolanaANTWriteable({
-      // The SDK still names the ANT's address `processId` (legacy AO); it is the
-      // Solana asset address we call antId.
-      processId: antId,
-      signer,
-      rpc: createSolanaRpc(this.rpcUrl),
-      rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
-    });
+    const ant = await this.getAntWriteable(antId);
     const result = await ant.transfer({ target });
+    return result.id;
+  }
+
+  // Set a resolution record on a Turbo-custodied ANT. undername "@" sets the
+  // base-name record; any other value sets/creates that undername. The server
+  // signer (the ANT owner) authorizes the write.
+  public async setAntRecord({
+    processId,
+    undername,
+    transactionId,
+    ttlSeconds,
+  }: {
+    processId: string;
+    undername: string;
+    transactionId: string;
+    ttlSeconds: number;
+  }): Promise<string> {
+    const ant = await this.getAntWriteable(processId);
+    const result =
+      undername === "@"
+        ? await ant.setBaseNameRecord({ transactionId, ttlSeconds })
+        : await ant.setUndernameRecord({
+            undername,
+            transactionId,
+            ttlSeconds,
+          });
+    return result.id;
+  }
+
+  // Remove a resolution record (an undername) from a custodied ANT.
+  public async removeAntRecord({
+    processId,
+    undername,
+  }: {
+    processId: string;
+    undername: string;
+  }): Promise<string> {
+    const ant = await this.getAntWriteable(processId);
+    const result = await ant.removeRecord({ undername });
     return result.id;
   }
 

@@ -31,6 +31,7 @@ import { getApprovals } from "./routes/getApprovals";
 import { getArNSPurchaseStatus } from "./routes/getArNSPurchaseStatus";
 import { rootResponse } from "./routes/info";
 import { initiateArNSPurchase } from "./routes/initiateArNSPurchase";
+import { removeArNSRecord, setArNSRecord } from "./routes/manageArNSAnt";
 import { priceArNSPurchaseHandler } from "./routes/priceArNSName";
 import { priceRoutes } from "./routes/priceRoutes";
 import { fiatToArRateHandler, ratesHandler } from "./routes/rates";
@@ -77,6 +78,17 @@ router.post(
 router.get("/v1/arns/purchase/:nonce", getArNSPurchaseStatus);
 
 router.post("/v1/arns/transfer/:antId", verifySignature, transferArNSAnt);
+
+router.post(
+  "/v1/arns/manage/:processId/set-record",
+  verifySignature,
+  setArNSRecord,
+);
+router.post(
+  "/v1/arns/manage/:processId/remove-record",
+  verifySignature,
+  removeArNSRecord,
+);
 
 router.get(
   "/v1/top-up/:method/:address/:currency/:amount",

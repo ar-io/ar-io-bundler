@@ -3660,6 +3660,135 @@ describe("Router tests", () => {
     });
   });
 
+  describe("POST /v1/arns/manage/:processId/* (record management)", () => {
+    const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+    const txId = "AnYvLJTWcG9lr2Ll5MwYWZR2o5uTE39WbpYB0zCxwKM"; // valid arweave tx id
+    const processId = "managed-ant";
+
+    const seedOwnedAnt = async () => {
+      await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: processId })
+        .del();
+      await dbTestHelper.knex(tableNames.userAnt).insert({
+        process_id: processId,
+        owner: signerAddress,
+        name: "managed-name",
+      });
+    };
+
+    it("set-record: owner sets the base (@) record", async () => {
+      const setAntRecord = stub(gatewayMap.ario, "setAntRecord").resolves(
+        "set-msg-id",
+      );
+      await seedOwnedAnt();
+
+      const { status, data } = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=3600`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      expect(status).to.equal(200);
+      expect(data.messageId).to.equal("set-msg-id");
+      expect(data.undername).to.equal("@"); // defaults to base record
+      expect(
+        setAntRecord.calledOnceWithExactly({
+          processId,
+          undername: "@",
+          transactionId: txId,
+          ttlSeconds: 3600,
+        }),
+      ).to.be.true;
+    });
+
+    it("set-record: owner sets a specific undername", async () => {
+      const setAntRecord = stub(gatewayMap.ario, "setAntRecord").resolves(
+        "set-msg-2",
+      );
+      await seedOwnedAnt();
+
+      const { status } = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?undername=docs&transactionId=${txId}&ttlSeconds=900`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      expect(status).to.equal(200);
+      expect(setAntRecord.firstCall.args[0].undername).to.equal("docs");
+    });
+
+    it("set-record: 400 on an invalid transactionId or ttlSeconds", async () => {
+      await seedOwnedAnt();
+      const badTx = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=nope&ttlSeconds=60`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badTx.status).to.equal(400);
+      expect(badTx.data).to.contain("transactionId");
+
+      const badTtl = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=0`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badTtl.status).to.equal(400);
+      expect(badTtl.data).to.contain("ttlSeconds");
+    });
+
+    it("set-record: 401 unsigned, 404 for an ANT not in the caller's custody", async () => {
+      const unsigned = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=60`,
+      );
+      expect(unsigned.status).to.equal(401);
+
+      // Owned by someone else → 404 (the auth check runs only for valid input).
+      stub(gatewayMap.ario, "setAntRecord").resolves("unused");
+      await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: processId })
+        .del();
+      await dbTestHelper.knex(tableNames.userAnt).insert({
+        process_id: processId,
+        owner: "someone-else",
+        name: "not-yours",
+      });
+      const notYours = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=60`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(notYours.status).to.equal(404);
+    });
+
+    it("remove-record: owner removes an undername (and 400 without one)", async () => {
+      const removeAntRecord = stub(gatewayMap.ario, "removeAntRecord").resolves(
+        "remove-msg-id",
+      );
+      await seedOwnedAnt();
+
+      const missing = await axios.post(
+        `/v1/arns/manage/${processId}/remove-record`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(missing.status).to.equal(400);
+      expect(missing.data).to.contain("undername");
+
+      const { status, data } = await axios.post(
+        `/v1/arns/manage/${processId}/remove-record?undername=docs`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(status).to.equal(200);
+      expect(data.messageId).to.equal("remove-msg-id");
+      expect(
+        removeAntRecord.calledOnceWithExactly({ processId, undername: "docs" }),
+      ).to.be.true;
+    });
+  });
+
   describe("GET /v1/arns/purchase/:nonce", () => {
     it("should return success status for valid purchase in the database", async () => {
       await dbTestHelper.insertStubArNSPurchase({
