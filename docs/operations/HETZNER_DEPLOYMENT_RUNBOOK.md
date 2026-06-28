@@ -680,7 +680,7 @@ systemd timer, the pgBackRest/WAL scale path with PITR, and the restore drill. S
   `SLACK_OAUTH_TOKEN` + `SLACK_ALERT_CHANNEL_ID`) pushes the dashboard's health-rollup verdict to Slack
   (service/infra down, pipeline/wallet/payment/queue issues), with anti-spam reminders + resolved messages. See
   §7 for setup; complements (does not replace) Prometheus/Grafana alerting.
-- **Logs:** install `pm2-logrotate` (PM2 logs) and logrotate for cron logs; the dev box rotates neither.
+- **Logs:** install `pm2-logrotate` for PM2 logs (see ADMIN_GUIDE → Log rotation for the recommended config + the "`retain` is a file count, not days" caveat — the high-volume `upload-workers-out` rotates fast). No cron logs to rotate (schedulers are in-process).
 - **DB query tuning & visibility (set in `docker-compose.yml`, overridable via `.env`):**
   - `PG_EFFECTIVE_CACHE_SIZE` — planner hint; set ≈50-75% of RAM on the prod box (stock 4GB default understates a big box and biases away from index scans).
   - `pg_stat_statements` is enabled via `shared_preload_libraries`. **Enabling it (or any `shared_preload_libraries` change) requires a full postgres CONTAINER restart, not a reload.** On a **fresh** data volume `init-databases.sql` runs `CREATE EXTENSION` automatically; on an **existing** volume run it once per DB after the restart:
@@ -755,7 +755,7 @@ Requirements & caveats:
 - [ ] Backups scheduled (PG ×2, MinIO, wallets) and a restore tested
 - [ ] Vertical integration verified against both gateways (optical + MinIO retrieval)
 - [ ] Backport lanes 1–5 integrated, full build + integration tests green
-- [ ] Monitoring + log rotation live
+- [ ] Log rotation configured (`pm2-logrotate` — see ADMIN_GUIDE); monitoring exporters per OBSERVABILITY.md
 - [ ] Slack alerter configured (`ALERTS_ENABLED=true`) + top-up channel set; bot invited to channels and a test message delivered (`test-slack.js both`)
 
 ---

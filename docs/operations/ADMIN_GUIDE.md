@@ -919,31 +919,39 @@ pm2 logs --err
 pm2 logs --raw
 ```
 
-**Log files location:**
+**Log files location:** PM2 (ecosystem) deployments write all process logs to
+**`/opt/ar-io-bundler/logs/`** (configured in `infrastructure/pm2/ecosystem.config.js`),
+NOT the per-package `logs/` dirs (those only appear under `yarn dev:*`):
 ```
-packages/upload-service/logs/
-  upload-api-out.log
-  upload-api-error.log
-  upload-workers-out.log
-  upload-workers-error.log
-
-packages/payment-service/logs/
-  payment-service-out.log
-  payment-service-error.log
-  payment-workers-out.log
-  payment-workers-error.log
+/opt/ar-io-bundler/logs/
+  upload-api-out.log        upload-api-error.log
+  upload-workers-out.log    upload-workers-error.log
+  payment-service-out.log   payment-service-error.log
+  payment-workers-out.log   payment-workers-error.log
+  admin-dashboard-out.log   admin-dashboard-error.log
 ```
 
-**Log rotation (recommended):**
+**Log rotation (recommended config, via `pm2-logrotate`):**
 ```bash
-# Install PM2 log rotate module
 pm2 install pm2-logrotate
-
-# Configure
-pm2 set pm2-logrotate:max_size 100M
-pm2 set pm2-logrotate:retain 7
-pm2 set pm2-logrotate:compress true
+pm2 set pm2-logrotate:max_size       100M        # rotate at 100 MB
+pm2 set pm2-logrotate:retain         14          # keep 14 files PER log
+pm2 set pm2-logrotate:compress       true        # gzip rotated files
+pm2 set pm2-logrotate:rotateInterval '0 0 * * *' # also daily at midnight
+pm2 set pm2-logrotate:workerInterval 30          # size-check cadence (s)
 ```
+
+> ⚠️ **`retain` is a FILE COUNT, not days.** Because rotation is size-triggered at
+> `max_size`, the time window each log covers depends on its write volume — and
+> `upload-workers-out` is very high volume (the optical-post handler logs every job
+> at `info`), so it rotates many times/day and `retain 14` may cover only **hours**,
+> while low-volume logs (payment, admin) cover ~14 days. To lengthen the busy-log
+> window: raise `max_size` and/or `retain`, or lower the optical-post log verbosity
+> at the source.
+>
+> **Gotcha:** `pm2-logrotate` only compresses **at rotation time**; a file that
+> rotates while `compress` is still propagating (each `pm2 set` restarts the module)
+> lands as a plain `.log` and must be `gzip`'d once by hand. Future rotations are fine.
 
 **Docker logs:**
 ```bash
@@ -1098,6 +1106,31 @@ result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 > Stripe payment that was charged but could be **neither credited nor refunded**
 > (manual refund required) — post to the **alert channel** as CRITICAL. Stripe's
 > own success/refund receipts come from Stripe directly.
+
+#### On-demand status posts (`scripts/ops/slack-post.js`)
+
+Separate from the automated alerter: a small CLI that posts an **ad-hoc** message
+to Slack (operator- or agent-triggered, e.g. a requested "status update for
+Slack"). It reuses the same bot token + `slack.js` plumbing — no new credentials.
+
+```bash
+# inline message (Slack mrkdwn)
+node scripts/ops/slack-post.js -m "*Bundler status:* 🟢 15/15 online, 0 failed bundles"
+# multi-line digest from stdin
+generate-digest | node scripts/ops/slack-post.js
+# override channel / sender
+node scripts/ops/slack-post.js -m "hi" -c <channel-id> -u "Ops" -i ":satellite_antenna:"
+```
+
+- **Channel resolution:** `-c` flag → `SLACK_STATUS_CHANNEL_ID` → `SLACK_ALERT_CHANNEL_ID`.
+  Set `SLACK_STATUS_CHANNEL_ID` to a dedicated status channel so routine updates
+  stay out of the alarm channel.
+- **Identity:** sender name/icon default to `SLACK_STATUS_USERNAME` / `SLACK_STATUS_ICON`
+  (else `Bundler Ops` / `:satellite_antenna:`) so human-triggered updates are visually
+  distinct from the `:rotating_light:` alerter.
+- **Output:** prints `OK delivered to <channel> (ts=…)` + a permalink, or the Slack
+  error (`not_in_channel` → `/invite @YourBot` into that channel) and exits non-zero
+  — safe to wrap in scripts.
 
 **What the alerter actually covers** (the live rollup signals — not a generic list):
 - **Services/infra down**: any expected PM2 process missing/unhealthy; Postgres

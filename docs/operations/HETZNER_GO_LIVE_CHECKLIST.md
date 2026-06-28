@@ -174,7 +174,7 @@
       **`ALERT_ENV_LABEL=bundler-prod`** (so alerts are tagged to this deployment); top-up channel set
       (`SLACK_TURBO_TOP_UP_CHANNEL_ID`); bot invited to channels; test message delivered
       (`node packages/admin-service/admin/notifier/test-slack.js both`).
-- [ ] `pm2-logrotate` + logrotate for cron logs.
+- [ ] `pm2-logrotate` for PM2 logs (see ADMIN_GUIDE → Log rotation for the recommended config). No cron logs to rotate (schedulers are in-process).
 - [ ] Rollback path rehearsed: tagged release + `db:migrate:rollback` + pre-migration snapshot.
 
 ## Phase 14 — Post-deploy validation & right-sizing

@@ -269,19 +269,11 @@ server {
 
 ### Log Rotation
 
-Configure logrotate for PM2 logs:
-
-```
-/home/vilenarios/ar-io-bundler/logs/*.log {
-    daily
-    rotate 30
-    compress
-    delaycompress
-    notifempty
-    create 0640 vilenarios vilenarios
-    sharedscripts
-}
-```
+PM2 process logs are rotated by the **`pm2-logrotate`** module rather than system
+`logrotate`. Recommended config (`max_size 100M`, `retain 14`, `compress true`,
+daily tick) and the important "`retain` is a file-count, not days" caveat (the
+high-volume `upload-workers-out` rotates fast) are in
+[ADMIN_GUIDE.md → Log rotation](./ADMIN_GUIDE.md#monitoring--logs).
 
 ## Further Reading
 

@@ -2309,7 +2309,7 @@ HGETALL key
 - [ ] Set up SSL/TLS certificates
 - [ ] Configure reverse proxy (nginx/Caddy)
 - [ ] Set up monitoring and alerts
-- [ ] Configure log rotation
+- [ ] Configure log rotation (`pm2-logrotate` — see operations/ADMIN_GUIDE.md)
 - [ ] Back up `.env` and `wallet.json` securely
 - [ ] Configure firewall rules
 - [ ] Set up database backups
