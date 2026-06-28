@@ -3516,6 +3516,45 @@ describe("Router tests", () => {
         .where({ name });
       expect(mapping.length).to.equal(0);
     });
+
+    it("adds ANT_SPAWN_WINC_SURCHARGE to the debit only when an ANT is provisioned", async () => {
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      stub(pricingService, "getWCForCryptoPayment").resolves({
+        finalPrice: new FinalPrice(new Winston("1000")),
+      } as unknown as Awaited<
+        ReturnType<typeof pricingService.getWCForCryptoPayment>
+      >);
+      stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
+        id: "x",
+        spawnedProcessId: "ant-surcharge",
+      });
+      await dbTestHelper.insertStubUser({
+        user_address: stubArweaveUserAddress,
+        winston_credit_balance: "1000000000",
+      });
+
+      const prev = process.env.ANT_SPAWN_WINC_SURCHARGE;
+      process.env.ANT_SPAWN_WINC_SURCHARGE = "500";
+      try {
+        // Provisioned buy (no processId): base 1000 + surcharge 500.
+        const provisioned = await axios.post(
+          `/v1/arns/purchase/Buy-Name/surcharge-spawn?type=permabuy`,
+          "",
+          { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+        );
+        expect(provisioned.data.purchaseReceipt.wincQty).to.equal("1500");
+
+        // BYO-ANT buy (processId supplied): no surcharge, base 1000.
+        const byo = await axios.post(
+          `/v1/arns/purchase/Buy-Name/surcharge-byo?type=permabuy&processId=byo`,
+          "",
+          { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+        );
+        expect(byo.data.purchaseReceipt.wincQty).to.equal("1000");
+      } finally {
+        process.env.ANT_SPAWN_WINC_SURCHARGE = prev;
+      }
+    });
   });
 
   describe("GET /v1/arns/purchase/:nonce", () => {

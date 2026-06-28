@@ -71,13 +71,25 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     const { usdArRate, usdArioRate } =
       await pricingService.getUSDPriceForOneARAndOneARIO();
 
+    // Custodial Model A: a Buy without a caller-supplied processId provisions a
+    // fresh, Turbo-owned ANT (the treasury pays its SOL rent). Recover that cost
+    // from the buyer via a configurable winc surcharge (ANT_SPAWN_WINC_SURCHARGE,
+    // default "0" = disabled). It is folded into the single existing debit, so
+    // the S1 durable refund covers it on failure.
+    const provisionsAnt =
+      (intent === "Buy-Name" || intent === "Buy-Record") &&
+      processId === undefined;
+    const wincQty = provisionsAnt
+      ? finalPrice.winc.plus(W(process.env.ANT_SPAWN_WINC_SURCHARGE || "0"))
+      : finalPrice.winc;
+
     purchaseReceipt = await paymentDatabase.createArNSPurchaseReceipt({
       name,
       nonce,
       intent,
       mARIOQty,
       owner,
-      wincQty: finalPrice.winc,
+      wincQty,
       processId,
       increaseQty,
       type,
