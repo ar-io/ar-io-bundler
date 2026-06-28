@@ -17,6 +17,7 @@
 import { Job, Worker } from "bullmq";
 
 import { PostgresDatabase } from "../database/postgres";
+import { ARIOGateway } from "../gateway/ario";
 import {
   processArNSRefundJob,
   processStoreArNSMessageIdJob,
@@ -32,18 +33,22 @@ import {
   enqueueArNSRefund,
 } from "../queues/producers";
 
-// Orphaned-debit reconcile threshold. Default 30 min — comfortably longer than
-// the store-message-id / refund retry backoff so a still-retrying job is not
-// reconciled out from under itself.
+// Orphaned-debit reconcile threshold. Default 90 min — above the store-message-id
+// retry ceiling (~85 min over 10 exponential attempts), so a still-retrying job
+// isn't reconciled out from under itself. (The reconciler also confirms on-chain
+// before refunding, so a too-low threshold can no longer cause an erroneous
+// refund — this is defense-in-depth.)
 function arnsStaleThresholdMs(): number {
   return parseInt(
-    process.env.ARNS_RECEIPT_STALE_THRESHOLD_MS || `${30 * 60 * 1000}`,
+    process.env.ARNS_RECEIPT_STALE_THRESHOLD_MS || `${90 * 60 * 1000}`,
   );
 }
 
 export function createArNSRefundWorker(): Worker {
   // Shared DB instance reused across all jobs.
   const paymentDatabase = new PostgresDatabase({});
+  // Read-only ARIO gateway for the reconciler's on-chain confirmation.
+  const arioGateway = new ARIOGateway({ logger: globalLogger });
 
   const worker = new Worker(
     arnsRefundQueueName,
@@ -67,6 +72,7 @@ export function createArNSRefundWorker(): Worker {
             { paymentDatabase, logger },
             enqueueArNSRefund,
             arnsStaleThresholdMs(),
+            (name) => arioGateway.getArNSRecord(name),
           ));
         default:
           logger.warn("Unknown ArNS refund job name — ignoring");

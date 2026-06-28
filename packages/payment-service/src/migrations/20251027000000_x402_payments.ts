@@ -37,10 +37,14 @@ export async function up(knex: Knex): Promise<void> {
     table.string("declared_byte_count", 100).nullable();
     table.string("actual_byte_count", 100).nullable();
     table
-      .enum("status", ["pending_validation", "confirmed", "refunded", "fraud_penalty"], {
-        useNative: true,
-        enumName: "x402_payment_status",
-      })
+      .enum(
+        "status",
+        ["pending_validation", "confirmed", "refunded", "fraud_penalty"],
+        {
+          useNative: true,
+          enumName: "x402_payment_status",
+        },
+      )
       .notNullable()
       .defaultTo("pending_validation");
     table.timestamp("paid_at").notNullable().defaultTo(knex.fn.now());

@@ -2886,6 +2886,49 @@ describe("PostgresDatabase class", () => {
           .where({ nonce });
         expect(failed.length).to.equal(0);
       });
+
+      it("does NOT refund a `bought` receipt that has no message_id yet (the C-2 fix)", async () => {
+        // The dangerous case the old message_id guard missed: the buy confirmed
+        // on-chain (status=bought) but message_id storage hasn't happened. A
+        // refund here would credit back a name the user owns.
+        const nonce = "guard-nonce -- bought no message_id";
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(300),
+          name: "bought-name",
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "lease",
+          wincQty: W(300),
+          processId: stubTxId1,
+          intent: "Buy-Name",
+          years: 1,
+          paidBy: [],
+        });
+        await db.markArNSPurchaseBought(nonce);
+
+        await expectAsyncErrorThrow({
+          promiseToError: db.updateFailedArNSPurchase(
+            nonce,
+            "SHOULD_NOT_REFUND",
+          ),
+          errorType: "ArNSPurchaseNotFound",
+        });
+
+        // Balance stays debited (700); the bought receipt is untouched.
+        const user = await db.getUser(owner);
+        expect(user.winstonCreditBalance.toString()).to.equal("700");
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce });
+        expect(receipt.length).to.equal(1);
+        expect(receipt[0].status).to.equal("bought");
+
+        // And the reconciler must not pick it up as a stale orphan.
+        const stale = await db.getStalePendingArNSPurchases(0);
+        expect(stale.map((p) => p.nonce)).to.not.include(nonce);
+      });
     });
 
     describe("getStalePendingArNSPurchases method", () => {

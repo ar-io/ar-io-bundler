@@ -105,6 +105,22 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       throw writeError;
     }
 
+    // The buy is confirmed on-chain — mark it `bought` BEFORE recording the
+    // message_id, so the refund/reconcile guard protects this paid name even if
+    // message_id storage later fails. If this mark itself fails, the on-chain
+    // reconcile (getArNSRecord) is the backstop against an erroneous refund.
+    try {
+      await paymentDatabase.markArNSPurchaseBought(purchaseReceipt.nonce);
+    } catch (markError) {
+      logger.error(
+        "ArNS buy confirmed on-chain but failed to mark receipt 'bought' — on-chain reconcile must prevent an erroneous refund",
+        {
+          nonce: purchaseReceipt.nonce,
+          error: markError instanceof Error ? markError.message : markError,
+        },
+      );
+    }
+
     // Write succeeded — name is bought. Recording the message_id must not refund;
     // on failure, durably retry storing it (the reconciler would otherwise treat
     // this paid-for receipt as an orphan).

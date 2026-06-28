@@ -188,6 +188,10 @@ export const columnNames = {
   usdArRate: "usd_ar_rate", // USD to AR rate at the time of purchase
   usdArioRate: "usd_ario_rate", // USD to ARIO rate at the time of purchase
   messageId: "message_id",
+  // ArNS purchase lifecycle (replaces message_id as the success signal):
+  // reserved (debited) → spawned (antId persisted) → bought (on-chain confirmed)
+  // → recorded (message_id stored). Refund/reconcile act on reserved/spawned ONLY.
+  status: "status",
   excessWinc: "excess_winc",
   paidBy: "paid_by", // CSV of user addresses
 } as const;

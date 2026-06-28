@@ -115,31 +115,71 @@ export async function processStoreArNSMessageIdJob(
 }
 
 /**
- * Backstop reconciler: find debits orphaned with no message_id past the stale
- * threshold (e.g. the request died after debiting but before writing/refunding)
- * and enqueue a durable refund for each. Returns the number of orphans found.
+ * Backstop reconciler: find debits stuck in `reserved`/`spawned` past the stale
+ * threshold (the request died between the debit and confirming the buy). For
+ * each, CONFIRM ON-CHAIN before acting — a name that actually landed is promoted
+ * to `bought` (never refunded); only genuinely-unbought debits are refunded.
  */
 export async function reconcileStaleArNSPurchases(
   { paymentDatabase, logger }: ArNSRefundJobDeps,
   enqueueRefund: (data: { nonce: string; reason: string }) => Promise<string>,
   staleThresholdMs: number,
-): Promise<number> {
+  // Live on-chain confirm: the name's current ArNS record (undefined if
+  // unregistered). The reconciler NEVER refunds without checking this first.
+  confirmOnChain: (name: string) => Promise<{ antId?: string } | undefined>,
+): Promise<{ refunded: number; confirmedBought: number }> {
   const stale =
     await paymentDatabase.getStalePendingArNSPurchases(staleThresholdMs);
 
+  let refunded = 0;
+  let confirmedBought = 0;
+
   for (const purchase of stale) {
+    // If the name landed and resolves to the antId this receipt paid for, the
+    // buy actually succeeded (we just never recorded it) → promote to `bought`,
+    // do NOT refund.
+    let record: { antId?: string } | undefined;
+    try {
+      record = await confirmOnChain(purchase.name);
+    } catch (error) {
+      // Fail SAFE: on a transient gateway error, never refund a possibly-bought
+      // name. Skip; the next reconcile pass retries.
+      logger.warn(
+        "ArNS reconcile: on-chain confirm failed — skipping (no refund this pass)",
+        {
+          nonce: purchase.nonce,
+          name: purchase.name,
+          error: error instanceof Error ? error.message : error,
+        },
+      );
+      continue;
+    }
+
+    if (record && purchase.processId && record.antId === purchase.processId) {
+      await paymentDatabase.markArNSPurchaseBought(purchase.nonce);
+      confirmedBought++;
+      logger.warn(
+        "ArNS reconcile: name confirmed on-chain — promoted to bought, NOT refunded",
+        { nonce: purchase.nonce, name: purchase.name, antId: record.antId },
+      );
+      continue;
+    }
+
     await enqueueRefund({
       nonce: purchase.nonce,
       reason: "RECONCILE_ORPHANED",
     });
+    refunded++;
   }
 
   if (stale.length > 0) {
-    logger.warn("Reconciled orphaned ArNS purchases — refunds enqueued", {
-      count: stale.length,
+    logger.warn("Reconciled stale ArNS purchases", {
+      stale: stale.length,
+      refunded,
+      confirmedBought,
       staleThresholdMs,
     });
   }
 
-  return stale.length;
+  return { refunded, confirmedBought };
 }

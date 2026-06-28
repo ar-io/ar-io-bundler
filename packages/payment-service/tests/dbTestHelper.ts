@@ -388,6 +388,10 @@ export class DbTestHelper {
     // Default to a realistic PENDING receipt (no on-chain message_id yet).
     // Tests needing a succeeded receipt pass message_id explicitly.
     message_id = undefined,
+    // Lifecycle status mirrors the message_id default: a stub carrying a
+    // message_id is a succeeded ('recorded') receipt; otherwise a pending
+    // ('reserved') one. Tests can override (e.g. 'bought', 'spawned').
+    status = message_id ? "recorded" : "reserved",
   }: Partial<ArNSPurchaseDBInsert>): Promise<void> {
     const insert: ArNSPurchaseDBInsert = {
       nonce,
@@ -412,6 +416,7 @@ export class DbTestHelper {
       payment_provider,
       quote_creation_date,
       message_id,
+      status,
     };
     return this.knex(tableNames.arNSPurchaseReceipt).insert(insert);
   }

@@ -771,6 +771,19 @@ export const validArNSPurchaseIntents = [
 ] as const;
 export type ArNSPurchaseIntent = (typeof validArNSPurchaseIntents)[number];
 
+// Purchase lifecycle. The reconciler/refund act on `reserved`/`spawned` ONLY;
+// `bought` is set the instant the on-chain buy confirms (BEFORE message_id), so
+// a name that was actually bought can never be refunded even if message_id
+// storage later fails. This replaces message_id as the success signal.
+export const arnsPurchaseLifecycleStatuses = [
+  "reserved",
+  "spawned",
+  "bought",
+  "recorded",
+] as const;
+export type ArNSPurchaseLifecycleStatus =
+  (typeof arnsPurchaseLifecycleStatuses)[number];
+
 type ArNSPurchaseDBCols = {
   nonce: string;
   name: string;
@@ -787,6 +800,7 @@ type ArNSPurchaseDBCols = {
   paid_by?: string;
   overflow_spend?: string;
   message_id?: string;
+  status?: ArNSPurchaseLifecycleStatus;
   referer?: string;
 };
 

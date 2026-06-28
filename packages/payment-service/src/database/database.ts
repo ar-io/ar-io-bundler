@@ -215,6 +215,8 @@ export interface Database {
     messageId: string;
   }) => Promise<void>;
 
+  markArNSPurchaseBought: (nonce: string) => Promise<void>;
+
   updateFailedArNSPurchase: (
     nonce: string,
     failedReason: string,

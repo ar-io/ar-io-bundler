@@ -129,42 +129,103 @@ describe("arnsRefund job handlers", () => {
   });
 
   describe("reconcileStaleArNSPurchases", () => {
-    it("enqueues a refund for every orphaned receipt and returns the count", async () => {
-      const getStalePendingArNSPurchases = sinon
-        .stub()
-        .resolves([
-          { nonce: "a" },
-          { nonce: "b" },
-        ] as unknown as ArNSPurchase[]);
+    it("refunds an orphan the chain does NOT know about", async () => {
+      const getStalePendingArNSPurchases = sinon.stub().resolves([
+        { nonce: "a", name: "foo", processId: "antA" },
+        { nonce: "b", name: "bar", processId: "antB" },
+      ] as unknown as ArNSPurchase[]);
       const enqueueRefund = sinon.stub().resolves("job");
-      const count = await reconcileStaleArNSPurchases(
+      const markArNSPurchaseBought = sinon.stub().resolves();
+      // Neither name is registered on-chain → both are genuine orphans.
+      const confirmOnChain = sinon.stub().resolves(undefined);
+
+      const result = await reconcileStaleArNSPurchases(
         {
-          paymentDatabase: dbWith({ getStalePendingArNSPurchases }),
+          paymentDatabase: dbWith({
+            getStalePendingArNSPurchases,
+            markArNSPurchaseBought,
+          }),
           logger: stubLogger(),
         },
         enqueueRefund,
         1000,
+        confirmOnChain,
       );
-      expect(count).to.equal(2);
+
+      expect(result).to.deep.equal({ refunded: 2, confirmedBought: 0 });
       expect(enqueueRefund.callCount).to.equal(2);
-      expect(enqueueRefund.firstCall.args[0]).to.deep.equal({
-        nonce: "a",
-        reason: "RECONCILE_ORPHANED",
-      });
+      expect(markArNSPurchaseBought.called).to.be.false;
+    });
+
+    it("promotes a name confirmed on-chain to bought instead of refunding it", async () => {
+      const getStalePendingArNSPurchases = sinon
+        .stub()
+        .resolves([
+          { nonce: "a", name: "landed", processId: "antA" },
+        ] as unknown as ArNSPurchase[]);
+      const enqueueRefund = sinon.stub().resolves("job");
+      const markArNSPurchaseBought = sinon.stub().resolves();
+      // The name landed on-chain and resolves to the antId we paid for.
+      const confirmOnChain = sinon.stub().resolves({ antId: "antA" });
+
+      const result = await reconcileStaleArNSPurchases(
+        {
+          paymentDatabase: dbWith({
+            getStalePendingArNSPurchases,
+            markArNSPurchaseBought,
+          }),
+          logger: stubLogger(),
+        },
+        enqueueRefund,
+        1000,
+        confirmOnChain,
+      );
+
+      expect(result).to.deep.equal({ refunded: 0, confirmedBought: 1 });
+      expect(markArNSPurchaseBought.calledOnceWith("a")).to.be.true;
+      expect(enqueueRefund.called).to.be.false; // NEVER refund a bought name
+    });
+
+    it("fails SAFE (no refund) when the on-chain confirm throws", async () => {
+      const getStalePendingArNSPurchases = sinon
+        .stub()
+        .resolves([
+          { nonce: "a", name: "foo", processId: "antA" },
+        ] as unknown as ArNSPurchase[]);
+      const enqueueRefund = sinon.stub().resolves("job");
+      const markArNSPurchaseBought = sinon.stub().resolves();
+      const confirmOnChain = sinon.stub().rejects(new Error("gateway down"));
+
+      const result = await reconcileStaleArNSPurchases(
+        {
+          paymentDatabase: dbWith({
+            getStalePendingArNSPurchases,
+            markArNSPurchaseBought,
+          }),
+          logger: stubLogger(),
+        },
+        enqueueRefund,
+        1000,
+        confirmOnChain,
+      );
+
+      expect(result).to.deep.equal({ refunded: 0, confirmedBought: 0 });
+      expect(enqueueRefund.called).to.be.false;
     });
 
     it("does nothing when there are no orphans", async () => {
       const getStalePendingArNSPurchases = sinon.stub().resolves([]);
       const enqueueRefund = sinon.stub().resolves("job");
-      const count = await reconcileStaleArNSPurchases(
+      const result = await reconcileStaleArNSPurchases(
         {
           paymentDatabase: dbWith({ getStalePendingArNSPurchases }),
           logger: stubLogger(),
         },
         enqueueRefund,
         1000,
+        sinon.stub().resolves(undefined),
       );
-      expect(count).to.equal(0);
+      expect(result).to.deep.equal({ refunded: 0, confirmedBought: 0 });
       expect(enqueueRefund.called).to.be.false;
     });
   });
