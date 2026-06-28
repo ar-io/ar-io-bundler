@@ -33,6 +33,9 @@ export interface ARIOInterface {
   // Live on-chain ArNS record for a name (undefined if unregistered). Lets the
   // reconciler confirm a buy landed before refunding.
   getArNSRecord(name: string): Promise<{ antId?: string } | undefined>;
+  // Self-custody exit: transfer a Turbo-owned ANT to a user-designated Solana
+  // pubkey. Returns the on-chain message id.
+  transferAnt(p: { antId: string; target: string }): Promise<string>;
 }
 
 export type ARIOConstructorParams = GatewayParams &

@@ -22,6 +22,7 @@ import {
   MAINNET_RPC_URL,
   MessageResult,
   NotFound,
+  SolanaANTWriteable,
   SolanaARIOReadable,
   SolanaARIOWriteable,
   mARIOToken,
@@ -340,6 +341,27 @@ export class SolanaARIOGateway extends Gateway {
       state: { name, ...(transactionId ? { transactionId } : {}) },
     });
     return result.processId;
+  }
+
+  // Self-custody exit (custodial Model A): transfer a Turbo-owned ANT to a
+  // Solana pubkey the user designates. The server signer is the ANT owner, so
+  // this owner-only op succeeds. Returns the on-chain message id.
+  public async transferAnt({
+    processId,
+    target,
+  }: {
+    processId: string;
+    target: string;
+  }): Promise<string> {
+    const signer = await this.getServerSigner();
+    const ant = new SolanaANTWriteable({
+      processId,
+      signer,
+      rpc: createSolanaRpc(this.rpcUrl),
+      rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
+    });
+    const result = await ant.transfer({ target });
+    return result.id;
   }
 
   async getTokenCost({

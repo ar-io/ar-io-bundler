@@ -226,6 +226,12 @@ export interface Database {
     name: string;
   }) => Promise<void>;
 
+  getUserAnt: (
+    processId: string,
+  ) => Promise<{ owner: string; name: string } | undefined>;
+
+  deleteUserAnt: (processId: string) => Promise<void>;
+
   updateFailedArNSPurchase: (
     nonce: string,
     failedReason: string,
