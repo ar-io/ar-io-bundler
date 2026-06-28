@@ -834,6 +834,13 @@ DB_POOL_MAX=50
 
 ### Health Checks
 
+**Quickest full sweep — the sitrep** (one read-only command, grades 9 dimensions to
+GREEN/YELLOW/RED with verification/false-green guards; see *Alerting → Sitrep* below):
+```bash
+node scripts/ops/sitrep.js            # full report; exit 0/1/2 = GREEN/YELLOW/RED
+node scripts/ops/sitrep.js --slack    # also post the summary to Slack
+```
+
 **Service health endpoints:**
 ```bash
 # Upload service
@@ -1131,6 +1138,41 @@ node scripts/ops/slack-post.js -m "hi" -c <channel-id> -u "Ops" -i ":satellite_a
 - **Output:** prints `OK delivered to <channel> (ts=…)` + a permalink, or the Slack
   error (`not_in_channel` → `/invite @YourBot` into that channel) and exits non-zero
   — safe to wrap in scripts.
+
+#### Sitrep — standardized situation report (`scripts/ops/sitrep.js`)
+
+A one-command, **read-only** health sweep that grades 9 dimensions and rolls them
+up to a single GREEN / YELLOW / RED. Each check follows *collect → **verify** →
+analyze → roll up*, where "verify" is a **false-green guard** — it confirms a green
+actually means healthy rather than just "no errors logged":
+
+| # Section | Verify (false-green guard) |
+|---|---|
+| 1 Processes | hit `/v1/info` for real (a hung worker still shows `online`) + watch restart-count deltas |
+| 2 Infra | live ping PG / Redis×2 / MinIO(×2), not `docker ps` |
+| 3 Pipeline | **Δ permanent since last run** + oldest-waiting-item age (catches a frozen pipeline with 0 errors) |
+| 4 Workers | completed `>0` in window + BullMQ **failed-set** (not retried log lines) |
+| 5 Optical/BDI | **live probe** each bridge + circuit-breaker state |
+| 6 Ingress | per-host 5xx rate (honest about the log window) |
+| 7 Latency | p50/p95/p99 from `upstream_response_time` |
+| 8 Resources | load, mem, swap, **disk + growth Δ** |
+| 9 Durability | backup exit-0 **and freshness** + wallet **runway** (balance ÷ measured burn) |
+
+```bash
+node scripts/ops/sitrep.js            # full report → stdout; exit 0/1/2 = GREEN/YELLOW/RED
+node scripts/ops/sitrep.js --slack    # also post the compact summary (via slack-post.js)
+node scripts/ops/sitrep.js --quiet    # summary lines only
+```
+
+- **State for deltas:** a tiny JSON state file is written each run so the next run
+  can assert *"+484 permanent in 7m"* (flowing) vs *"0 in 30m with N waiting"*
+  (stalled), and compute disk-growth + wallet-runway from real deltas. Rate-based
+  verdicts (stall, runway) are **interval-gated** — they don't grade a few-minute gap.
+- **Read-only:** never triggers/redrives/drains any queue.
+- **Endpoints are env-driven** (`S3_ENDPOINT`, `ARCHIVE_S3_ENDPOINT`,
+  `OPTICAL_BRIDGE_URL`, `OPTIONAL_OPTICAL_BRIDGE_URLS`) — no hardcoded addresses.
+- Thresholds (5xx %, p95/p99, disk %, backup age, runway days) are constants at the
+  top of the script.
 
 **What the alerter actually covers** (the live rollup signals — not a generic list):
 - **Services/infra down**: any expected PM2 process missing/unhealthy; Postgres
