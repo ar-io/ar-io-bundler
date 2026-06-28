@@ -18,6 +18,7 @@ import { Next } from "koa";
 
 import { BadRequest, Unauthorized } from "../database/errors";
 import { KoaContext } from "../server";
+import { verifyArNSCustodySignature } from "../utils/arnsCustodySignature";
 import { isValidArweaveBase64URL } from "../utils/base64";
 
 function singleQueryParam(
@@ -37,27 +38,22 @@ function isValidUndername(undername: string): boolean {
 }
 
 /**
- * Shared auth for ANT-management routes: require a signed request, then confirm
- * the caller owns this ANT in Turbo custody. "Not found" and "not yours" are
- * treated identically (404) so we never reveal an ANT owned by someone else.
- * Returns the authorized owner, or undefined after writing the 401/404 response.
+ * Confirm the (already signature-authenticated) caller owns this ANT in Turbo
+ * custody. "Not found" and "not yours" are treated identically (404) so we never
+ * reveal an ANT owned by someone else. Returns false after writing the 404.
  */
-async function authorizeAntManagement(
+async function authorizeAntOwnership(
   ctx: KoaContext,
   antId: string,
-): Promise<string | undefined> {
-  const owner = ctx.state.walletAddress;
-  if (!owner || typeof owner !== "string") {
-    throw new Unauthorized("Signed request is required for this route");
-  }
-
+  owner: string,
+): Promise<boolean> {
   const mapping = await ctx.state.paymentDatabase.getUserAnt(antId);
   if (!mapping || mapping.owner !== owner) {
     ctx.response.status = 404;
     ctx.body = "ANT not found in your Turbo custody";
-    return undefined;
+    return false;
   }
-  return owner;
+  return true;
 }
 
 function handleManageError(ctx: KoaContext, error: unknown): void {
@@ -123,8 +119,15 @@ export async function setArNSRecord(ctx: KoaContext, next: Next) {
       );
     }
 
-    const owner = await authorizeAntManagement(ctx, antId);
-    if (owner === undefined) {
+    // Verify the action-bound, single-use signature over the exact record op.
+    const owner = await verifyArNSCustodySignature(ctx, {
+      action: "set-record",
+      antId,
+      undername,
+      transactionId,
+      ttlSeconds,
+    });
+    if (!(await authorizeAntOwnership(ctx, antId, owner))) {
       return next();
     }
 
@@ -161,8 +164,12 @@ export async function removeArNSRecord(ctx: KoaContext, next: Next) {
       throw new BadRequest("Missing or invalid required parameter: undername");
     }
 
-    const owner = await authorizeAntManagement(ctx, antId);
-    if (owner === undefined) {
+    const owner = await verifyArNSCustodySignature(ctx, {
+      action: "remove-record",
+      antId,
+      undername,
+    });
+    if (!(await authorizeAntOwnership(ctx, antId, owner))) {
       return next();
     }
 

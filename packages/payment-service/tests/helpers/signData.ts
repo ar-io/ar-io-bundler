@@ -24,6 +24,10 @@ import { HDNodeWallet } from "ethers";
 import nacl from "tweetnacl";
 
 import { JWKInterface } from "../../src/types/jwkTypes";
+import {
+  ArNSCustodyAction,
+  buildArNSCustodyMessage,
+} from "../../src/utils/arnsCustodySignature";
 import { toB64Url } from "../../src/utils/base64";
 import {
   signEthereumData,
@@ -51,6 +55,21 @@ export async function signedRequestHeadersFromJwk(
     "x-nonce": nonce,
     "x-signature": toB64Url(Buffer.from(signature)),
   };
+}
+
+// Action-bound headers for a custody-mutating route: signs
+// buildArNSCustodyMessage(action) + nonce, exactly as the server reconstructs
+// and verifies it. Pass the same `nonce` twice to simulate a replay.
+export async function signedArNSCustodyHeaders(
+  jwk: JWKInterface,
+  action: ArNSCustodyAction,
+  nonce: string = randomUUID(),
+): Promise<RawAxiosRequestHeaders> {
+  return signedRequestHeadersFromJwk(
+    jwk,
+    nonce,
+    buildArNSCustodyMessage(action),
+  );
 }
 
 export async function signedRequestHeadersFromEthWallet(
