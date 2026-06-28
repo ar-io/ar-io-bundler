@@ -26,6 +26,16 @@ function singleQueryParam(
   return Array.isArray(value) ? value[0] : value;
 }
 
+// ArNS record bounds (validate at the edge so bad input is a 400, not a 503
+// echoing a raw SDK/chain error). Tunable via env if the contract changes.
+const MIN_TTL_SECONDS = Number(process.env.ARNS_MIN_TTL_SECONDS || "60");
+const MAX_TTL_SECONDS = Number(process.env.ARNS_MAX_TTL_SECONDS || "86400");
+const UNDERNAME_REGEX = /^(@|[a-zA-Z0-9_-]{1,61})$/;
+
+function isValidUndername(undername: string): boolean {
+  return UNDERNAME_REGEX.test(undername);
+}
+
 /**
  * Shared auth for ANT-management routes: require a signed request, then confirm
  * the caller owns this ANT in Turbo custody. "Not found" and "not yours" are
@@ -34,14 +44,14 @@ function singleQueryParam(
  */
 async function authorizeAntManagement(
   ctx: KoaContext,
-  processId: string,
+  antId: string,
 ): Promise<string | undefined> {
   const owner = ctx.state.walletAddress;
   if (!owner || typeof owner !== "string") {
     throw new Unauthorized("Signed request is required for this route");
   }
 
-  const mapping = await ctx.state.paymentDatabase.getUserAnt(processId);
+  const mapping = await ctx.state.paymentDatabase.getUserAnt(antId);
   if (!mapping || mapping.owner !== owner) {
     ctx.response.status = 404;
     ctx.body = "ANT not found in your Turbo custody";
@@ -82,30 +92,44 @@ export async function setArNSRecord(ctx: KoaContext, next: Next) {
   const { ario } = gatewayMap;
 
   try {
-    const processId = ctx.params.processId;
-    if (!processId) {
-      throw new BadRequest("Missing required parameter: processId");
+    const antId = ctx.params.antId;
+    if (!antId) {
+      throw new BadRequest("Missing required parameter: antId");
     }
 
     const undername = singleQueryParam(ctx.query.undername) ?? "@";
+    if (!isValidUndername(undername)) {
+      throw new BadRequest(
+        "Invalid undername: must be '@' or [a-zA-Z0-9_-] up to 61 chars",
+      );
+    }
     const transactionId = singleQueryParam(ctx.query.transactionId);
     if (!transactionId || !isValidArweaveBase64URL(transactionId)) {
       throw new BadRequest(
         "Invalid transactionId: must be an Arweave transaction id",
       );
     }
+    // Bound the TTL to the ANT contract's accepted range so an out-of-range
+    // value is rejected at the edge (a clean 400) instead of reaching the chain
+    // and surfacing as an opaque 503.
     const ttlSeconds = Number(singleQueryParam(ctx.query.ttlSeconds));
-    if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0) {
-      throw new BadRequest("Invalid ttlSeconds: must be a positive integer");
+    if (
+      !Number.isInteger(ttlSeconds) ||
+      ttlSeconds < MIN_TTL_SECONDS ||
+      ttlSeconds > MAX_TTL_SECONDS
+    ) {
+      throw new BadRequest(
+        `Invalid ttlSeconds: must be an integer between ${MIN_TTL_SECONDS} and ${MAX_TTL_SECONDS}`,
+      );
     }
 
-    const owner = await authorizeAntManagement(ctx, processId);
+    const owner = await authorizeAntManagement(ctx, antId);
     if (owner === undefined) {
       return next();
     }
 
     const messageId = await ario.setAntRecord({
-      processId,
+      antId,
       undername,
       transactionId,
       ttlSeconds,
@@ -113,7 +137,7 @@ export async function setArNSRecord(ctx: KoaContext, next: Next) {
 
     ctx.response.status = 200;
     ctx.response.message = "ArNS Record Set";
-    ctx.body = { processId, undername, transactionId, ttlSeconds, messageId };
+    ctx.body = { antId, undername, transactionId, ttlSeconds, messageId };
   } catch (error) {
     handleManageError(ctx, error);
   }
@@ -127,26 +151,26 @@ export async function removeArNSRecord(ctx: KoaContext, next: Next) {
   const { ario } = gatewayMap;
 
   try {
-    const processId = ctx.params.processId;
-    if (!processId) {
-      throw new BadRequest("Missing required parameter: processId");
+    const antId = ctx.params.antId;
+    if (!antId) {
+      throw new BadRequest("Missing required parameter: antId");
     }
 
     const undername = singleQueryParam(ctx.query.undername);
-    if (!undername) {
-      throw new BadRequest("Missing required parameter: undername");
+    if (!undername || !isValidUndername(undername)) {
+      throw new BadRequest("Missing or invalid required parameter: undername");
     }
 
-    const owner = await authorizeAntManagement(ctx, processId);
+    const owner = await authorizeAntManagement(ctx, antId);
     if (owner === undefined) {
       return next();
     }
 
-    const messageId = await ario.removeAntRecord({ processId, undername });
+    const messageId = await ario.removeAntRecord({ antId, undername });
 
     ctx.response.status = 200;
     ctx.response.message = "ArNS Record Removed";
-    ctx.body = { processId, undername, messageId };
+    ctx.body = { antId, undername, messageId };
   } catch (error) {
     handleManageError(ctx, error);
   }

@@ -3694,7 +3694,7 @@ describe("Router tests", () => {
       expect(data.undername).to.equal("@"); // defaults to base record
       expect(
         setAntRecord.calledOnceWithExactly({
-          processId,
+          antId: processId,
           undername: "@",
           transactionId: txId,
           ttlSeconds: 3600,
@@ -3735,6 +3735,24 @@ describe("Router tests", () => {
       );
       expect(badTtl.status).to.equal(400);
       expect(badTtl.data).to.contain("ttlSeconds");
+
+      // Out-of-range (too large) is rejected at the edge, not sent to the chain.
+      const hugeTtl = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=999999999`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(hugeTtl.status).to.equal(400);
+      expect(hugeTtl.data).to.contain("ttlSeconds");
+
+      // A bad undername charset is rejected too.
+      const badUndername = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?undername=bad!name&transactionId=${txId}&ttlSeconds=900`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badUndername.status).to.equal(400);
+      expect(badUndername.data).to.contain("undername");
     });
 
     it("set-record: 401 unsigned, 404 for an ANT not in the caller's custody", async () => {
@@ -3784,7 +3802,10 @@ describe("Router tests", () => {
       expect(status).to.equal(200);
       expect(data.messageId).to.equal("remove-msg-id");
       expect(
-        removeAntRecord.calledOnceWithExactly({ processId, undername: "docs" }),
+        removeAntRecord.calledOnceWithExactly({
+          antId: processId,
+          undername: "docs",
+        }),
       ).to.be.true;
     });
   });

@@ -80,12 +80,12 @@ router.get("/v1/arns/purchase/:nonce", getArNSPurchaseStatus);
 router.post("/v1/arns/transfer/:antId", verifySignature, transferArNSAnt);
 
 router.post(
-  "/v1/arns/manage/:processId/set-record",
+  "/v1/arns/manage/:antId/set-record",
   verifySignature,
   setArNSRecord,
 );
 router.post(
-  "/v1/arns/manage/:processId/remove-record",
+  "/v1/arns/manage/:antId/remove-record",
   verifySignature,
   removeArNSRecord,
 );

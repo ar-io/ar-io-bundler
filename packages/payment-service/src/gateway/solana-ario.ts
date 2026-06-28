@@ -346,12 +346,12 @@ export class SolanaARIOGateway extends Gateway {
   // Self-custody exit (custodial Model A): transfer a Turbo-owned ANT to a
   // Solana pubkey the user designates. The server signer is the ANT owner, so
   // this owner-only op succeeds. Returns the on-chain message id.
-  private async getAntWriteable(
-    processId: string,
-  ): Promise<SolanaANTWriteable> {
+  private async getAntWriteable(antId: string): Promise<SolanaANTWriteable> {
     const signer = await this.getServerSigner();
     return new SolanaANTWriteable({
-      processId,
+      // The SDK still names the ANT's address `processId` (legacy AO); it is the
+      // Solana asset address we call antId.
+      processId: antId,
       signer,
       rpc: createSolanaRpc(this.rpcUrl),
       rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
@@ -374,17 +374,17 @@ export class SolanaARIOGateway extends Gateway {
   // base-name record; any other value sets/creates that undername. The server
   // signer (the ANT owner) authorizes the write.
   public async setAntRecord({
-    processId,
+    antId,
     undername,
     transactionId,
     ttlSeconds,
   }: {
-    processId: string;
+    antId: string;
     undername: string;
     transactionId: string;
     ttlSeconds: number;
   }): Promise<string> {
-    const ant = await this.getAntWriteable(processId);
+    const ant = await this.getAntWriteable(antId);
     const result =
       undername === "@"
         ? await ant.setBaseNameRecord({ transactionId, ttlSeconds })
@@ -398,13 +398,13 @@ export class SolanaARIOGateway extends Gateway {
 
   // Remove a resolution record (an undername) from a custodied ANT.
   public async removeAntRecord({
-    processId,
+    antId,
     undername,
   }: {
-    processId: string;
+    antId: string;
     undername: string;
   }): Promise<string> {
-    const ant = await this.getAntWriteable(processId);
+    const ant = await this.getAntWriteable(antId);
     const result = await ant.removeRecord({ undername });
     return result.id;
   }
