@@ -1160,10 +1160,13 @@ actually means healthy rather than just "no errors logged":
 
 ```bash
 node scripts/ops/sitrep.js            # full report → stdout; exit 0/1/2 = GREEN/YELLOW/RED
-node scripts/ops/sitrep.js --slack    # also post the compact summary (via slack-post.js)
+node scripts/ops/sitrep.js --slack    # also post the summary + analysis (via slack-post.js)
 node scripts/ops/sitrep.js --quiet    # summary lines only
 ```
 
+- **Summary + analysis:** every run ends with an auto-derived `📊 Analysis` block
+  (verdict + pipeline flow rate + wallet/backup + any notable disk trend); `--slack`
+  posts the 9 section lines **and** that analysis in the standard format.
 - **State for deltas:** a tiny JSON state file is written each run so the next run
   can assert *"+484 permanent in 7m"* (flowing) vs *"0 in 30m with N waiting"*
   (stalled), and compute disk-growth + wallet-runway from real deltas. Rate-based

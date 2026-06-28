@@ -75,6 +75,7 @@ const prev = loadState();
 const nowMs = Date.now();
 const minsSincePrev = prev && prev.ts ? (nowMs - prev.ts) / 60000 : null;
 const nextState = { ts: nowMs };
+const metrics = {}; // structured signals sections expose for the analysis block
 
 // ---------------------------------------------------------------- 1. processes & APIs
 async function checkProcesses() {
@@ -163,10 +164,12 @@ async function checkPipeline() {
   // oldest-waiting-item age above (interval-independent). The Δperm=0 signal only
   // means "stalled" over a MEANINGFUL window — permanence lands in batches (~block
   // time + confirmation), so 0 over a few minutes is normal, not a stall.
+  metrics.permTotal = rows.perm; metrics.waiting = rows.new; metrics.oldestNewMin = oldestNewMin;
   let flowLine = "Δperm n/a (baseline set)";
   const STALL_MIN_INTERVAL = 20; // minutes
   if (prev && prev.perm != null && minsSincePrev != null) {
     const dPerm = rows.perm - prev.perm;
+    metrics.permDelta = dPerm; metrics.permMins = minsSincePrev;
     flowLine = `Δperm ${dPerm >= 0 ? "+" : ""}${dPerm} in ${minsSincePrev.toFixed(0)}m`;
     if (minsSincePrev >= STALL_MIN_INTERVAL && dPerm <= 0) {
       const backlogged = rows.new > 1000 || (prev.newdi != null && rows.new - prev.newdi > 2000);
@@ -252,6 +255,7 @@ async function checkIngress() {
     const [h, c, f] = line.split(" "); const reqs = num(c), fx = num(f);
     if (!/ardrive\.io|services\.ar\.io/.test(h)) continue;
     const rate = reqs ? fx / reqs : 0; worstRate = Math.max(worstRate, rate);
+    metrics.worstFivexxPct = worstRate * 100; metrics.totalReqs = (metrics.totalReqs || 0) + reqs;
     hostLines.push(`${h}: ${reqs} reqs, ${fx} 5xx (${(rate * 100).toFixed(2)}%)`);
     if (rate >= TH.fivexxRed) { status = R; flags.push(`${h} 5xx ${(rate * 100).toFixed(1)}%`); }
     else if (rate >= TH.fivexxWarn) { status = worse(status, Y); flags.push(`${h} 5xx ${(rate * 100).toFixed(1)}%`); }
@@ -266,6 +270,7 @@ async function checkLatency() {
   const out = sh(`awk '{for(i=1;i<=NF;i++){if($i ~ /^host=/)h=substr($i,6); if($i ~ /^urt=/)u=substr($i,5)} if((h=="upload.ardrive.io"||h=="turbo.ardrive.io")&&u!="-"&&u+0>0)print u}' ${LOG} | sort -n | awk '{a[NR]=$1} END{n=NR; if(n>0)printf "%d %.3f %.3f %.3f %.3f",n,a[int(n*.5)],a[int(n*.95)],a[int(n*.99)],a[n]}'`);
   const [n, p50, p95, p99, max] = out.split(" ").map(Number);
   if (!n) return res("lat", "Latency", U, "no samples", ["no upstream_response_time data in window"], []);
+  metrics.p99ms = Math.round(p99 * 1000); metrics.p95ms = Math.round(p95 * 1000);
   let status = G;
   if (p99 * 1000 > TH.p99WarnMs) { status = worse(status, Y); flags.push(`p99 ${(p99 * 1000).toFixed(0)}ms`); }
   if (p95 * 1000 > TH.p95WarnMs) { status = worse(status, Y); flags.push(`p95 ${(p95 * 1000).toFixed(0)}ms`); }
@@ -294,8 +299,12 @@ async function checkResources() {
     if (p >= TH.diskRedPct) { status = R; flags.push(`disk ${n} ${p}%`); }
     else if (p >= TH.diskWarnPct) { status = worse(status, Y); flags.push(`disk ${n} ${p}%`); }
   }
+  metrics.diskPct = rootPct;
   let diskDelta = "";
-  if (prev && prev.rootUsedG != null && minsSincePrev) diskDelta = ` (Δ${rootUsedG - prev.rootUsedG >= 0 ? "+" : ""}${rootUsedG - prev.rootUsedG}G/${minsSincePrev.toFixed(0)}m)`;
+  if (prev && prev.rootUsedG != null && minsSincePrev) {
+    metrics.diskDeltaG = rootUsedG - prev.rootUsedG; metrics.diskMins = minsSincePrev;
+    diskDelta = ` (Δ${metrics.diskDeltaG >= 0 ? "+" : ""}${metrics.diskDeltaG}G/${minsSincePrev.toFixed(0)}m)`;
+  }
   if (swapUsed > 1024) { status = worse(status, Y); flags.push(`swap ${swapUsed}MB`); }
   return res("res", "Resources", status,
     `load ${load1} · disk /${rootPct}%${diskDelta} minio ${minioPct}%`,
@@ -311,6 +320,7 @@ async function checkDurability() {
   const bWhen = sh("systemctl show bundler-backup.service -p ExecMainExitTimestamp --value");
   const bEpoch = bWhen ? num(sh(`date -d "${bWhen}" +%s 2>/dev/null`)) : null; // date -d parses the CEST string
   const bAge = bEpoch ? (Date.now() / 1000 - bEpoch) / 3600 : null;
+  metrics.backupAgeH = bAge; metrics.backupOk = bStatus === "0";
   let status = G;
   if (bStatus !== "0") { status = R; flags.push(`backup exit ${bStatus || "?"}`); }
   if (bAge == null) { status = worse(status, Y); flags.push("backup time unknown"); }
@@ -331,6 +341,7 @@ async function checkDurability() {
         if (spentPerMin > 0) { const days = (w / spentPerMin) / 1440; runway = ` · ~${days.toFixed(0)}d runway`; if (days < TH.walletRunwayWarnDays) { status = worse(status, Y); flags.push(`wallet runway ~${days.toFixed(0)}d`); } }
         else runway = " · burn≤0 (funded/idle)";
       } else runway = prev && prev.walletWinston != null ? " · runway n/a (interval <30m)" : " · runway n/a (baseline)";
+      metrics.walletAr = ar; metrics.walletTrend = runway.replace(/^ · /, "");
       walletStr = `${ar.toFixed(0)} AR${runway}`;
     } else { status = worse(status, Y); flags.push("wallet balance fetch failed"); }
   } catch (e) { status = worse(status, Y); flags.push("wallet derive failed"); }
@@ -342,6 +353,39 @@ async function checkDurability() {
 
 function worse(a, b) { return RANK[a] >= RANK[b] ? a : b; }
 
+// Auto-derived analysis: verdict + the signals that actually explain the status.
+function buildAnalysis(sections, overall) {
+  const m = metrics, out = [];
+  const bad = sections.filter((s) => s.status === R || s.status === Y || s.status === U);
+  if (overall === G) {
+    const bits = ["0 failures"];
+    if (m.oldestNewMin != null) bits.push(`backlog fresh (oldest ${m.oldestNewMin}m)`);
+    if (m.worstFivexxPct != null) bits.push(`${m.worstFivexxPct.toFixed(2)}% 5xx`);
+    if (m.p99ms != null) bits.push(`p99 ${m.p99ms}ms`);
+    out.push(`Healthy — ${bits.join(", ")}.`);
+  } else {
+    out.push(`${overall} — attention on: ${bad.map((s) => `${s.label}${s.flags.length ? ` (${s.flags[0]})` : ""}`).join("; ")}.`);
+  }
+  if (m.permDelta != null && m.permMins) {
+    if (m.permDelta > 0) {
+      const rate = (m.permDelta / m.permMins).toFixed(0);
+      out.push(`Pipeline flowing: +${m.permDelta.toLocaleString()} permanent in ${Math.round(m.permMins)}m (~${rate}/min); ${m.waiting} waiting, oldest ${m.oldestNewMin}m.`);
+    } else {
+      out.push(`Pipeline: no new permanence in ${Math.round(m.permMins)}m — normal batch cadence over a short window; ${m.waiting} waiting, oldest ${m.oldestNewMin}m.`);
+    }
+  } else if (m.permTotal != null) {
+    out.push(`Pipeline: ${m.permTotal.toLocaleString()} permanent; ${m.waiting} waiting, oldest ${m.oldestNewMin}m (baseline — Δ next run).`);
+  }
+  if (m.walletAr != null) {
+    const trend = String(m.walletTrend || "").replace("runway n/a (interval <30m)", "burn n/a, short interval").replace("runway n/a (baseline)", "baseline");
+    out.push(`Wallet ${Math.round(m.walletAr).toLocaleString()} AR (${trend}); backup ${m.backupAgeH != null ? m.backupAgeH.toFixed(0) + "h" : "?"} ${m.backupOk ? "✓" : "✗"}.`);
+  }
+  if (m.diskDeltaG != null && (Math.abs(m.diskDeltaG) >= 3 || m.diskPct >= 70)) {
+    out.push(`Disk ${m.diskPct}% (${m.diskDeltaG >= 0 ? "+" : ""}${m.diskDeltaG}G/${Math.round(m.diskMins)}m)${m.diskPct < 70 ? " — normal churn, ample headroom" : ""}.`);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- run
 (async () => {
   const args = process.argv.slice(2);
@@ -352,6 +396,7 @@ function worse(a, b) { return RANK[a] >= RANK[b] ? a : b; }
   ];
   const overall = sections.reduce((w, s) => worse(w, s.status), G);
   const pass = sections.filter((s) => s.status === G).length;
+  const analysis = buildAnalysis(sections, overall);
   saveState(nextState);
 
   const oEmoji = { GREEN: "🟢", YELLOW: "🟡", RED: "🔴", UNKNOWN: "🟡" }[overall];
@@ -365,14 +410,17 @@ function worse(a, b) { return RANK[a] >= RANK[b] ? a : b; }
     if (!quiet) for (const d of s.detail) console.log(`     ${d}`);
     if (!quiet) for (const f of s.flags) console.log(`     ⚑ ${f}`);
   }
+  console.log("\n📊 Analysis:");
+  for (const a of analysis) console.log(`   • ${a}`);
   console.log("");
 
   // ---- slack
   if (args.includes("--slack")) {
     const line = (s) => `${MARK[s.status]} *${s.label}* ${s.summary}`;
+    const analysisBlock = `\n\n📊 *Analysis:*\n` + analysis.map((a) => `• ${a}`).join("\n");
     const flagLine = allFlags.length ? `\n⚠ *FLAGS:* ${allFlags.join(" · ")}` : "";
     const msg = `${oEmoji} *SITREP — turbo-bundler-1* · ${etTime} · *${overall}* (${pass}/${sections.length})\n` +
-      sections.map(line).join("\n") + flagLine;
+      sections.map(line).join("\n") + analysisBlock + flagLine;
     const p = spawnSync("node", [path.join(__dirname, "slack-post.js")], { input: msg, encoding: "utf8" });
     console.log((p.stdout || "").trim() || (p.stderr || "").trim());
   }
