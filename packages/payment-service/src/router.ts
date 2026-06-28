@@ -76,7 +76,7 @@ router.post(
 
 router.get("/v1/arns/purchase/:nonce", getArNSPurchaseStatus);
 
-router.post("/v1/arns/transfer/:processId", verifySignature, transferArNSAnt);
+router.post("/v1/arns/transfer/:antId", verifySignature, transferArNSAnt);
 
 router.get(
   "/v1/top-up/:method/:address/:currency/:amount",

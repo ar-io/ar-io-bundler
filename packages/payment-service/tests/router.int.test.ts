@@ -3650,7 +3650,7 @@ describe("Router tests", () => {
       expect(status).to.equal(200);
       expect(data.messageId).to.equal(transferMsgId);
       expect(data.target).to.equal(validTarget);
-      expect(data.processId).to.equal(processId);
+      expect(data.antId).to.equal(processId);
 
       // The custody mapping was removed (the ANT left Turbo's control).
       const mapping = await dbTestHelper

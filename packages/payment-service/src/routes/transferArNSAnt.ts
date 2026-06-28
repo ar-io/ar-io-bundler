@@ -36,9 +36,9 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
       throw new Unauthorized("Signed request is required for this route");
     }
 
-    const processId = ctx.params.processId;
-    if (!processId) {
-      throw new BadRequest("Missing required parameter: processId");
+    const antId = ctx.params.antId;
+    if (!antId) {
+      throw new BadRequest("Missing required parameter: antId");
     }
 
     const rawTarget = ctx.query.target;
@@ -52,25 +52,25 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
     // Authorize: the caller must own this ANT in Turbo custody. "Not found" and
     // "not yours" are treated identically (404) so we never reveal that an ANT
     // exists under another owner.
-    const mapping = await paymentDatabase.getUserAnt(processId);
+    const mapping = await paymentDatabase.getUserAnt(antId);
     if (!mapping || mapping.owner !== owner) {
       ctx.response.status = 404;
       ctx.body = "ANT not found in your Turbo custody";
       return next();
     }
 
-    const messageId = await ario.transferAnt({ processId, target });
+    const messageId = await ario.transferAnt({ antId, target });
 
     // Transfer succeeded — the ANT left Turbo's control. Drop the custody
     // mapping (best-effort: a stale row only causes a later exit to fail on the
     // on-chain owner check, never a double-transfer).
     try {
-      await paymentDatabase.deleteUserAnt(processId);
+      await paymentDatabase.deleteUserAnt(antId);
     } catch (deleteError) {
       logger.error(
         "ANT transferred but failed to remove custody mapping — stale row, manual cleanup may be needed",
         {
-          processId,
+          antId,
           owner,
           error:
             deleteError instanceof Error ? deleteError.message : deleteError,
@@ -81,7 +81,7 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
     ctx.response.status = 200;
     ctx.response.message = "ArNS ANT Transferred";
     ctx.body = {
-      processId,
+      antId,
       target,
       owner,
       name: mapping.name,

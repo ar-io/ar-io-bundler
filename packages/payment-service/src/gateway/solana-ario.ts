@@ -347,15 +347,17 @@ export class SolanaARIOGateway extends Gateway {
   // Solana pubkey the user designates. The server signer is the ANT owner, so
   // this owner-only op succeeds. Returns the on-chain message id.
   public async transferAnt({
-    processId,
+    antId,
     target,
   }: {
-    processId: string;
+    antId: string;
     target: string;
   }): Promise<string> {
     const signer = await this.getServerSigner();
     const ant = new SolanaANTWriteable({
-      processId,
+      // The SDK still names the ANT's address `processId` (legacy AO); it is the
+      // Solana asset address we call antId.
+      processId: antId,
       signer,
       rpc: createSolanaRpc(this.rpcUrl),
       rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
