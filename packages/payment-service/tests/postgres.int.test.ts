@@ -2975,6 +2975,47 @@ describe("PostgresDatabase class", () => {
       });
     });
 
+    describe("persistSpawnedAntId method", () => {
+      it("persists the antId onto the receipt and advances reserved → spawned", async () => {
+        const nonce = "persist-ant -- persistSpawnedAntId";
+        const antId = "spawned-ant -- persistSpawnedAntId";
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(100),
+          name: "persist-name",
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "permabuy",
+          wincQty: W(100),
+          processId: undefined,
+          intent: "Buy-Name",
+          paidBy: [],
+        });
+
+        await db.persistSpawnedAntId(nonce, antId);
+
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        // The antId is now durable on the receipt BEFORE any buy — so a crash
+        // can't lose it (reclaimable orphan + rebuildable mapping).
+        expect(receipt?.process_id).to.equal(antId);
+        expect(receipt?.status).to.equal("spawned");
+
+        // Only advances from `reserved` — a no-op once bought (never demotes).
+        await db.markArNSPurchaseBought(nonce);
+        await db.persistSpawnedAntId(nonce, "should-be-ignored");
+        const afterBought = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        expect(afterBought?.status).to.equal("bought");
+        expect(afterBought?.process_id).to.equal(antId); // unchanged
+      });
+    });
+
     describe("recordSpawnedAnt method", () => {
       it("records the user↔ANT mapping, backfills the receipt process_id, and is idempotent", async () => {
         const nonce = "spawn-ant -- recordSpawnedAnt";

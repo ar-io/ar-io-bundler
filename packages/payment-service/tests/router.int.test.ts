@@ -3452,12 +3452,12 @@ describe("Router tests", () => {
 
     it("provisions + records a Turbo-owned ANT when Buy-Name has no processId", async () => {
       const name = "spawn-on-buy-no-processid";
-      const spawnedProcessId = "spawned-ant-process-id";
+      const spawnedAntId = "spawned-ant-process-id";
       stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
       // Simulate the gateway provisioning a fresh ANT (Model A custodial).
       stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
         id: "stubbedId",
-        spawnedProcessId,
+        spawnedAntId,
       });
       await dbTestHelper.knex(tableNames.userAnt).where({ name }).del();
       await dbTestHelper.insertStubUser({
@@ -3474,12 +3474,12 @@ describe("Router tests", () => {
 
       expect(status).to.equal(200);
       // The response surfaces the provisioned ANT's processId.
-      expect(data.purchaseReceipt.processId).to.equal(spawnedProcessId);
+      expect(data.purchaseReceipt.antId).to.equal(spawnedAntId);
 
       // The user↔ANT mapping was persisted.
       const mapping = await dbTestHelper
         .knex(tableNames.userAnt)
-        .where({ process_id: spawnedProcessId });
+        .where({ process_id: spawnedAntId });
       expect(mapping.length).to.equal(1);
       expect(mapping[0].name).to.equal(name);
 
@@ -3488,13 +3488,13 @@ describe("Router tests", () => {
         .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
         .where({ nonce: data.purchaseReceipt.nonce })
         .first();
-      expect(receipt?.process_id).to.equal(spawnedProcessId);
+      expect(receipt?.process_id).to.equal(spawnedAntId);
     });
 
     it("does not record a mapping when a processId is supplied (BYO-ANT)", async () => {
       const name = "byo-ant-no-spawn";
       stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
-      // No spawnedProcessId → no ANT was provisioned.
+      // No spawnedAntId → no ANT was provisioned.
       stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
         id: "stubbedId",
       });
@@ -3526,7 +3526,7 @@ describe("Router tests", () => {
       >);
       stub(gatewayMap.ario, "initiateArNSPurchase").resolves({
         id: "x",
-        spawnedProcessId: "ant-surcharge",
+        spawnedAntId: "ant-surcharge",
       });
       await dbTestHelper.insertStubUser({
         user_address: stubArweaveUserAddress,

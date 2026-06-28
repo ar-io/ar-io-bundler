@@ -403,36 +403,43 @@ export class SolanaARIOGateway extends Gateway {
     params: Omit<ArNSPurchase, "messageId" | "paidBy"> & {
       promoCodes?: string[];
       paidBy?: string[];
+      // Persist the freshly-spawned antId BEFORE the on-chain buy, so a crash or
+      // a buy failure leaves a durable trace (a reclaimable orphan ANT and a
+      // rebuildable user↔ANT mapping) instead of losing the antId entirely.
+      onAntSpawned?: (antId: string) => Promise<void>;
     },
-  ): Promise<MessageResult & { spawnedProcessId?: string }> {
+  ): Promise<MessageResult & { spawnedAntId?: string }> {
     const arioWriteable = await this.getArioWriteable();
     const { name, type, processId, years, intent, increaseQty } = params;
 
     try {
       let messageResult: MessageResult;
       // Set only when this purchase provisions a fresh, Turbo-owned ANT
-      // (custodial Model A) because the buyer supplied no processId.
-      let spawnedProcessId: string | undefined;
+      // (custodial Model A) because the buyer supplied no antId.
+      let spawnedAntId: string | undefined;
       switch (intent) {
         case "Buy-Name":
         case "Buy-Record": {
           // Custodial Model A: a buyer without their own ANT gets a fresh one
-          // owned by the Turbo signer; a supplied processId (BYO-ANT / a
-          // self-custody Solana user) is used as-is.
-          let antProcessId = processId;
-          if (antProcessId === undefined) {
-            antProcessId = await this.spawnAnt({ name });
-            spawnedProcessId = antProcessId;
+          // owned by the Turbo signer; a supplied antId (BYO-ANT / a self-custody
+          // Solana user) is used as-is.
+          let antId = processId;
+          if (antId === undefined) {
+            antId = await this.spawnAnt({ name });
+            spawnedAntId = antId;
+            // Durably record the spawned antId BEFORE the buy — this is the
+            // anti-orphan / anti-lost-mapping invariant.
+            await params.onAntSpawned?.(antId);
           }
           messageResult = await arioWriteable.buyRecord({
             name,
             type: type as ArNSNameType,
-            processId: antProcessId,
+            processId: antId,
             years,
           });
           void sendArNSBuySlackMessage({
             ...params,
-            processId: antProcessId,
+            processId: antId,
             messageId: messageResult.id,
             promoCodes: params.promoCodes ?? [],
             paidBy: params.paidBy ?? [],
@@ -468,7 +475,7 @@ export class SolanaARIOGateway extends Gateway {
 
       this.mARIOBalancePromiseCache.clear();
       this.arnsRecordPromiseCache.remove(name);
-      return { ...messageResult, spawnedProcessId };
+      return { ...messageResult, spawnedAntId };
     } catch (error) {
       this.logger.error("Error during ArNS Purchase", error, {
         name,

@@ -43,7 +43,7 @@ describe("SolanaARIOGateway.initiateArNSPurchase — ANT provisioning", () => {
       processId,
     }) as unknown as ArNSPurchase;
 
-  it("spawns a Turbo-owned ANT when Buy-Name has no processId", async () => {
+  it("spawns a Turbo-owned ANT and persists it BEFORE the buy when Buy-Name has no antId", async () => {
     const buyRecord = sinon.stub().resolves({ id: "msg-1" });
     sinon
       .stub(
@@ -52,12 +52,20 @@ describe("SolanaARIOGateway.initiateArNSPurchase — ANT provisioning", () => {
       )
       .resolves({ buyRecord });
     const spawnAnt = sinon.stub(gateway, "spawnAnt").resolves("spawned-ant");
+    // The anti-orphan invariant: onAntSpawned must run AFTER spawn, BEFORE buy.
+    const onAntSpawned = sinon.stub().resolves();
 
-    const result = await gateway.initiateArNSPurchase(buyParams(undefined));
+    const result = await gateway.initiateArNSPurchase({
+      ...buyParams(undefined),
+      onAntSpawned,
+    });
 
     expect(spawnAnt.calledOnceWithExactly({ name: "unit-name" })).to.be.true;
+    expect(onAntSpawned.calledOnceWithExactly("spawned-ant")).to.be.true;
+    // Ordering: the antId was persisted before buyRecord was called.
+    expect(onAntSpawned.calledBefore(buyRecord)).to.be.true;
     expect(buyRecord.firstCall.args[0].processId).to.equal("spawned-ant");
-    expect(result.spawnedProcessId).to.equal("spawned-ant");
+    expect(result.spawnedAntId).to.equal("spawned-ant");
   });
 
   it("uses a supplied processId without spawning", async () => {
@@ -74,6 +82,6 @@ describe("SolanaARIOGateway.initiateArNSPurchase — ANT provisioning", () => {
 
     expect(spawnAnt.called).to.be.false;
     expect(buyRecord.firstCall.args[0].processId).to.equal("byo-ant");
-    expect(result.spawnedProcessId).to.be.undefined;
+    expect(result.spawnedAntId).to.be.undefined;
   });
 });

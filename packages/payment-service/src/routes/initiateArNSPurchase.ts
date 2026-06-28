@@ -106,7 +106,14 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     // later step (recording the message_id) fails.
     let arioWriteResult: Awaited<ReturnType<typeof ario.initiateArNSPurchase>>;
     try {
-      arioWriteResult = await ario.initiateArNSPurchase(purchaseReceipt);
+      arioWriteResult = await ario.initiateArNSPurchase({
+        ...purchaseReceipt,
+        // Durably record the spawned antId on the receipt BEFORE the on-chain
+        // buy, so a crash/failed buy can never lose it (reclaimable orphan +
+        // rebuildable mapping). status: reserved → spawned.
+        onAntSpawned: (antId) =>
+          paymentDatabase.persistSpawnedAntId(nonce, antId),
+      });
     } catch (writeError) {
       await durableRefundArNSPurchase(
         { paymentDatabase, logger },
@@ -133,26 +140,26 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       );
     }
 
-    // Custodial Model A: if a fresh Turbo-owned ANT was provisioned for this
-    // buy, record the user↔ANT mapping + backfill the receipt's process_id.
-    // Best-effort: the name is already bought and the receipt (owner + name) is
-    // returned with the processId, so a failure here is loud but non-fatal — the
-    // mapping is an index that can be rebuilt from the receipt.
-    if (arioWriteResult.spawnedProcessId !== undefined) {
+    // Custodial Model A: if a fresh Turbo-owned ANT was provisioned, record the
+    // user↔ANT mapping. Best-effort and genuinely safe to be so now: the antId
+    // was already persisted on the receipt before the buy (onAntSpawned), so a
+    // failure here only misses the convenience index — it can be rebuilt from
+    // the receipt (owner + name + antId), never permanently lost.
+    if (arioWriteResult.spawnedAntId !== undefined) {
       try {
         await paymentDatabase.recordSpawnedAnt({
           nonce: purchaseReceipt.nonce,
           owner: purchaseReceipt.owner,
-          processId: arioWriteResult.spawnedProcessId,
+          processId: arioWriteResult.spawnedAntId,
           name: purchaseReceipt.name,
         });
       } catch (mappingError) {
         logger.error(
-          "CRITICAL: ArNS name bought + ANT spawned but failed to record user↔ANT mapping — manual reconciliation may be needed",
+          "ArNS name bought + ANT spawned but failed to record user↔ANT mapping index — rebuildable from the receipt's antId",
           {
             nonce: purchaseReceipt.nonce,
             owner: purchaseReceipt.owner,
-            processId: arioWriteResult.spawnedProcessId,
+            antId: arioWriteResult.spawnedAntId,
             name: purchaseReceipt.name,
             error:
               mappingError instanceof Error
@@ -205,10 +212,9 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       purchaseReceipt: {
         ...purchaseReceipt,
         messageId: arioWriteResult.id,
-        // Reflect the provisioned ANT (if one was spawned) so the client learns
-        // the processId its name resolves to.
-        processId:
-          arioWriteResult.spawnedProcessId ?? purchaseReceipt.processId,
+        // The antId this name resolves to — the provisioned one (if spawned) or
+        // the buyer-supplied (BYO) one.
+        antId: arioWriteResult.spawnedAntId ?? purchaseReceipt.processId,
       },
       arioWriteResult,
     };
