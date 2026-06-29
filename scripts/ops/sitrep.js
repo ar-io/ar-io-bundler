@@ -242,6 +242,44 @@ async function checkOptical() {
      `breakers open=${openBreakers} · optical_fail=${opticalFail} bdi_fail=${bdiFail}`], flags);
 }
 
+// ---------------------------------------------------------------- 5b. index durability (END-TO-END)
+// The optical check above proves we're PUSHING to the index. This proves items actually STAY
+// indexed: it samples our own AGED permanent items (1-6h — old enough that an optical-only entry
+// would already have aged out) and asks the gateway if they're still there. Fresh items would
+// false-pass, which is exactly the blind spot that hid the broken unbundle filter for 5 days.
+async function checkIndexDurability() {
+  const flags = [];
+  // indexer GraphQL endpoints derived from the optical bridge URLs (env-driven, no hardcoded hosts);
+  // override/point at the public gateway via INDEX_VERIFY_GRAPHQL_URLS.
+  let eps = [process.env.OPTICAL_BRIDGE_URL, ...(process.env.OPTIONAL_OPTICAL_BRIDGE_URLS || "").split(",")]
+    .map((s) => s && s.trim()).filter(Boolean)
+    .map((u) => { try { const x = new URL(u); return `${x.protocol}//${x.host}/graphql`; } catch { return null; } })
+    .filter(Boolean);
+  if (process.env.INDEX_VERIFY_GRAPHQL_URLS) eps = process.env.INDEX_VERIFY_GRAPHQL_URLS.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!eps.length) return res("idx", "Index durability", U, "no GraphQL endpoint (set OPTICAL_BRIDGE_URL or INDEX_VERIFY_GRAPHQL_URLS)", [], []);
+  const ep = eps[0];
+
+  const ids = dpsql(`SELECT data_item_id FROM permanent_data_items WHERE permanent_date BETWEEN now() - interval '6 hours' AND now() - interval '1 hour' ORDER BY random() LIMIT 12`).split("\n").filter(Boolean);
+  if (ids.length < 3) return res("idx", "Index durability", U, "no aged sample yet", ["need >=3 permanent items aged 1-6h"], []);
+
+  const results = await Promise.all(ids.map((id) =>
+    fetch(ep, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: `{transaction(id:"${id}"){id bundledIn{id}}}` }), signal: AbortSignal.timeout(7000) })
+      .then((r) => r.json()).then((j) => (j && j.data && j.data.transaction) ? (j.data.transaction.bundledIn ? "durable" : "optical") : "missing").catch(() => "err")));
+  const checked = results.length;
+  const indexed = results.filter((r) => r === "durable" || r === "optical").length;
+  const durable = results.filter((r) => r === "durable").length;
+  const errs = results.filter((r) => r === "err").length;
+  metrics.idxChecked = checked; metrics.idxIndexed = indexed; metrics.idxDurable = durable;
+
+  let status = G;
+  if (errs > checked / 2) { status = U; flags.push(`${errs}/${checked} query errors (indexer reachable?)`); }
+  else if (indexed < checked * 0.5) { status = R; flags.push(`only ${indexed}/${checked} aged items indexed — durability BROKEN`); }
+  else if (durable < checked * 0.8) { status = worse(status, Y); flags.push(`durable ${durable}/${checked} — optical-only entries will age out`); }
+  return res("idx", "Index durability", status,
+    `${indexed}/${checked} indexed · ${durable} durable (aged 1-6h)`,
+    [`endpoint ${ep}`, `aged n=${checked}: durable=${durable} optical-only=${indexed - durable} missing=${checked - indexed} err=${errs}`], flags);
+}
+
 // ---------------------------------------------------------------- 6+7 ingress + latency
 async function checkIngress() {
   const flags = [];
@@ -383,6 +421,10 @@ function buildAnalysis(sections, overall) {
   if (m.diskDeltaG != null && (Math.abs(m.diskDeltaG) >= 3 || m.diskPct >= 70)) {
     out.push(`Disk ${m.diskPct}% (${m.diskDeltaG >= 0 ? "+" : ""}${m.diskDeltaG}G/${Math.round(m.diskMins)}m)${m.diskPct < 70 ? " — normal churn, ample headroom" : ""}.`);
   }
+  if (m.idxChecked != null && m.idxDurable < m.idxChecked) {
+    const durPct = ((m.idxDurable / m.idxChecked) * 100).toFixed(0);
+    out.push(`Index durability: ${m.idxDurable}/${m.idxChecked} aged items durable (${durPct}%) — ${m.idxIndexed < m.idxChecked ? "items aging out of GraphQL; backfill in progress" : "optical-only, awaiting on-chain unbundle"}.`);
+  }
   return out;
 }
 
@@ -392,7 +434,7 @@ function buildAnalysis(sections, overall) {
   const quiet = args.includes("--quiet");
   const sections = [
     await checkProcesses(), await checkInfra(), await checkPipeline(), await checkWorkers(),
-    await checkOptical(), await checkIngress(), await checkLatency(), await checkResources(), await checkDurability(),
+    await checkOptical(), await checkIndexDurability(), await checkIngress(), await checkLatency(), await checkResources(), await checkDurability(),
   ];
   const overall = sections.reduce((w, s) => worse(w, s.status), G);
   const pass = sections.filter((s) => s.status === G).length;

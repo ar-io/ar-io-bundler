@@ -1153,6 +1153,7 @@ actually means healthy rather than just "no errors logged":
 | 3 Pipeline | **Δ permanent since last run** + oldest-waiting-item age (catches a frozen pipeline with 0 errors) |
 | 4 Workers | completed `>0` in window + BullMQ **failed-set** (not retried log lines) |
 | 5 Optical/BDI | **live probe** each bridge + circuit-breaker state |
+| 5b Index durability | query the gateway GraphQL for our own **aged (1-6h)** permanent items — proves items STAY indexed (`bundledIn` durable), not just that we pushed. Aged on purpose: fresh items are always optical-indexed and would false-pass (the blind spot that hid a broken unbundle filter for 5 days) |
 | 6 Ingress | per-host 5xx rate (honest about the log window) |
 | 7 Latency | p50/p95/p99 from `upstream_response_time` |
 | 8 Resources | load, mem, swap, **disk + growth Δ** |
