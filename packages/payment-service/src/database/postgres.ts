@@ -2119,6 +2119,53 @@ export class PostgresDatabase implements Database {
       .update({ status: "bought" });
   }
 
+  // Persist a freshly-spawned antId onto the receipt and advance reserved →
+  // spawned, BEFORE the on-chain buy. This is the anti-orphan / anti-lost-mapping
+  // invariant: after this, the antId is durable (the receipt carries it), so a
+  // crash or failed buy leaves a reclaimable orphan ANT and a rebuildable
+  // user↔ANT mapping instead of an antId that existed only in memory.
+  public async persistSpawnedAntId(
+    nonce: string,
+    antId: string,
+  ): Promise<void> {
+    await this.writer<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+      .where({ nonce })
+      .whereIn(columnNames.status, ["reserved"])
+      .update({ process_id: antId, status: "spawned" });
+  }
+
+  // Persist a Turbo-provisioned (custodial Model A) ANT for a buyer and backfill
+  // the purchase receipt's process_id, atomically. Idempotent on process_id so a
+  // retried request can't create a duplicate mapping row.
+  public async recordSpawnedAnt({
+    nonce,
+    owner,
+    processId,
+    name,
+  }: {
+    nonce: string;
+    owner: string;
+    processId: string;
+    name: string;
+  }): Promise<void> {
+    await this.writer.transaction(async (knexTransaction) => {
+      await knexTransaction(tableNames.userAnt)
+        .insert({
+          [columnNames.owner]: owner,
+          [columnNames.processId]: processId,
+          [columnNames.name]: name,
+        })
+        .onConflict(columnNames.processId)
+        .ignore();
+
+      await knexTransaction<ArNSPurchaseDBResult>(
+        tableNames.arNSPurchaseReceipt,
+      )
+        .where({ nonce })
+        .update({ process_id: processId });
+    });
+  }
+
   public async getArNSPurchaseQuote(
     nonce: string,
   ): Promise<{ quote: ArNSPurchaseQuote }> {

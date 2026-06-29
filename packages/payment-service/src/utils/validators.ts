@@ -67,7 +67,7 @@ function normalizeEthOrBadRequest(address: string, label: string): string {
 /** Returns true if these given query parameters are strings */
 export function validateQueryParameters(
   ctx: KoaContext,
-  queryParameters: (string | string[] | undefined)[]
+  queryParameters: (string | string[] | undefined)[],
 ): queryParameters is string[] {
   if (
     queryParameters.some((parameter) => !parameter) ||
@@ -93,7 +93,7 @@ export function validateAuthorizedRoute(ctx: KoaContext): boolean {
       {
         user: ctx.state.user,
         headers: ctx.request.headers,
-      }
+      },
     );
     MetricRegistry.unauthorizedProtectedRouteActivity.inc();
     return false;
@@ -108,7 +108,7 @@ export function assertAuthorizedRoute(ctx: KoaContext): void {
       {
         user: ctx.state.user,
         headers: ctx.request.headers,
-      }
+      },
     );
     MetricRegistry.unauthorizedProtectedRouteActivity.inc();
     throw new Unauthorized();
@@ -117,7 +117,7 @@ export function assertAuthorizedRoute(ctx: KoaContext): void {
 
 export function validateByteCount(
   ctx: KoaContext,
-  stringByteCount: string
+  stringByteCount: string,
 ): ByteCount | false {
   try {
     return ByteCount(+stringByteCount);
@@ -135,7 +135,7 @@ export function validateByteCount(
 
 export function validateWinstonCreditAmount(
   ctx: KoaContext,
-  stringWinstonCreditAmount: string
+  stringWinstonCreditAmount: string,
 ): Winston | false {
   try {
     return new Winston(+stringWinstonCreditAmount);
@@ -153,7 +153,7 @@ export function validateWinstonCreditAmount(
 
 export function validateSingularQueryParameter(
   ctx: KoaContext,
-  queryParameter: string | string[] | undefined
+  queryParameter: string | string[] | undefined,
 ): string | false {
   if (
     !queryParameter ||
@@ -172,16 +172,16 @@ export function validateSingularQueryParameter(
 }
 
 function isDestinationAddressType(
-  destinationAddressType: string
+  destinationAddressType: string,
 ): destinationAddressType is DestinationAddressType {
   return destinationAddressTypes.includes(
-    destinationAddressType as DestinationAddressType
+    destinationAddressType as DestinationAddressType,
   );
 }
 
 export function validateDestinationAddressType(
   ctx: KoaContext,
-  destinationAddressType: string | string[] | undefined
+  destinationAddressType: string | string[] | undefined,
 ): DestinationAddressType | false {
   if (destinationAddressType === undefined) {
     return "arweave";
@@ -203,14 +203,14 @@ export function validateDestinationAddressType(
 }
 
 function isValidUserAddressType(
-  userAddressType: string
+  userAddressType: string,
 ): userAddressType is UserAddressType {
   return userAddressTypes.includes(userAddressType as UserAddressType);
 }
 
 export function validateUserAddressType(
   ctx: KoaContext,
-  userAddressType: string | string[]
+  userAddressType: string | string[],
 ): UserAddressType | false {
   const addressType = validateSingularQueryParameter(ctx, userAddressType);
 
@@ -229,7 +229,7 @@ export function validateUserAddressType(
 
 export function validateGiftMessage(
   ctx: KoaContext,
-  giftMessage: string | string[]
+  giftMessage: string | string[],
 ): string | false {
   const message = validateSingularQueryParameter(ctx, giftMessage);
 
@@ -256,7 +256,7 @@ function assertSingleParam(queryParam: QueryParam): string | undefined {
   if (Array.isArray(queryParam)) {
     if (queryParam.length > 1) {
       throw new BadQueryParam(
-        `Expected a singular query parameter but got an array ${queryParam}`
+        `Expected a singular query parameter but got an array ${queryParam}`,
       );
     }
     return queryParam[0];
@@ -270,7 +270,7 @@ function assertUiMode(uiMode: QueryParam): UiMode {
   if (mode) {
     if (!isUiMode(mode)) {
       throw new BadQueryParam(
-        `Invalid ui mode! Allowed modes: "${uiModes.toString()}"`
+        `Invalid ui mode! Allowed modes: "${uiModes.toString()}"`,
       );
     }
     return mode;
@@ -332,7 +332,7 @@ export function getValidatedCreateApprovalParams(ctx: KoaContext): {
 
   if (!rawWincAmount || Array.isArray(rawWincAmount)) {
     throw new BadRequest(
-      "Missing or malformed required query parameters:  wincAmount"
+      "Missing or malformed required query parameters:  wincAmount",
     );
   }
 
@@ -343,7 +343,7 @@ export function getValidatedCreateApprovalParams(ctx: KoaContext): {
     throw new BadRequest(
       `Invalid value provided for wincAmount: ${rawWincAmount}\n${
         error instanceof Error ? error.message : error
-      }`
+      }`,
     );
   }
 
@@ -364,7 +364,7 @@ export function getValidatedCreateApprovalParams(ctx: KoaContext): {
       throw new BadRequest(
         `Invalid value provided for expiresInSeconds: ${rawExpirationSeconds}\n${
           error instanceof Error ? error.message : error
-        }`
+        }`,
       );
     }
   }
@@ -394,13 +394,13 @@ export function getValidatedApprovalParams(ctx: KoaContext): {
     Array.isArray(rawApprovedAddress)
   ) {
     throw new BadRequest(
-      "Malformed or missing required query parameters: payingAddress, approvedAddress"
+      "Malformed or missing required query parameters: payingAddress, approvedAddress",
     );
   }
 
   const approvedAddress = normalizeEthOrBadRequest(
     rawApprovedAddress,
-    "approved address"
+    "approved address",
   );
 
   if (!isAnyValidUserAddress(rawPayingAddress)) {
@@ -420,7 +420,7 @@ function validatedDataItemId(ctx: KoaContext): DataItemId {
 
   if (!rawDataItemId || Array.isArray(rawDataItemId)) {
     throw new BadRequest(
-      "Malformed or missing required query parameter: dataItemId"
+      "Malformed or missing required query parameter: dataItemId",
     );
   }
 
@@ -456,7 +456,7 @@ export function getValidatedGetAllApprovalParams(ctx: KoaContext): {
 
   if (!rawUserAddress || Array.isArray(rawUserAddress)) {
     throw new BadRequest(
-      "Malformed or missing required query parameter: userAddress"
+      "Malformed or missing required query parameter: userAddress",
     );
   }
 
@@ -481,13 +481,13 @@ function validatedSignerAddressAndToken(ctx: KoaContext): {
 
   if (!isValidUserAddressType(signerAddressType)) {
     throw new BadRequest(
-      "Invalid token type. Try one of these: " + userAddressTypes
+      "Invalid token type. Try one of these: " + userAddressTypes,
     );
   }
 
   if (!isValidUserAddress(signerAddress, signerAddressType)) {
     throw new BadRequest(
-      "Invalid wallet address for token type " + signerAddressType
+      "Invalid wallet address for token type " + signerAddressType,
     );
   }
 
@@ -513,7 +513,7 @@ function validatedPaidBy(ctx: KoaContext): UserAddress[] {
     }
   }
   return paidBy.map((address) =>
-    normalizeEthOrBadRequest(address, "paid by address")
+    normalizeEthOrBadRequest(address, "paid by address"),
   );
 }
 
@@ -530,7 +530,7 @@ function validatedByteCount(ctx: KoaContext): ByteCount {
     throw new BadRequest(
       `Invalid parameter for byteCount: ${rawByteCount}\n${
         error instanceof Error ? error.message : error
-      }`
+      }`,
     );
   }
 
@@ -555,7 +555,7 @@ export function getValidatedReserveBalanceParams(ctx: KoaContext): {
     !isPaymentDirective(rawPaymentDirective)
   ) {
     throw new BadRequest(
-      "Invalid payment directive. Try one of these: " + paymentDirectives
+      "Invalid payment directive. Try one of these: " + paymentDirectives,
     );
   }
 
@@ -583,7 +583,7 @@ export function getValidatedCheckBalanceParams(ctx: KoaContext): {
 }
 
 export function getValidatedArNSPriceParams(
-  ctx: KoaContext
+  ctx: KoaContext,
 ): ArNSTokenCostParams & {
   currency?: SupportedFiatPaymentCurrencyType;
   userAddress?: UserAddress;
@@ -638,7 +638,7 @@ export function getValidatedArNSPriceParams(
     const c = Array.isArray(rawCurrency) ? rawCurrency[0] : rawCurrency;
     if (
       !supportedFiatPaymentCurrencyTypes.includes(
-        c as SupportedFiatPaymentCurrencyType
+        c as SupportedFiatPaymentCurrencyType,
       )
     ) {
       throw new BadRequest("Invalid currency type");
@@ -650,7 +650,7 @@ export function getValidatedArNSPriceParams(
   if (rawUserAddress !== undefined) {
     userAddress = normalizeEthOrBadRequest(
       Array.isArray(rawUserAddress) ? rawUserAddress[0] : rawUserAddress,
-      "user address"
+      "user address",
     );
 
     if (!isAnyValidUserAddress(userAddress)) {
@@ -664,12 +664,12 @@ export function getValidatedArNSPriceParams(
   if (intent === "Buy-Name" || intent === "Buy-Record") {
     if (type === undefined) {
       throw new BadRequest(
-        "Missing required parameter: type. Must be either 'permabuy' or 'lease'"
+        "Missing required parameter: type. Must be either 'permabuy' or 'lease'",
       );
     }
     if (type === "lease" && years === undefined) {
       throw new BadRequest(
-        "Missing required parameter: years (required when type is 'lease')"
+        "Missing required parameter: years (required when type is 'lease')",
       );
     }
   }
@@ -687,7 +687,7 @@ export function getValidatedArNSPriceParams(
 
 export function getValidatedArNSPurchaseParams(
   ctx: KoaContext,
-  assertIsSignedRequest = true
+  assertIsSignedRequest = true,
 ): Omit<
   ArNSPurchaseParams,
   "wincQty" | "mARIOQty" | "usdArRate" | "usdArioRate" | "messageId"
@@ -712,7 +712,7 @@ export function getValidatedArNSPurchaseParams(
 
     if (!validator.isUUID(nonce) || nonce.length > 64) {
       throw new BadRequest(
-        "Invalid nonce parameter. Nonce must be a UUID for signed write actions"
+        "Invalid nonce parameter. Nonce must be a UUID for signed write actions",
       );
     }
   }
@@ -723,13 +723,29 @@ export function getValidatedArNSPurchaseParams(
   }
 
   const { intent, type, years, increaseQty } = priceParams;
+
+  // ArNS provisioning gate (OFF by default). A Buy without a processId
+  // provisions a fresh, Turbo-owned ANT — an on-chain spawn that spends SOL.
+  // That path is inert unless ARNS_PROVISIONING_ENABLED=true; until then a
+  // Buy-Name/Buy-Record MUST supply a processId (the pre-provisioning behavior),
+  // so deploying this code changes nothing for existing BYO-ANT clients.
+  if (
+    (intent === "Buy-Name" || intent === "Buy-Record") &&
+    processId === undefined &&
+    process.env.ARNS_PROVISIONING_ENABLED !== "true"
+  ) {
+    throw new BadRequest(
+      "Missing required parameter: processId (ArNS provisioning is disabled)",
+    );
+  }
+
   if (intent === "Buy-Name") {
-    if (processId === undefined) {
-      throw new BadRequest("Missing required parameter: processId");
-    }
+    // processId is OPTIONAL when provisioning is enabled: omitted ⇒ the bundler
+    // provisions a fresh, Turbo-owned ANT (custodial Model A). A supplied
+    // processId (BYO-ANT / self-custody Solana user) is used as-is.
     if (type === undefined || (type !== "permabuy" && type !== "lease")) {
       throw new BadRequest(
-        "Missing required parameter: type. Must be either 'permabuy' or 'lease'"
+        "Missing required parameter: type. Must be either 'permabuy' or 'lease'",
       );
     }
   } else if (intent === "Extend-Lease") {
@@ -778,7 +794,7 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
 
   if (!stripePaymentMethods.includes(method)) {
     throw new BadRequest(
-      `Invalid payment method. Allowed methods: ${stripePaymentMethods}`
+      `Invalid payment method. Allowed methods: ${stripePaymentMethods}`,
     );
   }
 
@@ -789,7 +805,7 @@ export function getValidatedArNSPurchaseQuoteParams(ctx: KoaContext): Omit<
 
   if (!supportedFiatPaymentCurrencyTypes.includes(currency)) {
     throw new BadRequest(
-      `Invalid currency type. Allowed types: ${supportedFiatPaymentCurrencyTypes}`
+      `Invalid currency type. Allowed types: ${supportedFiatPaymentCurrencyTypes}`,
     );
   }
 

@@ -217,6 +217,15 @@ export interface Database {
 
   markArNSPurchaseBought: (nonce: string) => Promise<void>;
 
+  persistSpawnedAntId: (nonce: string, antId: string) => Promise<void>;
+
+  recordSpawnedAnt: (p: {
+    nonce: string;
+    owner: string;
+    processId: string;
+    name: string;
+  }) => Promise<void>;
+
   updateFailedArNSPurchase: (
     nonce: string,
     failedReason: string,

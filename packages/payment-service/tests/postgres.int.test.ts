@@ -2975,6 +2975,92 @@ describe("PostgresDatabase class", () => {
       });
     });
 
+    describe("persistSpawnedAntId method", () => {
+      it("persists the antId onto the receipt and advances reserved → spawned", async () => {
+        const nonce = "persist-ant -- persistSpawnedAntId";
+        const antId = "spawned-ant -- persistSpawnedAntId";
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(100),
+          name: "persist-name",
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "permabuy",
+          wincQty: W(100),
+          processId: undefined,
+          intent: "Buy-Name",
+          paidBy: [],
+        });
+
+        await db.persistSpawnedAntId(nonce, antId);
+
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        // The antId is now durable on the receipt BEFORE any buy — so a crash
+        // can't lose it (reclaimable orphan + rebuildable mapping).
+        expect(receipt?.process_id).to.equal(antId);
+        expect(receipt?.status).to.equal("spawned");
+
+        // Only advances from `reserved` — a no-op once bought (never demotes).
+        await db.markArNSPurchaseBought(nonce);
+        await db.persistSpawnedAntId(nonce, "should-be-ignored");
+        const afterBought = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        expect(afterBought?.status).to.equal("bought");
+        expect(afterBought?.process_id).to.equal(antId); // unchanged
+      });
+    });
+
+    describe("recordSpawnedAnt method", () => {
+      it("records the user↔ANT mapping, backfills the receipt process_id, and is idempotent", async () => {
+        const nonce = "spawn-ant -- recordSpawnedAnt";
+        const processId = "spawned-ant-asset -- recordSpawnedAnt";
+        const name = "spawned-name -- recordSpawnedAnt";
+
+        // A receipt created without a processId (the spawn-on-buy case).
+        await db.createArNSPurchaseReceipt({
+          nonce,
+          mARIOQty: new mARIOToken(100),
+          name,
+          owner,
+          usdArRate: 1,
+          usdArioRate: 1,
+          type: "permabuy",
+          wincQty: W(100),
+          processId: undefined,
+          intent: "Buy-Name",
+          paidBy: [],
+        });
+
+        await db.recordSpawnedAnt({ nonce, owner, processId, name });
+
+        const mapping = await dbTestHelper
+          .knex(tableNames.userAnt)
+          .where({ process_id: processId });
+        expect(mapping.length).to.equal(1);
+        expect(mapping[0].owner).to.equal(owner);
+        expect(mapping[0].name).to.equal(name);
+
+        const receipt = await dbTestHelper
+          .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+          .where({ nonce })
+          .first();
+        expect(receipt?.process_id).to.equal(processId);
+
+        // Idempotent: a retried call neither errors nor duplicates the mapping.
+        await db.recordSpawnedAnt({ nonce, owner, processId, name });
+        const mappingAfter = await dbTestHelper
+          .knex(tableNames.userAnt)
+          .where({ process_id: processId });
+        expect(mappingAfter.length).to.equal(1);
+      });
+    });
+
     describe("getArNSPurchaseStatus method", () => {
       it("gets the ArNS name purchase status as expected", async () => {
         const name = "Name -- Get ArNS Purchase Status Test";

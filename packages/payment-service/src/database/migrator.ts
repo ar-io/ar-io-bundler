@@ -810,6 +810,41 @@ export class DelegatedArNSPurchasesMigrator extends Migrator {
   }
 }
 
+// Maps a credit-account owner to the Turbo-owned ANT(s) provisioned for their
+// ArNS name purchases (custodial Model A). process_id (the ANT's Metaplex Core
+// asset pubkey) is unique, so it is the primary key.
+export class UserAntMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to user ant mapping",
+      operation: async () => {
+        await this.knex.schema.createTable(tableNames.userAnt, (table) => {
+          table.string(columnNames.processId).primary();
+          table.string(columnNames.owner).notNullable().index();
+          table.string(columnNames.name).notNullable().index();
+          table
+            .timestamp(columnNames.createdDate)
+            .notNullable()
+            .defaultTo(this.knex.fn.now());
+        });
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from user ant mapping",
+      operation: async () => {
+        await this.knex.schema.dropTableIfExists(tableNames.userAnt);
+      },
+    });
+  }
+}
+
 export class KyveFeeMigrator extends Migrator {
   constructor(private readonly knex: Knex) {
     super();

@@ -71,13 +71,25 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     const { usdArRate, usdArioRate } =
       await pricingService.getUSDPriceForOneARAndOneARIO();
 
+    // Custodial Model A: a Buy without a caller-supplied processId provisions a
+    // fresh, Turbo-owned ANT (the treasury pays its SOL rent). Recover that cost
+    // from the buyer via a configurable winc surcharge (ANT_SPAWN_WINC_SURCHARGE,
+    // default "0" = disabled). It is folded into the single existing debit, so
+    // the S1 durable refund covers it on failure.
+    const provisionsAnt =
+      (intent === "Buy-Name" || intent === "Buy-Record") &&
+      processId === undefined;
+    const wincQty = provisionsAnt
+      ? finalPrice.winc.plus(W(process.env.ANT_SPAWN_WINC_SURCHARGE || "0"))
+      : finalPrice.winc;
+
     purchaseReceipt = await paymentDatabase.createArNSPurchaseReceipt({
       name,
       nonce,
       intent,
       mARIOQty,
       owner,
-      wincQty: finalPrice.winc,
+      wincQty,
       processId,
       increaseQty,
       type,
@@ -94,7 +106,14 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     // later step (recording the message_id) fails.
     let arioWriteResult: Awaited<ReturnType<typeof ario.initiateArNSPurchase>>;
     try {
-      arioWriteResult = await ario.initiateArNSPurchase(purchaseReceipt);
+      arioWriteResult = await ario.initiateArNSPurchase({
+        ...purchaseReceipt,
+        // Durably record the spawned antId on the receipt BEFORE the on-chain
+        // buy, so a crash/failed buy can never lose it (reclaimable orphan +
+        // rebuildable mapping). status: reserved → spawned.
+        onAntSpawned: (antId) =>
+          paymentDatabase.persistSpawnedAntId(nonce, antId),
+      });
     } catch (writeError) {
       await durableRefundArNSPurchase(
         { paymentDatabase, logger },
@@ -119,6 +138,36 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
           error: markError instanceof Error ? markError.message : markError,
         },
       );
+    }
+
+    // Custodial Model A: if a fresh Turbo-owned ANT was provisioned, record the
+    // user↔ANT mapping. Best-effort and genuinely safe to be so now: the antId
+    // was already persisted on the receipt before the buy (onAntSpawned), so a
+    // failure here only misses the convenience index — it can be rebuilt from
+    // the receipt (owner + name + antId), never permanently lost.
+    if (arioWriteResult.spawnedAntId !== undefined) {
+      try {
+        await paymentDatabase.recordSpawnedAnt({
+          nonce: purchaseReceipt.nonce,
+          owner: purchaseReceipt.owner,
+          processId: arioWriteResult.spawnedAntId,
+          name: purchaseReceipt.name,
+        });
+      } catch (mappingError) {
+        logger.error(
+          "ArNS name bought + ANT spawned but failed to record user↔ANT mapping index — rebuildable from the receipt's antId",
+          {
+            nonce: purchaseReceipt.nonce,
+            owner: purchaseReceipt.owner,
+            antId: arioWriteResult.spawnedAntId,
+            name: purchaseReceipt.name,
+            error:
+              mappingError instanceof Error
+                ? mappingError.message
+                : mappingError,
+          },
+        );
+      }
     }
 
     // Write succeeded — name is bought. Recording the message_id must not refund;
@@ -160,7 +209,13 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     ctx.response.message = "ArNS Purchase Successful";
 
     ctx.body = {
-      purchaseReceipt: { ...purchaseReceipt, messageId: arioWriteResult.id },
+      purchaseReceipt: {
+        ...purchaseReceipt,
+        messageId: arioWriteResult.id,
+        // The antId this name resolves to — the provisioned one (if spawned) or
+        // the buyer-supplied (BYO) one.
+        antId: arioWriteResult.spawnedAntId ?? purchaseReceipt.processId,
+      },
       arioWriteResult,
     };
   } catch (error) {

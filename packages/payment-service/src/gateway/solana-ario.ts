@@ -25,6 +25,7 @@ import {
   SolanaARIOReadable,
   SolanaARIOWriteable,
   mARIOToken,
+  spawnSolanaANT,
 } from "@ar.io/sdk";
 import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import {
@@ -112,6 +113,9 @@ export class SolanaARIOGateway extends Gateway {
   private readonly rpcUrl: string;
   private readonly wsRpcUrl: string;
   private arioWriteablePromise?: Promise<SolanaARIOWriteable>;
+  private serverSignerPromise?: Promise<
+    Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>
+  >;
   private signerAddress?: string;
 
   private mARIOBalancePromiseCache = new ReadThroughPromiseCache<
@@ -229,9 +233,13 @@ export class SolanaARIOGateway extends Gateway {
     }
   }
 
-  private async getArioWriteable(): Promise<SolanaARIOWriteable> {
-    if (this.arioWriteablePromise) {
-      return this.arioWriteablePromise;
+  // The server (Turbo) Solana signer — pays ARIO for buys, and under custodial
+  // Model A owns the ANTs it spawns. Shared by the ARIO writeable and ANT spawn.
+  private getServerSigner(): Promise<
+    Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>
+  > {
+    if (this.serverSignerPromise) {
+      return this.serverSignerPromise;
     }
 
     const signerSecretKey = this.signerSecretKey;
@@ -241,7 +249,7 @@ export class SolanaARIOGateway extends Gateway {
       );
     }
 
-    const writeablePromise = (async () => {
+    const signerPromise = (async () => {
       let signerBytes: Uint8Array;
       try {
         signerBytes = bs58.decode(signerSecretKey);
@@ -258,7 +266,28 @@ export class SolanaARIOGateway extends Gateway {
       }
       const signer = await createKeyPairSignerFromBytes(signerBytes);
       this.signerAddress = signer.address;
+      return signer;
+    })();
 
+    // Do NOT memoize a failed parse: clear the cache on rejection so a corrected
+    // key (or a transient failure) can recover without a restart.
+    signerPromise.catch(() => {
+      if (this.serverSignerPromise === signerPromise) {
+        this.serverSignerPromise = undefined;
+      }
+    });
+    this.serverSignerPromise = signerPromise;
+
+    return signerPromise;
+  }
+
+  private async getArioWriteable(): Promise<SolanaARIOWriteable> {
+    if (this.arioWriteablePromise) {
+      return this.arioWriteablePromise;
+    }
+
+    const writeablePromise = (async () => {
+      const signer = await this.getServerSigner();
       return new SolanaARIOWriteable({
         rpc: createSolanaRpc(this.rpcUrl),
         rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
@@ -266,8 +295,8 @@ export class SolanaARIOGateway extends Gateway {
       });
     })();
 
-    // Do NOT memoize a failed parse/init: clear the cache on rejection so a
-    // corrected key (or a transient RPC failure) can recover without a restart.
+    // Do NOT memoize a failed init: clear on rejection so a transient failure
+    // can recover without a restart.
     writeablePromise.catch(() => {
       if (this.arioWriteablePromise === writeablePromise) {
         this.arioWriteablePromise = undefined;
@@ -291,6 +320,26 @@ export class SolanaARIOGateway extends Gateway {
     this.arnsRecordPromiseCache.remove(name);
     const record = await this.arnsRecordPromiseCache.get(name);
     return record ? { antId: record.processId } : undefined;
+  }
+
+  // Spawn a fresh ANT owned by the server (Turbo) signer — custodial Model A —
+  // and return its processId (the Metaplex Core asset pubkey) so a name can be
+  // pointed at it. Used when a Buy-Name arrives without a caller-supplied ANT.
+  public async spawnAnt({
+    name,
+    transactionId,
+  }: {
+    name: string;
+    transactionId?: string;
+  }): Promise<string> {
+    const signer = await this.getServerSigner();
+    const result = await spawnSolanaANT({
+      rpc: createSolanaRpc(this.rpcUrl),
+      rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
+      signer,
+      state: { name, ...(transactionId ? { transactionId } : {}) },
+    });
+    return result.processId;
   }
 
   async getTokenCost({
@@ -354,32 +403,49 @@ export class SolanaARIOGateway extends Gateway {
     params: Omit<ArNSPurchase, "messageId" | "paidBy"> & {
       promoCodes?: string[];
       paidBy?: string[];
+      // Persist the freshly-spawned antId BEFORE the on-chain buy, so a crash or
+      // a buy failure leaves a durable trace (a reclaimable orphan ANT and a
+      // rebuildable user↔ANT mapping) instead of losing the antId entirely.
+      onAntSpawned?: (antId: string) => Promise<void>;
     },
-  ): Promise<MessageResult> {
+  ): Promise<MessageResult & { spawnedAntId?: string }> {
     const arioWriteable = await this.getArioWriteable();
     const { name, type, processId, years, intent, increaseQty } = params;
 
     try {
       let messageResult: MessageResult;
+      // Set only when this purchase provisions a fresh, Turbo-owned ANT
+      // (custodial Model A) because the buyer supplied no antId.
+      let spawnedAntId: string | undefined;
       switch (intent) {
         case "Buy-Name":
-        case "Buy-Record":
-          if (processId === undefined) {
-            throw new BadRequest("Process ID is required for Buy ArNS Name");
+        case "Buy-Record": {
+          // Custodial Model A: a buyer without their own ANT gets a fresh one
+          // owned by the Turbo signer; a supplied antId (BYO-ANT / a self-custody
+          // Solana user) is used as-is.
+          let antId = processId;
+          if (antId === undefined) {
+            antId = await this.spawnAnt({ name });
+            spawnedAntId = antId;
+            // Durably record the spawned antId BEFORE the buy — this is the
+            // anti-orphan / anti-lost-mapping invariant.
+            await params.onAntSpawned?.(antId);
           }
           messageResult = await arioWriteable.buyRecord({
             name,
             type: type as ArNSNameType,
-            processId,
+            processId: antId,
             years,
           });
           void sendArNSBuySlackMessage({
             ...params,
+            processId: antId,
             messageId: messageResult.id,
             promoCodes: params.promoCodes ?? [],
             paidBy: params.paidBy ?? [],
           });
           break;
+        }
         case "Upgrade-Name":
           messageResult = await arioWriteable.upgradeRecord({
             name,
@@ -409,7 +475,7 @@ export class SolanaARIOGateway extends Gateway {
 
       this.mARIOBalancePromiseCache.clear();
       this.arnsRecordPromiseCache.remove(name);
-      return messageResult;
+      return { ...messageResult, spawnedAntId };
     } catch (error) {
       this.logger.error("Error during ArNS Purchase", error, {
         name,

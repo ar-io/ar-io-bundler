@@ -24,7 +24,12 @@ import { SolanaARIOGateway, SolanaARIOGatewayParams } from "./solana-ario";
 
 export interface ARIOInterface {
   getTokenCost(p: ArNSTokenCostParams): Promise<mARIOToken>;
-  initiateArNSPurchase(p: ArNSPurchase): Promise<MessageResult>;
+  // `spawnedAntId` is set only when the purchase provisioned a fresh,
+  // Turbo-owned ANT (custodial Model A) because no antId was supplied.
+  // `onAntSpawned` durably persists the antId BEFORE the on-chain buy.
+  initiateArNSPurchase(
+    p: ArNSPurchase & { onAntSpawned?: (antId: string) => Promise<void> },
+  ): Promise<MessageResult & { spawnedAntId?: string }>;
   // Live on-chain ArNS record for a name (undefined if unregistered). Lets the
   // reconciler confirm a buy landed before refunding.
   getArNSRecord(name: string): Promise<{ antId?: string } | undefined>;
