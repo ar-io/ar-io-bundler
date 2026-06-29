@@ -834,12 +834,11 @@ DB_POOL_MAX=50
 
 ### Health Checks
 
-**Quickest full sweep — the sitrep** (one read-only command, grades 9 dimensions to
-GREEN/YELLOW/RED with verification/false-green guards; see *Alerting → Sitrep* below):
-```bash
-node scripts/ops/sitrep.js            # full report; exit 0/1/2 = GREEN/YELLOW/RED
-node scripts/ops/sitrep.js --slack    # also post the summary to Slack
-```
+> **Operator SITREP / Slack tooling** (a one-command graded health sweep + Slack
+> posting) is **not** part of this repo — it lives in the operator brain at
+> `permaweb-services/agents/bill-gates/tools/` (`sitrep-bundler.js`, `slack-post.js`),
+> so it's shared across the fleet (bundler + gateways). The repo keeps only the
+> built-in admin-service Slack **alerter** (below).
 
 **Service health endpoints:**
 ```bash
@@ -1114,69 +1113,13 @@ result per channel (`✅ delivered`, or e.g. `not_in_channel` / `invalid_auth`).
 > (manual refund required) — post to the **alert channel** as CRITICAL. Stripe's
 > own success/refund receipts come from Stripe directly.
 
-#### On-demand status posts (`scripts/ops/slack-post.js`)
+#### On-demand status posts & SITREP — moved to the operator brain
 
-Separate from the automated alerter: a small CLI that posts an **ad-hoc** message
-to Slack (operator- or agent-triggered, e.g. a requested "status update for
-Slack"). It reuses the same bot token + `slack.js` plumbing — no new credentials.
-
-```bash
-# inline message (Slack mrkdwn)
-node scripts/ops/slack-post.js -m "*Bundler status:* 🟢 15/15 online, 0 failed bundles"
-# multi-line digest from stdin
-generate-digest | node scripts/ops/slack-post.js
-# override channel / sender
-node scripts/ops/slack-post.js -m "hi" -c <channel-id> -u "Ops" -i ":satellite_antenna:"
-```
-
-- **Channel resolution:** `-c` flag → `SLACK_STATUS_CHANNEL_ID` → `SLACK_ALERT_CHANNEL_ID`.
-  Set `SLACK_STATUS_CHANNEL_ID` to a dedicated status channel so routine updates
-  stay out of the alarm channel.
-- **Identity:** sender name/icon default to `SLACK_STATUS_USERNAME` / `SLACK_STATUS_ICON`
-  (else `Bundler Ops` / `:satellite_antenna:`) so human-triggered updates are visually
-  distinct from the `:rotating_light:` alerter.
-- **Output:** prints `OK delivered to <channel> (ts=…)` + a permalink, or the Slack
-  error (`not_in_channel` → `/invite @YourBot` into that channel) and exits non-zero
-  — safe to wrap in scripts.
-
-#### Sitrep — standardized situation report (`scripts/ops/sitrep.js`)
-
-A one-command, **read-only** health sweep that grades 9 dimensions and rolls them
-up to a single GREEN / YELLOW / RED. Each check follows *collect → **verify** →
-analyze → roll up*, where "verify" is a **false-green guard** — it confirms a green
-actually means healthy rather than just "no errors logged":
-
-| # Section | Verify (false-green guard) |
-|---|---|
-| 1 Processes | hit `/v1/info` for real (a hung worker still shows `online`) + watch restart-count deltas |
-| 2 Infra | live ping PG / Redis×2 / MinIO(×2), not `docker ps` |
-| 3 Pipeline | **Δ permanent since last run** + oldest-waiting-item age (catches a frozen pipeline with 0 errors) |
-| 4 Workers | completed `>0` in window + BullMQ **failed-set** (not retried log lines) |
-| 5 Optical/BDI | **live probe** each bridge + circuit-breaker state |
-| 5b Index durability | query the gateway GraphQL for our own **aged (1-6h)** permanent items — proves items STAY indexed (`bundledIn` durable), not just that we pushed. Aged on purpose: fresh items are always optical-indexed and would false-pass (the blind spot that hid a broken unbundle filter for 5 days) |
-| 6 Ingress | per-host 5xx rate (honest about the log window) |
-| 7 Latency | p50/p95/p99 from `upstream_response_time` |
-| 8 Resources | load, mem, swap, **disk + growth Δ** |
-| 9 Durability | backup exit-0 **and freshness** + wallet **runway** (balance ÷ measured burn) |
-
-```bash
-node scripts/ops/sitrep.js            # full report → stdout; exit 0/1/2 = GREEN/YELLOW/RED
-node scripts/ops/sitrep.js --slack    # also post the summary + analysis (via slack-post.js)
-node scripts/ops/sitrep.js --quiet    # summary lines only
-```
-
-- **Summary + analysis:** every run ends with an auto-derived `📊 Analysis` block
-  (verdict + pipeline flow rate + wallet/backup + any notable disk trend); `--slack`
-  posts the 9 section lines **and** that analysis in the standard format.
-- **State for deltas:** a tiny JSON state file is written each run so the next run
-  can assert *"+484 permanent in 7m"* (flowing) vs *"0 in 30m with N waiting"*
-  (stalled), and compute disk-growth + wallet-runway from real deltas. Rate-based
-  verdicts (stall, runway) are **interval-gated** — they don't grade a few-minute gap.
-- **Read-only:** never triggers/redrives/drains any queue.
-- **Endpoints are env-driven** (`S3_ENDPOINT`, `ARCHIVE_S3_ENDPOINT`,
-  `OPTICAL_BRIDGE_URL`, `OPTIONAL_OPTICAL_BRIDGE_URLS`) — no hardcoded addresses.
-- Thresholds (5xx %, p95/p99, disk %, backup age, runway days) are constants at the
-  top of the script.
+These operator tools (ad-hoc Slack posts + the graded read-only SITREP) now live in
+`permaweb-services/agents/bill-gates/tools/` (`slack-post.js`, `sitrep-bundler.js`),
+shared across the fleet (bundler + gateways) rather than bundled in this product repo.
+The built-in admin-service **alerter** documented above stays here — it's a feature of
+the service, not an operator tool.
 
 **What the alerter actually covers** (the live rollup signals — not a generic list):
 - **Services/infra down**: any expected PM2 process missing/unhealthy; Postgres
