@@ -155,7 +155,7 @@
 - [ ] Smoke-test the unified mux: `curl https://turbo.ardrive.io/v1/price/bytes/1000000` (→ payment), `curl https://turbo.ardrive.io/info` (→ upload), a `/v1/tx` upload (→ upload).
 - [ ] 🔴 If on Cloudflare: keep `upload.<domain>` **DNS-only (grey cloud)** — CF's 100 MB body cap.
 - [ ] Confirm `UPLOAD_SERVICE_PUBLIC_URL=https://upload.<domain>` (bundler trusts `X-Forwarded-Proto`).
-- [ ] Verify the config encodes: **CORS + OPTIONS preflight**, upload `client_max_body_size 100M` + `proxy_request_buffering off`, payment `10M` + `proxy_request_buffering on` (and payment does **not** override `Content-Type`). Bull Board `:3002` / MinIO console / metrics get **no** public server block.
+- [ ] Verify the config encodes: **CORS + OPTIONS preflight**, upload `client_max_body_size 2100m` (≥ `MAX_DATA_ITEM_SIZE`) + `proxy_request_buffering off`, payment `10M` + `proxy_request_buffering on` (and payment does **not** override `Content-Type`). Bull Board `:3002` / MinIO console / metrics get **no** public server block.
 - [ ] *(Dev/test only)* if using a separate nginx router, point `proxy_pass` at the bundler's private IP and open `:3001`/`:4001` from the router IP only.
 
 ## Phase 12 — Smoke tests (→ §15)

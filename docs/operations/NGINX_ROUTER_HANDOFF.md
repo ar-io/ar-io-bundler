@@ -99,7 +99,7 @@ back to **upload**. `/info` & `/v1/info` resolve to **upload** (intended).
 > below), not memory.
 
 Settings baked into the snippets: CORS (`*`) + `OPTIONS`→204 (backends' own CORS is disabled, so no
-duplication); upload `client_max_body_size 100M` + `proxy_request_buffering off` + 300s; payment `10M` +
+duplication); upload `client_max_body_size 2100m` (keep ≥ `MAX_DATA_ITEM_SIZE`, else valid uploads 413) + `proxy_request_buffering off` + 300s; payment `10M` +
 `proxy_request_buffering on` + 60s and **no `Content-Type` override**; HTTP/1.1 keepalive; TLS 1.2/1.3.
 
 ## Split-route variant — unified host, payment proxied to an EXTERNAL service

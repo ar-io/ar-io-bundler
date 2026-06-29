@@ -543,9 +543,11 @@ per-path routing test.) The three prod hostnames (mirrors the proven perma.onlin
   prefixes. ⚠️ `/info` & `/v1/info` on `turbo.*` resolve to **upload** (root→upload, confirmed) — flip the
   default location if the SDK ever needs payment's `/v1/info`.
 - **CORS** (`Access-Control-Allow-*` + an `OPTIONS` → 204 preflight) — browser dapp clients need it.
-- **Upload:** `client_max_body_size 100M` — large uploads go through **multipart** (the Turbo SDK chunks
-  them into small parts), so single requests stay under this; raise only if you accept single-request data
-  items >100M. `proxy_request_buffering off` + `proxy_buffering off` (stream, don't buffer to disk),
+- **Upload:** `client_max_body_size 2100m` (~2.05 GiB) — **must stay ≥ `MAX_DATA_ITEM_SIZE`** (2 GiB here),
+  or nginx 413s single-request data items the service would accept. (The Turbo SDK does **not** always
+  multipart sub-2GB files, so the single-request path needs this headroom — a 100M cap here was a real
+  customer-facing 413 regression.) 2100m sits just above the app cap so the *app* returns the friendly
+  oversized-item 413. `proxy_request_buffering off` + `proxy_buffering off` (stream, don't buffer to disk),
   300s timeouts, HTTP/1.1 + keepalive (`Connection ""`), and it **passes `Content-Type` through**.
 - **Payment:** `client_max_body_size 10M`, `proxy_request_buffering on` (helps POST bodies), 60s timeouts,
   and it **must NOT override `Content-Type`** (setting `proxy_set_header Content-Type` breaks payment POST

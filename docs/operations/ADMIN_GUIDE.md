@@ -1237,6 +1237,32 @@ Setup, scheduling, the pinned-worktree pattern, and all flags:
 
 ### Common Issues
 
+#### Uploads fail with `413 Request Entity Too Large` (from nginx)
+
+**Symptom:** clients (incl. the Turbo SDK) fail an upload with
+`413 Request Entity Too Large — nginx/1.18.0` after retries. The `nginx` signature
+means **nginx rejected it at the edge**, before the bundler ever saw it.
+
+**Cause:** nginx `client_max_body_size` on the upload location is **smaller than the
+app's `MAX_DATA_ITEM_SIZE`**, so single-request data items in that gap are 413'd even
+though the service would accept them. (The Turbo SDK does not always multipart sub-cap
+files, so the single-request path needs the headroom.)
+
+**Fix:** set `client_max_body_size` **≥ `MAX_DATA_ITEM_SIZE`** on every upload snippet
+(`bundler-loc-upload.conf`, `bundler-loc-unified.conf`, `bundler-loc-unified-extpay.conf`)
+— slightly above is best so the *app* returns the friendly oversized 413:
+```bash
+grep -l 'client_max_body_size' /etc/nginx/snippets/bundler-loc-*.conf
+# set upload locations to e.g. 2100m (MAX_DATA_ITEM_SIZE 2 GiB + margin), then:
+nginx -t && systemctl reload nginx     # zero-downtime
+```
+Verify a payload above the old cap now reaches the app (a non-nginx response):
+```bash
+head -c 157286400 /dev/zero | curl -sS -X POST --data-binary @- \
+  -H 'Content-Type: application/octet-stream' -w '%{http_code}\n' \
+  https://upload.<domain>/tx   # expect a 400 "Data item parsing error" (app), NOT an nginx 413
+```
+
 #### Workers Not Processing Uploads
 
 **Symptom:** Uploads succeed but bundles never get created
