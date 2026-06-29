@@ -63,7 +63,7 @@ const defaultArioMintAddress =
   isDevEnv || isTestEnv ? DEVNET_ARIO_MINT : MAINNET_ARIO_MINT;
 
 const defaultArioSolanaGatewayUrl = new URL(
-  isDevEnv || isTestEnv ? DEVNET_RPC_URL : MAINNET_RPC_URL
+  isDevEnv || isTestEnv ? DEVNET_RPC_URL : MAINNET_RPC_URL,
 );
 
 const splTokenProgramIds = [
@@ -71,7 +71,7 @@ const splTokenProgramIds = [
   new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
 ];
 const associatedTokenProgramId = new PublicKey(
-  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
 );
 
 type RecipientTokenAccount = {
@@ -191,7 +191,7 @@ export class SolanaARIOGateway extends Gateway {
       // PublicKey(undefined)` crash. Recipient comes from ARIO_ADDRESS, falling
       // back to SOLANA_ADDRESS — one of them MUST be set.
       throw new Error(
-        "ARIO payment recipient address is not configured. Set ARIO_ADDRESS (or SOLANA_ADDRESS)."
+        "ARIO payment recipient address is not configured. Set ARIO_ADDRESS (or SOLANA_ADDRESS).",
       );
     }
     try {
@@ -203,7 +203,7 @@ export class SolanaARIOGateway extends Gateway {
       throw new Error(
         `ARIO payment recipient must be a base58 Solana address (ARIO is a Solana token now). ` +
           `The configured value is not a valid Solana address — if it is an Arweave address, ` +
-          `set ARIO_ADDRESS (or SOLANA_ADDRESS) to your Solana wallet instead.`
+          `set ARIO_ADDRESS (or SOLANA_ADDRESS) to your Solana wallet instead.`,
       );
     }
     this.mintAddress = new PublicKey(mintAddress);
@@ -218,13 +218,13 @@ export class SolanaARIOGateway extends Gateway {
           tokenProgramId.toBuffer(),
           this.mintAddress.toBuffer(),
         ],
-        associatedTokenProgramId
+        associatedTokenProgramId,
       )[0],
     }));
 
     if (!this.signerSecretKey) {
       logger.warn(
-        "ARIO_SOLANA_SIGNER_SECRET_KEY is not set, ArNS writes will not be available"
+        "ARIO_SOLANA_SIGNER_SECRET_KEY is not set, ArNS writes will not be available",
       );
     }
   }
@@ -237,7 +237,7 @@ export class SolanaARIOGateway extends Gateway {
     const signerSecretKey = this.signerSecretKey;
     if (!signerSecretKey) {
       throw new Error(
-        "No signer available for ARIO Gateway. Configure ARIO_SOLANA_SIGNER_SECRET_KEY."
+        "No signer available for ARIO Gateway. Configure ARIO_SOLANA_SIGNER_SECRET_KEY.",
       );
     }
 
@@ -248,12 +248,12 @@ export class SolanaARIOGateway extends Gateway {
       } catch (error) {
         throw new Error(
           "Failed to decode ARIO_SOLANA_SIGNER_SECRET_KEY as bs58: " +
-            (error instanceof Error ? error.message : String(error))
+            (error instanceof Error ? error.message : String(error)),
         );
       }
       if (signerBytes.length !== 64) {
         throw new Error(
-          `ARIO_SOLANA_SIGNER_SECRET_KEY must decode to a 64-byte Solana secret key, got ${signerBytes.length} bytes.`
+          `ARIO_SOLANA_SIGNER_SECRET_KEY must decode to a 64-byte Solana secret key, got ${signerBytes.length} bytes.`,
         );
       }
       const signer = await createKeyPairSignerFromBytes(signerBytes);
@@ -276,6 +276,21 @@ export class SolanaARIOGateway extends Gateway {
     this.arioWriteablePromise = writeablePromise;
 
     return writeablePromise;
+  }
+
+  // Read the live on-chain ArNS record for a name (undefined if unregistered).
+  // Used by the refund-confirm paths (catch path + reconciler) to decide whether
+  // a name a receipt paid for actually landed on-chain (and resolves to our
+  // antId). It MUST bypass the 5-min read cache: the pre-buy price check
+  // populates that cache with "available" (undefined) for the name being bought,
+  // so a cached read right after a thrown-but-landed buy would wrongly conclude
+  // the name did NOT land and refund a bought name. Evict first → fresh fetch.
+  public async getArNSRecord(
+    name: string,
+  ): Promise<{ antId?: string } | undefined> {
+    this.arnsRecordPromiseCache.remove(name);
+    const record = await this.arnsRecordPromiseCache.get(name);
+    return record ? { antId: record.processId } : undefined;
   }
 
   async getTokenCost({
@@ -317,17 +332,17 @@ export class SolanaARIOGateway extends Gateway {
       await this.getArioWriteable();
       if (!this.signerAddress) {
         throw new Error(
-          "No signer available for ARIO Gateway. Configure ARIO_SOLANA_SIGNER_SECRET_KEY."
+          "No signer available for ARIO Gateway. Configure ARIO_SOLANA_SIGNER_SECRET_KEY.",
         );
       }
       const existingBalance = await this.mARIOBalancePromiseCache.get(
-        this.signerAddress
+        this.signerAddress,
       );
       if (existingBalance < tokenCost.valueOf()) {
         throw new Error(
           `Turbo wallet (${
             this.signerAddress
-          }) has insufficient mARIO balance. Required: ${tokenCost.valueOf()}, Available: ${existingBalance}`
+          }) has insufficient mARIO balance. Required: ${tokenCost.valueOf()}, Available: ${existingBalance}`,
         );
       }
     }
@@ -339,7 +354,7 @@ export class SolanaARIOGateway extends Gateway {
     params: Omit<ArNSPurchase, "messageId" | "paidBy"> & {
       promoCodes?: string[];
       paidBy?: string[];
-    }
+    },
   ): Promise<MessageResult> {
     const arioWriteable = await this.getArioWriteable();
     const { name, type, processId, years, intent, increaseQty } = params;
@@ -432,12 +447,12 @@ export class SolanaARIOGateway extends Gateway {
   private getTokenBalanceAmount(
     balances: any[] | null | undefined,
     accountIndex: number,
-    mintAddress: string
+    mintAddress: string,
   ): string {
     const balance = balances?.find(
       (tokenBalance) =>
         tokenBalance.accountIndex === accountIndex &&
-        tokenBalance.mint === mintAddress
+        tokenBalance.mint === mintAddress,
     );
 
     return String(balance?.uiTokenAmount?.amount ?? "0");
@@ -448,7 +463,7 @@ export class SolanaARIOGateway extends Gateway {
       transaction.transaction.message.instructions ?? [];
     const innerInstructions =
       transaction.meta?.innerInstructions?.flatMap(
-        (innerInstruction: any) => innerInstruction.instructions ?? []
+        (innerInstruction: any) => innerInstruction.instructions ?? [],
       ) ?? [];
 
     return [...outerInstructions, ...innerInstructions].filter(
@@ -468,7 +483,7 @@ export class SolanaARIOGateway extends Gateway {
           instruction.parsed.type === "transfer" ||
           instruction.parsed.type === "transferChecked"
         );
-      }
+      },
     );
   }
 
@@ -477,11 +492,11 @@ export class SolanaARIOGateway extends Gateway {
       transaction.transaction.message.instructions ?? [];
     const innerInstructions =
       transaction.meta?.innerInstructions?.flatMap(
-        (innerInstruction: any) => innerInstruction.instructions ?? []
+        (innerInstruction: any) => innerInstruction.instructions ?? [],
       ) ?? [];
 
     return [...outerInstructions, ...innerInstructions].filter(
-      (instruction: any) => instruction.program === "spl-memo"
+      (instruction: any) => instruction.program === "spl-memo",
     );
   }
 
@@ -515,14 +530,14 @@ export class SolanaARIOGateway extends Gateway {
   }
 
   private async readSolanaTokenTransaction(
-    transactionId: TransactionId
+    transactionId: TransactionId,
   ): Promise<TransactionInfo> {
     const transaction = await this.connection.getParsedTransaction(
       transactionId,
       {
         commitment: "confirmed",
         maxSupportedTransactionVersion: 0,
-      }
+      },
     );
 
     this.logger.debug("Read Solana ARIO transaction", {
@@ -536,7 +551,7 @@ export class SolanaARIOGateway extends Gateway {
 
     const mintAddress = this.mintAddress.toBase58();
     const transfersToMerchant = this.getParsedSplTransferInstructions(
-      transaction
+      transaction,
     ).flatMap((instruction: any) => {
       const info = instruction.parsed?.info;
       if (!info || typeof info.destination !== "string") {
@@ -544,7 +559,7 @@ export class SolanaARIOGateway extends Gateway {
       }
 
       const recipient = this.recipientTokenAccounts.find(
-        ({ tokenAccount }) => tokenAccount.toBase58() === info.destination
+        ({ tokenAccount }) => tokenAccount.toBase58() === info.destination,
       );
       if (!recipient) {
         return [];
@@ -558,8 +573,8 @@ export class SolanaARIOGateway extends Gateway {
         typeof info.amount === "string"
           ? info.amount
           : typeof info.tokenAmount?.amount === "string"
-          ? info.tokenAmount.amount
-          : undefined;
+            ? info.tokenAmount.amount
+            : undefined;
       if (!amount) {
         return [];
       }
@@ -568,14 +583,14 @@ export class SolanaARIOGateway extends Gateway {
         typeof info.authority === "string"
           ? info.authority
           : typeof info.multisigAuthority === "string"
-          ? info.multisigAuthority
-          : typeof info.owner === "string"
-          ? info.owner
-          : this.getParsedAccountKeys(transaction).find(
-              (_accountKey, index) =>
-                transaction.transaction.message.accountKeys?.[index]?.signer ===
-                true
-            );
+            ? info.multisigAuthority
+            : typeof info.owner === "string"
+              ? info.owner
+              : this.getParsedAccountKeys(transaction).find(
+                  (_accountKey, index) =>
+                    transaction.transaction.message.accountKeys?.[index]
+                      ?.signer === true,
+                );
 
       if (!senderAddress) {
         return [];
@@ -596,32 +611,32 @@ export class SolanaARIOGateway extends Gateway {
 
     const [{ amount, recipient, senderAddress }] = transfersToMerchant;
     const recipientAccountIndex = this.getParsedAccountKeys(
-      transaction
+      transaction,
     ).findIndex(
-      (accountKey) => accountKey === recipient.tokenAccount.toBase58()
+      (accountKey) => accountKey === recipient.tokenAccount.toBase58(),
     );
 
     if (recipientAccountIndex < 0) {
       throw new Error(
-        `Failed to find ARIO recipient token account ${recipient.tokenAccount.toBase58()} in parsed account keys`
+        `Failed to find ARIO recipient token account ${recipient.tokenAccount.toBase58()} in parsed account keys`,
       );
     }
 
     const preBalance = this.getTokenBalanceAmount(
       transaction.meta.preTokenBalances,
       recipientAccountIndex,
-      mintAddress
+      mintAddress,
     );
     const postBalance = this.getTokenBalanceAmount(
       transaction.meta.postTokenBalances,
       recipientAccountIndex,
-      mintAddress
+      mintAddress,
     );
     const deltaAmount = new BigNumber(postBalance).minus(preBalance);
 
     if (!deltaAmount.eq(amount) || deltaAmount.lte(0)) {
       throw new BadRequest(
-        `Mismatch: instruction paid ${amount.toString()} base units, but recipient balance delta was ${deltaAmount.toString()}.`
+        `Mismatch: instruction paid ${amount.toString()} base units, but recipient balance delta was ${deltaAmount.toString()}.`,
       );
     }
 
@@ -638,7 +653,7 @@ export class SolanaARIOGateway extends Gateway {
           "Found turbo credit destination address in SOL ARIO memo",
           {
             turboCreditDestinationAddress,
-          }
+          },
         );
         break;
       }
@@ -653,23 +668,23 @@ export class SolanaARIOGateway extends Gateway {
   }
 
   public async getTransaction(
-    transactionId: TransactionId
+    transactionId: TransactionId,
   ): Promise<TransactionInfo> {
     return this.pollGatewayForTx(
       () => this.readSolanaTokenTransaction(transactionId),
-      transactionId
+      transactionId,
     );
   }
 
   public async getTransactionStatus(
-    transactionId: TransactionId
+    transactionId: TransactionId,
   ): Promise<TransactionStatus> {
     const finalizedTx = await this.connection.getParsedTransaction(
       transactionId,
       {
         commitment: "finalized",
         maxSupportedTransactionVersion: 0,
-      }
+      },
     );
 
     if (finalizedTx?.meta) {
@@ -684,7 +699,7 @@ export class SolanaARIOGateway extends Gateway {
       {
         commitment: "confirmed",
         maxSupportedTransactionVersion: 0,
-      }
+      },
     );
 
     if (confirmedTx?.meta) {

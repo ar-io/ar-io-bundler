@@ -50,7 +50,7 @@ export const stubArweaveUserAddress: UserAddress =
 
 export const oneHourAgo = new Date(Date.now() - 1000 * 60 * 60).toISOString();
 export const oneHourFromNow = new Date(
-  Date.now() + 1000 * 60 * 60
+  Date.now() + 1000 * 60 * 60,
 ).toISOString();
 
 type StubTopUpQuoteParams = Partial<TopUpQuoteDBInsert>;
@@ -194,7 +194,7 @@ function stubPaymentAdjustmentInsert({
 type StubPaymentReceiptParams = Partial<PaymentReceiptDBInsert>;
 
 function stubPaymentReceiptInsert(
-  params: StubPaymentReceiptParams
+  params: StubPaymentReceiptParams,
 ): PaymentReceiptDBInsert {
   return {
     ...stubTopUpQuoteInsert(params),
@@ -233,7 +233,7 @@ function stubPendingPaymentTxInsert({
 }
 
 function stubChargebackReceiptInsert(
-  params: StubChargebackReceiptParams
+  params: StubChargebackReceiptParams,
 ): ChargebackReceiptDBInsert {
   return {
     ...stubPaymentReceiptInsert(params),
@@ -276,26 +276,26 @@ export class DbTestHelper {
   }
 
   public async insertStubTopUpQuote(
-    insertParams: StubTopUpQuoteParams
+    insertParams: StubTopUpQuoteParams,
   ): Promise<void> {
     return this.knex(tableNames.topUpQuote).insert(
-      stubTopUpQuoteInsert(insertParams)
+      stubTopUpQuoteInsert(insertParams),
     );
   }
 
   public async insertStubArNSQuote(
-    insertParams: Partial<ArNSPurchaseQuoteDBInsert>
+    insertParams: Partial<ArNSPurchaseQuoteDBInsert>,
   ): Promise<void> {
     return this.knex(tableNames.arNSPurchaseQuote).insert(
-      stubArNSQuoteInsert(insertParams)
+      stubArNSQuoteInsert(insertParams),
     );
   }
 
   public async insertStubFailedArNSPurchase(
-    insertParams: Partial<FailedArNSPurchaseDBInsert>
+    insertParams: Partial<FailedArNSPurchaseDBInsert>,
   ): Promise<void> {
     return this.knex(tableNames.failedArNSPurchase).insert(
-      stubFailedArNSPurchase(insertParams)
+      stubFailedArNSPurchase(insertParams),
     );
   }
 
@@ -321,7 +321,7 @@ export class DbTestHelper {
     approval_data_item_id ??= randomCharString();
 
     return this.knex<DelegatedPaymentApprovalDBResult>(
-      tableNames.delegatedPaymentApproval
+      tableNames.delegatedPaymentApproval,
     ).insert({
       approval_data_item_id,
       approved_address,
@@ -332,34 +332,34 @@ export class DbTestHelper {
   }
 
   public async insertStubPaymentAdjustment(
-    insertParams: StubPaymentAdjustmentParams
+    insertParams: StubPaymentAdjustmentParams,
   ): Promise<void> {
     return this.knex(tableNames.paymentAdjustment).insert(
-      stubPaymentAdjustmentInsert(insertParams)
+      stubPaymentAdjustmentInsert(insertParams),
     );
   }
 
   public async insertStubPaymentReceipt(
-    insertParams: StubPaymentReceiptParams
+    insertParams: StubPaymentReceiptParams,
   ): Promise<void> {
     return this.knex(tableNames.paymentReceipt).insert(
-      stubPaymentReceiptInsert(insertParams)
+      stubPaymentReceiptInsert(insertParams),
     );
   }
 
   public async insertStubChargebackReceipt(
-    insertParams: StubChargebackReceiptParams
+    insertParams: StubChargebackReceiptParams,
   ): Promise<void> {
     return this.knex(tableNames.chargebackReceipt).insert(
-      stubChargebackReceiptInsert(insertParams)
+      stubChargebackReceiptInsert(insertParams),
     );
   }
 
   public async insertStubPendingPaymentTransaction(
-    insertParams: Partial<PendingPaymentTransactionDBInsert>
+    insertParams: Partial<PendingPaymentTransactionDBInsert>,
   ): Promise<void> {
     return this.knex(tableNames.pendingPaymentTransaction).insert(
-      stubPendingPaymentTxInsert(insertParams)
+      stubPendingPaymentTxInsert(insertParams),
     );
   }
 
@@ -385,7 +385,13 @@ export class DbTestHelper {
     quote_expiration_date,
     payment_provider,
     quote_creation_date,
-    message_id = "The Stubbiest Message",
+    // Default to a realistic PENDING receipt (no on-chain message_id yet).
+    // Tests needing a succeeded receipt pass message_id explicitly.
+    message_id = undefined,
+    // Lifecycle status mirrors the message_id default: a stub carrying a
+    // message_id is a succeeded ('recorded') receipt; otherwise a pending
+    // ('reserved') one. Tests can override (e.g. 'bought', 'spawned').
+    status = message_id ? "recorded" : "reserved",
   }: Partial<ArNSPurchaseDBInsert>): Promise<void> {
     const insert: ArNSPurchaseDBInsert = {
       nonce,
@@ -410,6 +416,7 @@ export class DbTestHelper {
       payment_provider,
       quote_creation_date,
       message_id,
+      status,
     };
     return this.knex(tableNames.arNSPurchaseReceipt).insert(insert);
   }

@@ -17,7 +17,6 @@
 import { Job, Worker } from "bullmq";
 
 import { PostgresDatabase } from "../database/postgres";
-import { TurboPricingService } from "../pricing/pricing";
 import {
   ArweaveGateway,
   EthereumGateway,
@@ -30,6 +29,7 @@ import { BaseEthGateway } from "../gateway/base-eth";
 import { creditPendingTransactionsHandler } from "../jobs/creditPendingTx";
 import globalLogger from "../logger";
 import { MetricRegistry } from "../metricRegistry";
+import { TurboPricingService } from "../pricing/pricing";
 import { createRedisConnection } from "../queues/config";
 
 export function createPendingTxWorker(): Worker {
@@ -40,10 +40,6 @@ export function createPendingTxWorker(): Worker {
     arweave: new ArweaveGateway(),
     ario: new ARIOGateway({
       logger: globalLogger,
-      jwk:
-        process.env.ARIO_SIGNING_JWK
-          ? JSON.parse(process.env.ARIO_SIGNING_JWK)
-          : undefined,
     }),
     ethereum: new EthereumGateway(),
     solana: new SolanaGateway(),
@@ -95,7 +91,7 @@ export function createPendingTxWorker(): Worker {
         max: 10,
         duration: 60000, // Max 10 jobs per minute
       },
-    }
+    },
   );
 
   worker.on("completed", (job) => {

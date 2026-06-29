@@ -677,6 +677,80 @@ export class ArNSPurchaseStoreMessageIdMigrator extends Migrator {
   }
 }
 
+// Adds the purchase lifecycle `status` column (reserved/spawned/bought/recorded)
+// as the success signal — so a refund/reconcile can never credit back a name
+// that was actually bought, even if message_id storage later fails.
+export class ArNSPurchaseStatusMigrator extends Migrator {
+  constructor(private readonly knex: Knex) {
+    super();
+  }
+
+  public migrate() {
+    return this.operate({
+      name: "migrate to arns purchase status lifecycle",
+      operation: async () => {
+        await this.knex.schema.alterTable(
+          tableNames.arNSPurchaseReceipt,
+          (table) => {
+            table.string(columnNames.status).nullable();
+          },
+        );
+        // Backfill: a stored message_id ⇒ the purchase succeeded ⇒ 'recorded';
+        // otherwise it's an in-flight/orphan debit ⇒ 'reserved' (the reconciler
+        // re-evaluates those on-chain before any refund).
+        await this.knex(tableNames.arNSPurchaseReceipt)
+          .whereNotNull(columnNames.messageId)
+          .update({ [columnNames.status]: "recorded" });
+        await this.knex(tableNames.arNSPurchaseReceipt)
+          .whereNull(columnNames.messageId)
+          .update({ [columnNames.status]: "reserved" });
+        // Lock it down: NOT NULL DEFAULT 'reserved'. A NULL-status receipt would
+        // be invisible to getStalePendingArNSPurchases (whereIn reserved/spawned)
+        // → a silent un-refundable orphan. The default guarantees any future
+        // insert path that forgets `status` still lands in the reconciler's view.
+        await this.knex.schema.alterTable(
+          tableNames.arNSPurchaseReceipt,
+          (table) => {
+            table
+              .string(columnNames.status)
+              .notNullable()
+              .defaultTo("reserved")
+              .alter();
+          },
+        );
+        // failed_arns_purchase inherits the same columns (rows are spread into
+        // it on refund), so it needs the column too.
+        await this.knex.schema.alterTable(
+          tableNames.failedArNSPurchase,
+          (table) => {
+            table.string(columnNames.status).nullable();
+          },
+        );
+      },
+    });
+  }
+
+  public rollback() {
+    return this.operate({
+      name: "rollback from arns purchase status lifecycle",
+      operation: async () => {
+        await this.knex.schema.alterTable(
+          tableNames.arNSPurchaseReceipt,
+          (table) => {
+            table.dropColumn(columnNames.status);
+          },
+        );
+        await this.knex.schema.alterTable(
+          tableNames.failedArNSPurchase,
+          (table) => {
+            table.dropColumn(columnNames.status);
+          },
+        );
+      },
+    });
+  }
+}
+
 export class DelegatedArNSPurchasesMigrator extends Migrator {
   constructor(private readonly knex: Knex) {
     super();

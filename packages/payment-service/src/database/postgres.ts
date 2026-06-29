@@ -1947,6 +1947,7 @@ export class PostgresDatabase implements Database {
         overflow_spend: JSON.stringify(overflow_spend),
         paid_by: paidBy.length > 0 ? paidBy.join(",") : undefined,
         referer,
+        status: "reserved",
       };
       let receipt: ArNSPurchaseDBResult[];
       try {
@@ -1972,6 +1973,13 @@ export class PostgresDatabase implements Database {
     failedReason: string,
   ): Promise<void> {
     await this.writer.transaction(async (knexTransaction) => {
+      // Guard: only refund a receipt still in `reserved`/`spawned` — i.e. one
+      // whose on-chain buy has NOT been confirmed. `bought`/`recorded` mean the
+      // name was actually bought, so refunding it would credit the user back for
+      // a name they own. `bought` is set the instant the buy confirms (before
+      // message_id), so this guard holds even if message_id storage later fails.
+      // A stale/duplicate refund for a now-bought purchase deletes 0 rows and
+      // surfaces as ArNSPurchaseNotFound — a terminal no-op in the worker.
       const pendingArNSPurchaseDbResult =
         await knexTransaction<ArNSPurchaseDBResult>(
           tableNames.arNSPurchaseReceipt,
@@ -1979,6 +1987,7 @@ export class PostgresDatabase implements Database {
           .where({
             nonce: nonce,
           })
+          .whereIn(columnNames.status, ["reserved", "spawned"])
           .del()
           .returning("*");
 
@@ -2006,6 +2015,23 @@ export class PostgresDatabase implements Database {
 
       await knexTransaction(tableNames.failedArNSPurchase).insert(dbInsert);
     });
+  }
+
+  // Receipts that debited the buyer's credits but never recorded an on-chain
+  // message_id and are older than the threshold — i.e. the request died
+  // between the debit and either the on-chain write or its refund/retry. The
+  // reconciler refunds these so a debit can never be silently orphaned.
+  public async getStalePendingArNSPurchases(
+    staleThresholdMs: number,
+  ): Promise<ArNSPurchase[]> {
+    const cutoff = new Date(Date.now() - staleThresholdMs);
+    const rows = await this.reader<ArNSPurchaseDBResult>(
+      tableNames.arNSPurchaseReceipt,
+    )
+      .whereIn(columnNames.status, ["reserved", "spawned"])
+      .andWhere(columnNames.createdDate, "<", cutoff);
+
+    return rows.map(arnsPurchaseReceiptDBMap);
   }
 
   public async getArNSPurchaseStatus(
@@ -2077,9 +2103,20 @@ export class PostgresDatabase implements Database {
     nonce: string;
     messageId: string;
   }): Promise<void> {
-    return this.writer<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+    await this.writer<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
       .where({ nonce })
-      .update({ message_id: messageId });
+      .update({ message_id: messageId, status: "recorded" });
+  }
+
+  // Mark a purchase `bought` the instant its on-chain buy confirms — BEFORE the
+  // message_id is stored. From here the refund/reconcile guard protects it, so a
+  // later message_id-storage failure can never refund a name that was bought.
+  // Only advances from a pre-confirm state (idempotent; never demotes recorded).
+  public async markArNSPurchaseBought(nonce: string): Promise<void> {
+    await this.writer<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+      .where({ nonce })
+      .whereIn(columnNames.status, ["reserved", "spawned"])
+      .update({ status: "bought" });
   }
 
   public async getArNSPurchaseQuote(

@@ -22,6 +22,13 @@ import { defaultQueueOptions } from "./config";
 
 let pendingTxQueue: Queue | null = null;
 let adminCreditQueue: Queue | null = null;
+let arnsRefundQueue: Queue | null = null;
+
+export const arnsRefundQueueName = "payment-arns-refund";
+// Job names processed on the ArNS refund queue.
+export const arnsRefundJobName = "refund";
+export const arnsStoreMessageIdJobName = "store-message-id";
+export const arnsReconcileJobName = "reconcile-stale";
 
 export function getPendingTxQueue(): Queue {
   if (!pendingTxQueue) {
@@ -37,6 +44,13 @@ export function getAdminCreditQueue(): Queue {
   return adminCreditQueue;
 }
 
+export function getArNSRefundQueue(): Queue {
+  if (!arnsRefundQueue) {
+    arnsRefundQueue = new Queue(arnsRefundQueueName, defaultQueueOptions);
+  }
+  return arnsRefundQueue;
+}
+
 export async function schedulePendingTxCheck(): Promise<void> {
   const queue = getPendingTxQueue();
 
@@ -48,7 +62,7 @@ export async function schedulePendingTxCheck(): Promise<void> {
         pattern: "*/60 * * * * *", // Every 60 seconds
       },
       jobId: "pending-tx-cron", // Prevents duplicate cron jobs
-    }
+    },
   );
 
   globalLogger.info("Pending TX cron job scheduled");
@@ -62,7 +76,7 @@ export interface AdminCreditJobData {
 }
 
 export async function enqueueAdminCredit(
-  data: AdminCreditJobData
+  data: AdminCreditJobData,
 ): Promise<string> {
   const queue = getAdminCreditQueue();
 
@@ -76,9 +90,90 @@ export async function enqueueAdminCredit(
   return job.id!;
 }
 
+export interface ArNSRefundJobData {
+  nonce: string;
+  reason: string;
+}
+
+export interface StoreArNSMessageIdJobData {
+  nonce: string;
+  messageId: string;
+}
+
+/**
+ * Durably refund a debited-but-failed ArNS purchase. Used both on the request
+ * critical path (when the synchronous refund itself fails) and by the
+ * reconciler. Keyed by nonce so the sync path and the reconciler de-duplicate.
+ */
+export async function enqueueArNSRefund(
+  data: ArNSRefundJobData,
+): Promise<string> {
+  const queue = getArNSRefundQueue();
+
+  const job = await queue.add(arnsRefundJobName, data, {
+    jobId: `arns-refund-${data.nonce}`, // dedupe sync-path + reconciler
+    attempts: 10, // money-back: retry hard through an extended outage
+    backoff: { type: "exponential", delay: 5000 },
+  });
+
+  globalLogger.info("ArNS refund job enqueued", {
+    jobId: job.id,
+    nonce: data.nonce,
+  });
+
+  return job.id!;
+}
+
+/**
+ * Durably store the on-chain message_id for a purchase whose write SUCCEEDED
+ * (the name was bought) but whose message_id write failed. Must never refund —
+ * the name is already paid for on-chain.
+ */
+export async function enqueueStoreArNSMessageId(
+  data: StoreArNSMessageIdJobData,
+): Promise<string> {
+  const queue = getArNSRefundQueue();
+
+  const job = await queue.add(arnsStoreMessageIdJobName, data, {
+    jobId: `arns-store-msgid-${data.nonce}`,
+    attempts: 10,
+    backoff: { type: "exponential", delay: 5000 },
+  });
+
+  globalLogger.info("ArNS store-message-id job enqueued", {
+    jobId: job.id,
+    nonce: data.nonce,
+  });
+
+  return job.id!;
+}
+
+/**
+ * Repeatable backstop: scans for debits that were orphaned (no message_id, past
+ * the stale threshold — e.g. the process died mid-request) and enqueues refunds.
+ */
+export async function scheduleArNSReconcile(): Promise<void> {
+  const queue = getArNSRefundQueue();
+
+  await queue.add(
+    arnsReconcileJobName,
+    {},
+    {
+      repeat: {
+        pattern: process.env.ARNS_RECONCILE_CRON || "*/5 * * * *",
+      },
+      jobId: "arns-reconcile-cron", // Prevents duplicate cron jobs
+    },
+  );
+
+  globalLogger.info("ArNS reconcile cron job scheduled");
+}
+
 // Graceful shutdown
 export async function closeQueues(): Promise<void> {
-  const queues = [pendingTxQueue, adminCreditQueue].filter((q) => q !== null);
+  const queues = [pendingTxQueue, adminCreditQueue, arnsRefundQueue].filter(
+    (q) => q !== null,
+  );
 
   await Promise.all(queues.map((q) => q!.close()));
 

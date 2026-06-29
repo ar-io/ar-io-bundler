@@ -15,11 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 // import cors from "@koa/cors"; // CORS handled by nginx
-import type { Server as HttpServer } from "node:http";
-
 import Koa, { DefaultState, Next, ParameterizedContext } from "koa";
 import bodyParser from "koa-bodyparser";
 import jwt from "koa-jwt";
+import type { Server as HttpServer } from "node:http";
 import Stripe from "stripe";
 import { Logger } from "winston";
 
@@ -52,7 +51,6 @@ import {
 } from "./middleware/bodyParsing";
 import { TurboPricingService } from "./pricing/pricing";
 import router from "./router";
-import { JWKInterface } from "./types/jwkTypes";
 import { resolveBodyParserLimits } from "./utils/bodyLimits";
 import { loadSecretsToEnv } from "./utils/loadSecretsToEnv";
 import { resolvePrivateRouteSecret } from "./utils/privateRouteSecret";
@@ -110,11 +108,11 @@ function registerGracefulShutdown(server: HttpServer, log: Logger): void {
     const parsed = Number(process.env.SHUTDOWN_DRAIN_MS);
     const drainMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
     log.info(
-      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`
+      `${signal} received — draining HTTP connections (max ${drainMs}ms)...`,
     );
     const force = setTimeout(
       () => finalize("warn", "Drain timeout exceeded — forcing exit."),
-      drainMs
+      drainMs,
     );
     force.unref();
     drainServer?.close(() => {
@@ -131,7 +129,7 @@ function registerGracefulShutdown(server: HttpServer, log: Logger): void {
 
 export async function createServer(
   arch: Partial<Architecture>,
-  port: number = defaultPort
+  port: number = defaultPort,
 ) {
   const app = new Koa();
 
@@ -165,8 +163,9 @@ export async function createServer(
     try {
       await next();
     } catch (error) {
-      const httpStatus = (error as { status?: number; statusCode?: number })
-        ?.status ?? (error as { statusCode?: number })?.statusCode;
+      const httpStatus =
+        (error as { status?: number; statusCode?: number })?.status ??
+        (error as { statusCode?: number })?.statusCode;
       if (error instanceof BadRequest) {
         ctx.status = 400;
         ctx.body = { error: error.message };
@@ -218,12 +217,14 @@ export async function createServer(
   // small (resolveBodyParserLimits) — bodyParser buffers the whole body in
   // memory before auth, so a large limit on these public, tiny-payload endpoints
   // is a pre-auth memory-amplification DoS vector.
-  app.use(bodyParser({
-    enableTypes: ['json', 'form', 'text'],
-    formLimit: bodyLimits.formLimit,
-    jsonLimit: bodyLimits.jsonLimit,
-    textLimit: bodyLimits.textLimit,
-  }));
+  app.use(
+    bodyParser({
+      enableTypes: ["json", "form", "text"],
+      formLimit: bodyLimits.formLimit,
+      jsonLimit: bodyLimits.jsonLimit,
+      textLimit: bodyLimits.textLimit,
+    }),
+  );
 
   // NOTE: Middleware that use the JWT must handle ctx.state.user being undefined and throw
   // an error if the user is not authenticated
@@ -235,14 +236,9 @@ export async function createServer(
   const stripe =
     arch.stripe ?? new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 
-  const jwk: JWKInterface =
-    process.env.ARIO_SIGNING_JWK
-      ? JSON.parse(process.env.ARIO_SIGNING_JWK)
-      : undefined;
-
   const gatewayMap: GatewayMap = arch.gatewayMap ?? {
     arweave: new ArweaveGateway(),
-    ario: new ARIOGateway({ jwk, logger }),
+    ario: new ARIOGateway({ logger }),
     ethereum: new EthereumGateway(),
     solana: new SolanaGateway(),
     ed25519: new SolanaGateway(),
@@ -261,7 +257,7 @@ export async function createServer(
     }
     if (!MANDRILL_API_KEY) {
       throw new Error(
-        "MANDRILL_API_KEY environment variable is not set! Please set the key and restart the server or set GIFTING_ENABLED=false to disable gifting by email on top ups flow."
+        "MANDRILL_API_KEY environment variable is not set! Please set the key and restart the server or set GIFTING_ENABLED=false to disable gifting by email on top ups flow.",
       );
     }
     return new MandrillEmailProvider(MANDRILL_API_KEY, logger);
@@ -277,14 +273,14 @@ export async function createServer(
       emailProvider,
       gatewayMap,
       x402Service,
-    })
+    }),
   );
 
   app.use(router.routes());
 
   // Bind address is env-driven: BIND_ADDRESS=127.0.0.1 keeps the API loopback-only
   // (co-located nginx proxies from localhost). Defaults to 0.0.0.0 for a separate-server nginx.
-  const server = app.listen(port, process.env.BIND_ADDRESS || '0.0.0.0');
+  const server = app.listen(port, process.env.BIND_ADDRESS || "0.0.0.0");
 
   // Timeout configuration for payment operations (faster than uploads). Uses
   // PAYMENT_-prefixed env vars so the payment service never inherits the upload
@@ -301,18 +297,18 @@ export async function createServer(
   server.headersTimeout = headersTimeout;
 
   // Handle timeout events
-  server.on('timeout', (socket) => {
-    logger.warn('Server timeout - closing socket', {
+  server.on("timeout", (socket) => {
+    logger.warn("Server timeout - closing socket", {
       remoteAddress: socket.remoteAddress,
       remotePort: socket.remotePort,
     });
     socket.destroy();
   });
 
-  server.on('clientError', (err, socket) => {
-    logger.error('Client error', { error: err });
+  server.on("clientError", (err, socket) => {
+    logger.error("Client error", { error: err });
     if (!socket.destroyed) {
-      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
     }
   });
 

@@ -25,6 +25,9 @@ import { SolanaARIOGateway, SolanaARIOGatewayParams } from "./solana-ario";
 export interface ARIOInterface {
   getTokenCost(p: ArNSTokenCostParams): Promise<mARIOToken>;
   initiateArNSPurchase(p: ArNSPurchase): Promise<MessageResult>;
+  // Live on-chain ArNS record for a name (undefined if unregistered). Lets the
+  // reconciler confirm a buy landed before refunding.
+  getArNSRecord(name: string): Promise<{ antId?: string } | undefined>;
 }
 
 export type ARIOConstructorParams = GatewayParams &
