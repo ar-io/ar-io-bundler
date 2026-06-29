@@ -3409,6 +3409,8 @@ describe("Router tests", () => {
       stub(gatewayMap.ario, "initiateArNSPurchase").rejects(
         new Error("on-chain write boom"),
       );
+      // On-chain confirm says the name did NOT land → genuine failure → refund.
+      stub(gatewayMap.ario, "getArNSRecord").resolves(undefined);
 
       // Clean slate for this name + a known balance for the signer.
       await dbTestHelper
@@ -3467,6 +3469,61 @@ describe("Router tests", () => {
       );
       expect(status).to.equal(400);
       expect(data).to.contain("provisioning is disabled");
+    });
+
+    it("does NOT refund when the write threw but the name LANDED on-chain (F1)", async () => {
+      const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+      const name = "threw-but-landed";
+
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      // The write THREW (confirm/RPC timeout) ...
+      stub(gatewayMap.ario, "initiateArNSPurchase").rejects(
+        new Error("confirmation timeout"),
+      );
+      // ... but the name actually resolves to the bought antId on-chain.
+      stub(gatewayMap.ario, "getArNSRecord").resolves({
+        antId: "stubProcessId",
+      });
+
+      await dbTestHelper
+        .knex(tableNames.arNSPurchaseReceipt)
+        .where({ name })
+        .del();
+      const startingBalance = "1000000000";
+      await dbTestHelper
+        .knex(tableNames.user)
+        .where({ user_address: signerAddress })
+        .del();
+      await dbTestHelper.insertStubUser({
+        user_address: signerAddress,
+        winston_credit_balance: startingBalance,
+      });
+
+      const { status } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/${name}?type=permabuy&processId=stubProcessId`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(status).to.equal(503); // the write still threw
+
+      // ...but the buyer is NOT refunded (they own the name); the receipt is
+      // marked `bought` and survives — NOT moved to the failed table.
+      const user = await dbTestHelper
+        .knex<UserDBResult>(tableNames.user)
+        .where({ user_address: signerAddress })
+        .first();
+      expect(Number(user?.winston_credit_balance ?? "0")).to.be.lessThan(
+        Number(startingBalance),
+      ); // debited, NOT refunded
+      const receipt = await dbTestHelper
+        .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+        .where({ name })
+        .first();
+      expect(receipt?.status).to.equal("bought");
+      const failed = await dbTestHelper
+        .knex(tableNames.failedArNSPurchase)
+        .where({ name });
+      expect(failed.length).to.equal(0);
     });
 
     it("provisions + records a Turbo-owned ANT when Buy-Name has no processId", async () => {

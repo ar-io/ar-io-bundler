@@ -155,7 +155,21 @@ export async function reconcileStaleArNSPurchases(
       continue;
     }
 
-    if (record && purchase.processId && record.antId === purchase.processId) {
+    // The on-chain antId match only PROVES a landing for a fresh-name
+    // registration (Buy-Name/Buy-Record): the name now resolving to this
+    // receipt's antId means WE bought it. For Extend-Lease / Upgrade-Name /
+    // Increase-Undername-Limit the name ALREADY resolves to that antId
+    // regardless of whether THIS op landed, so the match is no evidence — we
+    // must not promote those to `bought` (that would strand the buyer's credits
+    // for a failed extend). They fall through to a refund instead.
+    const isFreshNameBuy =
+      purchase.intent === "Buy-Name" || purchase.intent === "Buy-Record";
+    if (
+      isFreshNameBuy &&
+      record &&
+      purchase.processId &&
+      record.antId === purchase.processId
+    ) {
       await paymentDatabase.markArNSPurchaseBought(purchase.nonce);
       confirmedBought++;
       logger.warn(

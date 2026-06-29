@@ -157,11 +157,11 @@ describe("arnsRefund job handlers", () => {
       expect(markArNSPurchaseBought.called).to.be.false;
     });
 
-    it("promotes a name confirmed on-chain to bought instead of refunding it", async () => {
+    it("promotes a fresh-name buy confirmed on-chain to bought instead of refunding it", async () => {
       const getStalePendingArNSPurchases = sinon
         .stub()
         .resolves([
-          { nonce: "a", name: "landed", processId: "antA" },
+          { nonce: "a", name: "landed", processId: "antA", intent: "Buy-Name" },
         ] as unknown as ArNSPurchase[]);
       const enqueueRefund = sinon.stub().resolves("job");
       const markArNSPurchaseBought = sinon.stub().resolves();
@@ -184,6 +184,40 @@ describe("arnsRefund job handlers", () => {
       expect(result).to.deep.equal({ refunded: 0, confirmedBought: 1 });
       expect(markArNSPurchaseBought.calledOnceWith("a")).to.be.true;
       expect(enqueueRefund.called).to.be.false; // NEVER refund a bought name
+    });
+
+    it("REFUNDS a stale Extend-Lease (antId resolution is NOT evidence it landed)", async () => {
+      // The name already resolves to antX regardless of whether THIS extend
+      // landed, so the on-chain match must NOT promote it to bought (that would
+      // strand the buyer's credits). It must refund instead.
+      const getStalePendingArNSPurchases = sinon.stub().resolves([
+        {
+          nonce: "ext",
+          name: "existing",
+          processId: "antX",
+          intent: "Extend-Lease",
+        },
+      ] as unknown as ArNSPurchase[]);
+      const enqueueRefund = sinon.stub().resolves("job");
+      const markArNSPurchaseBought = sinon.stub().resolves();
+      const confirmOnChain = sinon.stub().resolves({ antId: "antX" });
+
+      const result = await reconcileStaleArNSPurchases(
+        {
+          paymentDatabase: dbWith({
+            getStalePendingArNSPurchases,
+            markArNSPurchaseBought,
+          }),
+          logger: stubLogger(),
+        },
+        enqueueRefund,
+        1000,
+        confirmOnChain,
+      );
+
+      expect(result).to.deep.equal({ refunded: 1, confirmedBought: 0 });
+      expect(markArNSPurchaseBought.called).to.be.false; // NOT stranded as bought
+      expect(enqueueRefund.calledOnce).to.be.true;
     });
 
     it("fails SAFE (no refund) when the on-chain confirm throws", async () => {
