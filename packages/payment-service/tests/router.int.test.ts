@@ -70,7 +70,6 @@ import { W, Winston } from "../src/types/winston";
 import { filterKeysFromObject } from "../src/utils/common";
 import { arweaveRSAModulusToAddress } from "../src/utils/jwkUtils";
 import {
-  signedRequestHeadersFromEthWallet,
   signedRequestHeadersFromJwk,
   signedRequestHeadersFromSolanaKeypair,
 } from "../tests/helpers/signData";
@@ -153,6 +152,12 @@ describe("Router tests", () => {
       expectedTokenPrices,
     );
     stub(arweaveOracle, "getWinstonForBytes").resolves(W(857_922_282_166));
+  });
+
+  afterEach(() => {
+    // Provisioning is OFF by default; tests that exercise the spawn path opt in
+    // by setting this, and we always clear it so it can't leak across tests.
+    delete process.env.ARNS_PROVISIONING_ENABLED;
   });
 
   before(async () => {
@@ -3450,7 +3455,21 @@ describe("Router tests", () => {
       expect(pending.length).to.equal(0);
     });
 
+    it("rejects a no-processId Buy-Name when provisioning is DISABLED (default)", async () => {
+      // The flag is unset (afterEach clears it) → the pre-provisioning behavior:
+      // a Buy without a processId is a 400, so deploying this code is inert.
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      const { status, data } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/disabled-provisioning?type=permabuy`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(status).to.equal(400);
+      expect(data).to.contain("provisioning is disabled");
+    });
+
     it("provisions + records a Turbo-owned ANT when Buy-Name has no processId", async () => {
+      process.env.ARNS_PROVISIONING_ENABLED = "true"; // enable the spawn path
       const name = "spawn-on-buy-no-processid";
       const spawnedAntId = "spawned-ant-process-id";
       stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
@@ -3518,6 +3537,7 @@ describe("Router tests", () => {
     });
 
     it("adds ANT_SPAWN_WINC_SURCHARGE to the debit only when an ANT is provisioned", async () => {
+      process.env.ARNS_PROVISIONING_ENABLED = "true"; // enable the spawn path
       stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
       stub(pricingService, "getWCForCryptoPayment").resolves({
         finalPrice: new FinalPrice(new Winston("1000")),

@@ -723,10 +723,26 @@ export function getValidatedArNSPurchaseParams(
   }
 
   const { intent, type, years, increaseQty } = priceParams;
+
+  // ArNS provisioning gate (OFF by default). A Buy without a processId
+  // provisions a fresh, Turbo-owned ANT — an on-chain spawn that spends SOL.
+  // That path is inert unless ARNS_PROVISIONING_ENABLED=true; until then a
+  // Buy-Name/Buy-Record MUST supply a processId (the pre-provisioning behavior),
+  // so deploying this code changes nothing for existing BYO-ANT clients.
+  if (
+    (intent === "Buy-Name" || intent === "Buy-Record") &&
+    processId === undefined &&
+    process.env.ARNS_PROVISIONING_ENABLED !== "true"
+  ) {
+    throw new BadRequest(
+      "Missing required parameter: processId (ArNS provisioning is disabled)",
+    );
+  }
+
   if (intent === "Buy-Name") {
-    // processId is OPTIONAL: when omitted, the bundler provisions a fresh,
-    // Turbo-owned ANT for the name (custodial Model A). A supplied processId
-    // (BYO-ANT / self-custody Solana user) is used as-is.
+    // processId is OPTIONAL when provisioning is enabled: omitted ⇒ the bundler
+    // provisions a fresh, Turbo-owned ANT (custodial Model A). A supplied
+    // processId (BYO-ANT / self-custody Solana user) is used as-is.
     if (type === undefined || (type !== "permabuy" && type !== "lease")) {
       throw new BadRequest(
         "Missing required parameter: type. Must be either 'permabuy' or 'lease'",
