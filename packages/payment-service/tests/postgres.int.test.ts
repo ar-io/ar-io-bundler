@@ -2937,6 +2937,8 @@ describe("PostgresDatabase class", () => {
         const recentNonce = "recent-pending -- getStalePendingArNSPurchases";
         const succeededNonce = "succeeded -- getStalePendingArNSPurchases";
 
+        const spawnedNonce = "stale-spawned -- getStalePendingArNSPurchases";
+
         // Pending (no message_id) by default; succeeded one opts into a message_id.
         await dbTestHelper.insertStubArNSPurchase({ nonce: staleNonce, owner });
         await dbTestHelper.insertStubArNSPurchase({
@@ -2948,18 +2950,26 @@ describe("PostgresDatabase class", () => {
           owner,
           message_id: "on-chain-signature",
         });
+        // A 'spawned' receipt (antId persisted, buy not yet confirmed) is also
+        // pending and MUST be reconciled — covers that status branch.
+        await dbTestHelper.insertStubArNSPurchase({
+          nonce: spawnedNonce,
+          owner,
+          status: "spawned",
+        });
 
-        // Age the stale + succeeded receipts to an hour ago; recent stays "now".
+        // Age the stale + succeeded + spawned receipts to an hour ago; recent stays "now".
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
         await dbTestHelper
           .knex(tableNames.arNSPurchaseReceipt)
-          .whereIn("nonce", [staleNonce, succeededNonce])
+          .whereIn("nonce", [staleNonce, succeededNonce, spawnedNonce])
           .update({ created_date: oneHourAgo });
 
         const stale = await db.getStalePendingArNSPurchases(30 * 60 * 1000);
         const nonces = stale.map((p) => p.nonce);
 
-        expect(nonces).to.include(staleNonce); // old + pending → orphaned debit
+        expect(nonces).to.include(staleNonce); // old + reserved → orphaned debit
+        expect(nonces).to.include(spawnedNonce); // old + spawned → also orphaned
         expect(nonces).to.not.include(recentNonce); // pending but too recent
         expect(nonces).to.not.include(succeededNonce); // old but already succeeded
       });

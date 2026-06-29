@@ -279,11 +279,16 @@ export class SolanaARIOGateway extends Gateway {
   }
 
   // Read the live on-chain ArNS record for a name (undefined if unregistered).
-  // Used by the reconciler to confirm — before any refund — whether a name a
-  // receipt paid for actually landed on-chain (and resolves to our antId).
+  // Used by the refund-confirm paths (catch path + reconciler) to decide whether
+  // a name a receipt paid for actually landed on-chain (and resolves to our
+  // antId). It MUST bypass the 5-min read cache: the pre-buy price check
+  // populates that cache with "available" (undefined) for the name being bought,
+  // so a cached read right after a thrown-but-landed buy would wrongly conclude
+  // the name did NOT land and refund a bought name. Evict first → fresh fetch.
   public async getArNSRecord(
     name: string,
   ): Promise<{ antId?: string } | undefined> {
+    this.arnsRecordPromiseCache.remove(name);
     const record = await this.arnsRecordPromiseCache.get(name);
     return record ? { antId: record.processId } : undefined;
   }

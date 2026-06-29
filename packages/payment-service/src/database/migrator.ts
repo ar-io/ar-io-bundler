@@ -704,6 +704,20 @@ export class ArNSPurchaseStatusMigrator extends Migrator {
         await this.knex(tableNames.arNSPurchaseReceipt)
           .whereNull(columnNames.messageId)
           .update({ [columnNames.status]: "reserved" });
+        // Lock it down: NOT NULL DEFAULT 'reserved'. A NULL-status receipt would
+        // be invisible to getStalePendingArNSPurchases (whereIn reserved/spawned)
+        // → a silent un-refundable orphan. The default guarantees any future
+        // insert path that forgets `status` still lands in the reconciler's view.
+        await this.knex.schema.alterTable(
+          tableNames.arNSPurchaseReceipt,
+          (table) => {
+            table
+              .string(columnNames.status)
+              .notNullable()
+              .defaultTo("reserved")
+              .alter();
+          },
+        );
         // failed_arns_purchase inherits the same columns (rows are spread into
         // it on refund), so it needs the column too.
         await this.knex.schema.alterTable(
