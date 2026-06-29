@@ -21,14 +21,18 @@ import { RawAxiosRequestHeaders } from "axios";
 import { Buffer } from "buffer";
 import { randomUUID } from "crypto";
 import { HDNodeWallet } from "ethers";
+import nacl from "tweetnacl";
 
 import { JWKInterface } from "../../src/types/jwkTypes";
 import { toB64Url } from "../../src/utils/base64";
-import { signEthereumData } from "../../src/utils/verifyArweaveSignature";
+import {
+  signEthereumData,
+  signSolanaData,
+} from "../../src/utils/verifyArweaveSignature";
 
 export async function signArweaveData(
   jwk: JWKInterface,
-  dataToSign: string
+  dataToSign: string,
 ): Promise<Uint8Array> {
   return await Arweave.crypto.sign(jwk, stringToBuffer(dataToSign), {
     saltLength: 0, // We do not need to salt the signature since we combine with a random UUID
@@ -38,7 +42,7 @@ export async function signArweaveData(
 export async function signedRequestHeadersFromJwk(
   jwk: JWKInterface,
   nonce: string = randomUUID(),
-  data = ""
+  data = "",
 ): Promise<RawAxiosRequestHeaders> {
   const signature = await signArweaveData(jwk, data + nonce);
 
@@ -52,7 +56,7 @@ export async function signedRequestHeadersFromJwk(
 export async function signedRequestHeadersFromEthWallet(
   wallet: HDNodeWallet,
   nonce: string = randomUUID(),
-  data = ""
+  data = "",
 ): Promise<RawAxiosRequestHeaders> {
   const signature = await signEthereumData(wallet, data + nonce);
 
@@ -61,5 +65,18 @@ export async function signedRequestHeadersFromEthWallet(
     "x-nonce": nonce,
     "x-signature": signature,
     "x-signature-type": SignatureConfig.ETHEREUM,
+  };
+}
+
+export function signedRequestHeadersFromSolanaKeypair(
+  keypair: nacl.SignKeyPair,
+  nonce: string = randomUUID(),
+  data = "",
+): RawAxiosRequestHeaders {
+  return {
+    "x-public-key": toB64Url(Buffer.from(keypair.publicKey)),
+    "x-nonce": nonce,
+    "x-signature": signSolanaData(keypair.secretKey, data + nonce),
+    "x-signature-type": SignatureConfig.SOLANA,
   };
 }

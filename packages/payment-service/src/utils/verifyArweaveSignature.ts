@@ -17,12 +17,14 @@
 import { SignatureConfig } from "@dha-team/arbundles";
 import Arweave from "arweave/node/common.js";
 import { stringToBuffer } from "arweave/node/lib/utils";
+import bs58 from "bs58";
 import {
   HDNodeWallet,
   computeAddress,
   verifyMessage as verifyEthereumMessage,
 } from "ethers";
 import crypto from "node:crypto";
+import nacl from "tweetnacl";
 
 import { PublicKeyString } from "../types";
 import { fromB64UrlToBuffer, toB64Url } from "./base64";
@@ -63,6 +65,15 @@ export async function verifySigAndGetNativeAddress({
       return verifyEthereumSignature(publicKey, signature, data)
         ? normalizeEthereumAddress(computeAddress(publicKey))
         : false;
+    case SignatureConfig.SOLANA:
+    case SignatureConfig.ED25519:
+      // Solana/ed25519: the public key IS the address. Verify the ed25519
+      // signature over the signed data, then return the base58-encoded public
+      // key — matching how the upload service derives the native address for
+      // these signature types (ownerToNativeAddress: bs58.encode(pubkey)).
+      return verifySolanaSignature(publicKey, signature, data)
+        ? bs58.encode(fromB64UrlToBuffer(publicKey))
+        : false;
     default:
       return false;
   }
@@ -79,7 +90,7 @@ export async function verifyArweaveSignature({
   const isVerified = await Arweave.crypto.verify(
     publicKey,
     data,
-    fromB64UrlToBuffer(signature)
+    fromB64UrlToBuffer(signature),
   );
   if (isVerified) {
     return isVerified;
@@ -103,7 +114,7 @@ export async function verifyArweaveSignature({
       hash: "SHA-256",
     },
     false,
-    ["verify"]
+    ["verify"],
   );
 
   // verify the signature by matching it with the hash
@@ -111,32 +122,53 @@ export async function verifyArweaveSignature({
     { name: "RSA-PSS", saltLength: 32 },
     verificationKey,
     fromB64UrlToBuffer(signature),
-    hash
+    hash,
   );
   return isValidSignature;
 }
 
-// TODO: SOLANA SIGNATURES
-// export async function signSolanaData(
-//   keypair: Keypair,
-//   dataToSign: string
-// ): Promise<Uint8Array> {
-//   const signature = keypair.sign(stringToBuffer(dataToSign));
-//   return signature;
-// }
+// SOLANA / ED25519 SIGNATURES
+//
+// `publicKey` is the b64url-encoded raw 32-byte ed25519 public key (the same
+// owner encoding the upload service uses); `signature` is the b64url-encoded
+// detached ed25519 signature over the UTF-8 bytes of `data` (the nonce). The
+// signer signs `Buffer.from(nonce)`, which equals `stringToBuffer(nonce)`.
+export function verifySolanaSignature(
+  publicKey: string,
+  signature: string,
+  data: string,
+): boolean {
+  const publicKeyBytes = fromB64UrlToBuffer(publicKey);
+  // An ed25519 public key is exactly 32 bytes; reject anything else rather than
+  // letting tweetnacl throw on malformed input.
+  if (publicKeyBytes.length !== 32) {
+    return false;
+  }
+  try {
+    return nacl.sign.detached.verify(
+      new Uint8Array(stringToBuffer(data)),
+      new Uint8Array(fromB64UrlToBuffer(signature)),
+      new Uint8Array(publicKeyBytes),
+    );
+  } catch {
+    return false;
+  }
+}
 
-// export async function verifySolanaSignature(
-//   publicKey: string,
-//   signature: Uint8Array,
-//   data: string
-// ): boolean {
-//   const key = new PublicKey(publicKey);
-//   return key.verify(stringToBuffer(data), signature);}
+// Test/client helper: produce a b64url detached ed25519 signature over `data`
+// using a raw 64-byte ed25519 secret key.
+export function signSolanaData(secretKey: Uint8Array, data: string): string {
+  const signature = nacl.sign.detached(
+    new Uint8Array(stringToBuffer(data)),
+    secretKey,
+  );
+  return toB64Url(Buffer.from(signature));
+}
 
 // ETHEREUM SIGNATURES
 export async function signEthereumData<W extends HDNodeWallet>(
   wallet: W,
-  dataToSign: string
+  dataToSign: string,
 ): Promise<string> {
   const sig = await wallet.signMessage(dataToSign);
   return toB64Url(Buffer.from(sig.slice(2), "hex"));
@@ -145,7 +177,7 @@ export async function signEthereumData<W extends HDNodeWallet>(
 export function verifyEthereumSignature(
   publicKey: string,
   signature: string,
-  data: string
+  data: string,
 ): boolean {
   signature = fromB64UrlToBuffer(signature).toString("hex");
   signature = signature.startsWith("0x") ? signature : "0x" + signature;
