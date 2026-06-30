@@ -40,6 +40,8 @@ deeper references.
 - [**FEATURE_GUIDE.md**](./guides/FEATURE_GUIDE.md) — Feature overview.
 - [**X402_INTEGRATION_GUIDE.md**](./guides/X402_INTEGRATION_GUIDE.md) — Integrating
   x402 USDC payments (signed and unsigned uploads).
+- [**ARNS_INTEGRATION_GUIDE.md**](./guides/ARNS_INTEGRATION_GUIDE.md) — Buy and
+  manage ArNS names with Turbo credits (provisioning, exit, record management).
 
 ### [archive/](./archive/)
 Historical decision analyses and audits kept for reference only (gateway/x402
@@ -58,6 +60,7 @@ git history). Do not treat as authoritative.
 | System architecture | [ARCHITECTURE.md](./architecture/ARCHITECTURE.md) |
 | API reference | [api/README.md](./api/README.md) |
 | x402 integration | [guides/X402_INTEGRATION_GUIDE.md](./guides/X402_INTEGRATION_GUIDE.md) |
+| ArNS with credits | [guides/ARNS_INTEGRATION_GUIDE.md](./guides/ARNS_INTEGRATION_GUIDE.md) |
 
 ## Support
 

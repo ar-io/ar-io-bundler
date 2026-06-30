@@ -147,7 +147,14 @@ open http://localhost:3002/admin/queues  # Bull Board dashboard
 
 **Payment Service** (`packages/payment-service/`):
 - User balances (Winston credits), cryptocurrency payments (Arweave, Ethereum, Solana, Matic, KYVE, Base-ETH)
-- Stripe credit card payments, ArNS purchases
+- Stripe credit card payments
+- **ArNS with credits** (Solana-settled): buy/extend/upgrade/increase-undername, plus
+  custodial ANT **provisioning** (spawn-on-buy, gated `ARNS_PROVISIONING_ENABLED`,
+  off by default), self-custody **exit** (`/v1/arns/transfer`), and record
+  **management** (`/v1/arns/manage/...`). Custody Model A; money-safe via a
+  receipt `status` state machine + an on-chain-confirm reconciler
+  (`payment-arns-refund` queue); custody routes use action-bound single-use
+  signatures. See `docs/guides/ARNS_INTEGRATION_GUIDE.md`.
 - x402 protocol (Coinbase HTTP 402 with USDC)
 - Balance reservation/refund for uploads
 
@@ -350,6 +357,14 @@ AR_IO_ADMIN_KEY=<your-key>
 X402_PAYMENT_ADDRESS=<ethereum-address>
 CDP_API_KEY_ID=<required-for-mainnet>
 CDP_API_KEY_SECRET=<required-for-mainnet>
+
+# ArNS with credits (Solana). ARIO_SOLANA_SIGNER_SECRET_KEY (bs58) signs buys +
+# ANT ops and MUST be funded with SOL for writes; unset = read-only. Provisioning
+# (spawn-on-buy) is OFF unless ARNS_PROVISIONING_ENABLED=true, so deploying is
+# inert until enabled. See docs/guides/ARNS_INTEGRATION_GUIDE.md for the rest
+# (ANT_SPAWN_WINC_SURCHARGE, ARNS_*_TTL_SECONDS, ARNS_RECONCILE_CRON, ...).
+ARIO_SOLANA_SIGNER_SECRET_KEY=<bs58-solana-secret-key>
+ARNS_PROVISIONING_ENABLED=false
 ```
 
 ## PM2 Process Management
@@ -413,4 +428,5 @@ TypeScript 5 / Node.js 22+ (required by @ar.io/sdk v4, ESM-only) • Yarn 3.6.0 
 - **docs/operations/ADMIN_GUIDE.md**: Day-to-day administration
 - **docs/api/README.md**: REST API reference
 - **docs/guides/X402_INTEGRATION_GUIDE.md** and **docs/architecture/X402_END_TO_END_DEEP_DIVE.md**: x402 protocol details (signed + unsigned uploads)
+- **docs/guides/ARNS_INTEGRATION_GUIDE.md**: ArNS with Turbo credits — provisioning, self-custody exit, record management, money-path safety, config + ops
 - **docs/archive/**: historical analyses/audits only (not current state)

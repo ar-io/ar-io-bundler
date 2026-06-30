@@ -130,6 +130,25 @@
 - [ ] Confirm the **bundle-signing wallet has AR balance** (prod seeds for real). Top up if needed.
 - [ ] Confirm `ARWEAVE_ADDRESS` matches `wallet.json`.
 
+## Phase 8a — ArNS with credits (deploy-then-enable, optional)
+
+> The ArNS feature is **safe to deploy OFF** — the schema migration, the reconciler, and the hardened
+> buy/refund path go live, while provisioning/transfer/manage stay dormant. Enabling = fund the signer + flip
+> the flag. See `docs/guides/ARNS_INTEGRATION_GUIDE.md`. Skip this phase entirely if you are not offering ArNS.
+
+- [ ] **Recipient set:** `ARIO_ADDRESS` (or `SOLANA_ADDRESS`) is a **base58 Solana** address (Phase 5).
+- [ ] **Signer set + funded:** `ARIO_SOLANA_SIGNER_SECRET_KEY` (bs58 Solana key) set, and the wallet **funded
+      with SOL** (each ANT spawn ≈ 0.02 SOL rent + gas; records/transfers are gas-only). Unset ⇒ ArNS read-only.
+- [ ] **Provisioning flag:** `ARNS_PROVISIONING_ENABLED=true` (off ⇒ a no-`processId` buy is a 400/inert).
+      Optionally set `ANT_SPAWN_WINC_SURCHARGE` to recover the spawn SOL rent (FEE_CONFIGURATION_GUIDE).
+- [ ] **Redis reachable:** the custody routes' single-use-nonce store uses the **BullMQ-queues Redis** (:6381)
+      and **fails closed (503)** if it's down — confirm `redis-cli -p 6381 ping` → `PONG`.
+- [ ] **Reconciler scheduled:** after deploy, `payment-workers` booted and the `reconcile-stale` job is
+      registered (`ARNS_RECONCILE_CRON`, default `*/5 * * * *`); verify in Bull Board (`:3002`) that the
+      `payment-arns-refund` queue exists.
+- [ ] **Migration applied:** the `status` column on `arns_purchase_receipt` and the `user_ant` table exist
+      (Phase 6 `yarn db:migrate`).
+
 ## Phase 9 — Schedulers (→ §12)
 
 - [ ] `pm2 logs upload-workers --nostream | grep "job schedulers"` → plan (5 min) + cleanup (daily) registered.

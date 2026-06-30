@@ -898,10 +898,50 @@ Access the queue dashboard at **http://localhost:3002/admin/queues**
 **Payment Service Queues:**
 1. `payment-pending-tx` - Cryptocurrency payment monitoring
 2. `payment-admin-credit` - Admin credit operations
+3. `payment-arns-refund` - ArNS money-path jobs: refund / store-message-id / `reconcile-stale` (stale-receipt reconciler — see [ArNS Operations](#arns-operations-arns-with-credits))
 
 > Queue names in Bull Board / Redis are prefixed: upload queues are `upload-<label>`
 > (e.g. `upload-broadcast-chunks`) and payment queues are `payment-<label>`. The
 > short labels above are the `jobLabels`; prefix them when grepping Redis (`bull:upload-…`).
+
+### ArNS Operations (ArNS-with-credits)
+
+Day-2 ops for the **ArNS-with-credits** feature (buy/extend/upgrade names + provision/exit/manage ANTs, paid
+from a Turbo credit balance; ArNS settles on Solana). Full feature detail:
+`docs/guides/ARNS_INTEGRATION_GUIDE.md`. This surface is dormant unless the feature is enabled
+(`ARIO_SOLANA_SIGNER_SECRET_KEY` set + funded, `ARNS_PROVISIONING_ENABLED=true`).
+
+**The two payment queues + reconciler.** ArNS runs on `payment-workers` via the `payment-arns-refund` queue
+(alongside `payment-pending-tx`). It carries the money-path jobs — `refund`, `store-message-id`, and the
+`reconcile-stale` reconciler. The reconciler is an in-process BullMQ schedule (`ARNS_RECONCILE_CRON`, default
+`*/5 * * * *`; `""` disables) that finds debited-but-unconfirmed receipts (`reserved`/`spawned` past
+`ARNS_RECEIPT_STALE_THRESHOLD_MS`, default 90 min) and **confirms on-chain before acting** — it promotes a name
+that actually landed to `bought` and **never refunds a name that was really bought**. Monitor it:
+
+```bash
+# Reconciler heartbeat + outcome (a rising "refunded" under normal traffic warrants a look):
+pm2 logs payment-workers | grep "Reconciled stale ArNS purchases"
+# Queue health in Bull Board: http://localhost:3002/admin/queues  (payment-arns-refund)
+redis-cli -p 6381 zcard bull:payment-arns-refund:failed
+redis-cli -p 6381 zcard bull:payment-arns-refund:wait
+```
+
+**Status lookups.** A purchase's success signal is its `status` (not the message_id). Clients poll:
+
+```bash
+# pending / success / failed (a 503'd-but-landed buy resolves to success here)
+curl http://localhost:4001/v1/arns/purchase/<nonce>
+```
+
+**Treasury SOL (signer wallet).** Provisioning + transfers spend real SOL from `ARIO_SOLANA_SIGNER_SECRET_KEY`
+(each ANT spawn ≈ 0.02 SOL rent + gas; records/transfers are gas-only). **Monitor its SOL balance** — an
+empty/failed signer makes provisioned buys fail (and durably refund). A failed spawn-then-buy can leave an
+orphaned ANT (rent spent); reclaim is a known follow-up.
+
+**Redis dependency (custody routes fail closed).** The custody-mutating routes
+(`POST /v1/arns/transfer/:antId`, `/manage/:antId/set-record`, `/manage/:antId/remove-record`) use a
+single-use-nonce store on the **BullMQ-queues Redis** (:6381) on every request and **fail closed with 503 if
+Redis is down**. So queues-Redis must be reachable for ArNS custody operations, not just for bundling.
 
 ### Log Management
 

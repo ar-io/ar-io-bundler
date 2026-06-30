@@ -303,6 +303,21 @@ or hand-author from `.env.sample`. **Deployment-critical groups:**
   - ⚠️ **ArNS signer changed:** writes now use `ARIO_SOLANA_SIGNER_SECRET_KEY` (Solana bs58), **not** the old
     Arweave `ARIO_SIGNING_JWK` (now vestigial for ARIO). If Hetzner only carries the JWK, ArNS purchases stay
     read-only until the Solana key is provisioned.
+  - 🔴 **Fund the signer with SOL.** The signer pays real SOL for every ArNS write: each provisioned ANT spawn
+    ≈ 0.02 SOL rent + gas, records/transfers are gas-only. An empty/unfunded signer makes provisioned buys fail
+    (and durably refund). Fund it before opening ArNS, and monitor its SOL balance (treasury, see §17).
+- **ArNS-with-credits tuning vars (provisioning/custody — safe defaults; the feature stays dormant when off):**
+  - `ARNS_PROVISIONING_ENABLED` — gate the no-`processId` spawn-on-buy. Default `false` ⇒ such a buy is a
+    400 (inert). Set `true` (with a funded signer) to let Turbo provision a server-owned ANT for a buyer.
+  - `ANT_SPAWN_WINC_SURCHARGE` — winc surcharge folded into a provisioned buy to recover spawn SOL rent
+    (default `0`; only applies to provisioned buys — see FEE_CONFIGURATION_GUIDE).
+  - `ARNS_MIN_TTL_SECONDS` / `ARNS_MAX_TTL_SECONDS` — record TTL bounds (default `60` / `86400`).
+  - `ARNS_NONCE_TTL_SECONDS` — single-use-nonce window for custody routes (default `3600`). The nonce store
+    uses the **BullMQ-queues Redis** and **fails closed (503)** if Redis is down — Redis must be reachable.
+  - `ARNS_RECONCILE_CRON` — stale-receipt reconciler schedule (default `*/5 * * * *`; `""` disables). Runs on
+    `payment-workers` (§12).
+  - `ARNS_RECEIPT_STALE_THRESHOLD_MS` — how old a debited-but-unconfirmed receipt must be before the
+    reconciler evaluates it (default `5400000` = 90 min).
 
 ✅ RESOLVED (was an env gap): the tiered-retention cleanup vars (`FILESYSTEM_CLEANUP_DAYS=7`,
 `MINIO_CLEANUP_DAYS=90`) are now documented in `.env.sample` on branch `fix/pm2-ecosystem-portability` (Lane 6).
@@ -324,6 +339,11 @@ yarn db:migrate        # or scripts/migrate-all.sh — migrates payment then upl
 `MIGRATE_ON_STARTUP=false` by default; run migrations explicitly during deploy. Migration logic lives in
 `packages/payment-service/src/database/schema.ts` and `packages/upload-service/src/arch/db/migrator.ts`.
 After backport lanes land, re-run migrations (Lane 1 nested-offsets and any Solana-ARIO schema may add columns).
+
+> **ArNS migration (payment DB):** the ArNS-with-credits feature ships a payment-service migration that adds
+> the `status` column to `arns_purchase_receipt` (`NOT NULL DEFAULT 'reserved'`) and creates the `user_ant`
+> table (the custody user↔ANT mapping). It is safe/tested and runs on `yarn db:migrate` — apply it whether or
+> not you enable ArNS writes; the schema is harmless when the feature is off.
 
 ---
 
@@ -377,6 +397,7 @@ not currently guarantee this — validate it explicitly on Hetzner.
 |---|---|---|
 | Bundle planning (**required** — without it nothing bundles) | **internal** — `upload-workers` BullMQ scheduler (`PLAN_SCHEDULE_CRON`) | `*/5 * * * *` |
 | Tiered cleanup (FS 7d / MinIO 90d) | **internal** — `upload-workers` BullMQ scheduler (`CLEANUP_SCHEDULE_CRON`) | `0 2 * * *` |
+| ArNS stale-receipt reconciler (`reconcile-stale`) | **internal** — `payment-workers` BullMQ scheduler (`ARNS_RECONCILE_CRON`) | `*/5 * * * *` |
 | Bundle verify (mark permanent) | `scripts/trigger-verify.sh` (crontab) | periodic (e.g. hourly) |
 
 ✅ **Bundle planning and cleanup no longer need crontab.** They are registered as
@@ -409,6 +430,19 @@ footgun, so pass an absolute Node binary:
 # find it once: command -v node   (e.g. /usr/local/bin/node or a system Node 22)
 0 * * * * NODE_BIN=/abs/path/to/node /opt/ar-io-bundler/scripts/trigger-verify.sh >> /var/log/bundler/verify.log 2>&1
 ```
+
+> **ArNS reconciler** (`reconcile-stale`, `ARNS_RECONCILE_CRON */5`) is internal to `payment-workers` (no
+> crontab). It backstops the money path: it finds debited-but-unconfirmed ArNS receipts and confirms on-chain —
+> it **never refunds a name that actually landed**. After deploy, confirm `payment-workers` booted and the
+> reconciler scheduled (it logs `Reconciled stale ArNS purchases {refunded, confirmedBought}`).
+
+### ArNS deploy-then-enable
+
+The ArNS-with-credits code is **safe to deploy with the feature OFF**: only the schema migration (§8), the
+reconciler, and the hardened buy/refund flow go live; provisioning/transfer/manage stay dormant. To **enable**:
+fund the signer (`ARIO_SOLANA_SIGNER_SECRET_KEY` with SOL) and set `ARNS_PROVISIONING_ENABLED=true`, then
+`./scripts/deploy.sh` and confirm `payment-workers` booted + the reconciler scheduled. Full ops detail in
+`docs/guides/ARNS_INTEGRATION_GUIDE.md`.
 
 ---
 

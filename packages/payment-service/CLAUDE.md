@@ -139,7 +139,8 @@ signatures), `architecture` (injects DI context), and request/response logging.
 - **Stripe** — `POST /v1/stripe-webhook` → `stripe/stripeRoute.ts`
 - **ArNS** — `GET /v1/arns/price/:intent/:name`,
   `POST /v1/arns/purchase/:intent/:name`, `GET /v1/arns/purchase/:nonce`,
-  `GET /v1/arns/quote/...`
+  `GET /v1/arns/quote/...`; custody routes (action-bound signature):
+  `POST /v1/arns/transfer/:antId`, `POST /v1/arns/manage/:antId/{set,remove}-record`
 - **Delegated payment approvals** — create / get / get-all / revoke
 
 ### ArNS purchases (Solana-ARIO, @ar.io/sdk v4)
@@ -160,6 +161,31 @@ ArNS purchases settle on **Solana** with the SPL ARIO token, using
   never silently credit the wrong wallet.
 
 > This replaces the old Arweave-based `ARIO_SIGNING_JWK` write path for ARIO.
+
+**Custody Model A — provisioning, exit, manage** (the `processId`→`antId` rename:
+the ANT is a Solana asset, the gateway calls it `x-arns-ant-id`):
+- `initiateArNSPurchase.ts` — a Buy with **no** `antId` provisions a fresh
+  Turbo-owned ANT (`spawnAnt`) and records the user↔ANT link in `user_ant`. Gated
+  by `ARNS_PROVISIONING_ENABLED` (default off — otherwise a no-`antId` buy is a
+  400, enforced in `validators.ts`). Optional `ANT_SPAWN_WINC_SURCHARGE` recovers
+  the spawn SOL rent.
+- `transferArNSAnt.ts` (`/transfer`) — cooperative exit: transfer the ANT to a
+  user Solana pubkey; `manageArNSAnt.ts` (`/manage/...`) — set/remove resolution
+  records. Both gated by `verifyArNSCustodySignature` (`src/utils/arnsCustodySignature.ts`):
+  an **action-bound** signature over `arns\n<action>\n<antId>\n<params>` + a
+  **single-use nonce** (`arnsNonceStore.ts`, Redis `SET NX EX`, fails closed → 503).
+  Ownership checked against `user_ant`; not-found/not-yours both 404.
+
+**Money-path safety** — `arns_purchase_receipt.status` lifecycle
+(`reserved → spawned → bought → recorded`) is the success signal (NOT
+`message_id`): `markArNSPurchaseBought` is set the instant the buy confirms,
+before message_id; the spawned `antId` is persisted **before** the buy
+(anti-orphan). The `payment-arns-refund` queue's `reconcile-stale` job + the
+synchronous failure path both **confirm on-chain** (`getArNSRecord`) before
+refunding — never refund a name that actually landed; fail safe on gateway
+errors. Files: `src/jobs/arnsRefund.ts`, `src/workers/arnsRefund.worker.ts`,
+`src/queues/producers.ts`. Tunables: `ARNS_RECONCILE_CRON`,
+`ARNS_RECEIPT_STALE_THRESHOLD_MS`, `ARNS_NONCE_TTL_SECONDS`, `ARNS_MIN/MAX_TTL_SECONDS`.
 
 ### Data flow examples
 
