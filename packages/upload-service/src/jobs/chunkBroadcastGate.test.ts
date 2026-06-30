@@ -225,12 +225,14 @@ describe("decideChunkBroadcastGate", () => {
     expect(decision.action).to.equal("requeue");
   });
 
-  it("still broadcasts at the cap even if the probe keeps throwing", async () => {
+  it("at/past the cap, broadcasts WITHOUT probing the gateway (no blocking call we'd ignore)", async () => {
+    let probed = false;
     const decision = await decideChunkBroadcastGate({
       ...baseParams,
       deadlineMs: baseParams.nowMs - 1,
       config: enabledConfig(),
       isConfirmed: async () => {
+        probed = true;
         throw new Error("gateway unreachable");
       },
     });
@@ -238,5 +240,24 @@ describe("decideChunkBroadcastGate", () => {
     if (decision.action === "proceed") {
       expect(decision.reason).to.equal("cap_reached");
     }
+    expect(probed, "must not probe once the cap is reached").to.equal(false);
+  });
+
+  it("maxMs=0 on first entry proceeds immediately (cap_reached) without probing", async () => {
+    let probed = false;
+    const decision = await decideChunkBroadcastGate({
+      ...baseParams,
+      deadlineMs: undefined,
+      config: enabledConfig({ maxMs: 0 }),
+      isConfirmed: async () => {
+        probed = true;
+        return false;
+      },
+    });
+    expect(decision.action).to.equal("proceed");
+    if (decision.action === "proceed") {
+      expect(decision.reason).to.equal("cap_reached");
+    }
+    expect(probed).to.equal(false);
   });
 });

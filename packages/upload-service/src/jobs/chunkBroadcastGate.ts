@@ -148,6 +148,18 @@ export async function decideChunkBroadcastGate({
   // never stall seeding indefinitely.
   const effectiveDeadline = deadlineMs ?? nowMs + config.maxMs;
 
+  // The hard cap takes precedence over the probe: once we're at/past the
+  // deadline we broadcast regardless, so DON'T issue a confirm call we'd ignore.
+  // (This also guards a hung gateway from blocking past the cap, and makes
+  // maxMs=0 a clean "proceed immediately" with no probe.)
+  if (nowMs >= effectiveDeadline) {
+    return {
+      action: "proceed",
+      reason: "cap_reached",
+      deadlineMs: effectiveDeadline,
+    };
+  }
+
   let confirmed = false;
   try {
     confirmed = await isConfirmed();
@@ -168,15 +180,6 @@ export async function decideChunkBroadcastGate({
     return {
       action: "proceed",
       reason: "confirmed",
-      deadlineMs: effectiveDeadline,
-    };
-  }
-
-  if (nowMs >= effectiveDeadline) {
-    // Cap reached: broadcast anyway (today's behavior; redrive still retries).
-    return {
-      action: "proceed",
-      reason: "cap_reached",
       deadlineMs: effectiveDeadline,
     };
   }
