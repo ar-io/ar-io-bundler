@@ -29,6 +29,16 @@ const logsDir = path.join(repoRoot, "logs");
 const pkg = (name) => path.join(repoRoot, "packages", name);
 const log = (name) => path.join(logsDir, name);
 
+// Optional operator tooling: the Slack Socket-Mode interactivity listener (Bill's
+// read-only Follow-up / ack buttons). It lives in the sibling permaweb-services
+// brain, so the path is derived (no hardcode) and EXISTENCE-GATED below — this
+// config stays clean and portable on any checkout that doesn't have it. Without
+// this entry, `stop.sh --services-only` (pm2 delete all) + `start.sh` would drop
+// the listener; here it's part of the managed lifecycle.
+const slackListenerScript = path.resolve(
+  repoRoot, "..", "permaweb-services", "agents", "bill-gates", "tools", "slack-listener.js"
+);
+
 // Load .env at config-eval time. A bare `pm2 restart` does not re-apply env_file,
 // which left the gateway URLs below unset → falling back to arweave.net (429s →
 // pricing oracle fails → uploads 503). Parse the file directly (no module
@@ -233,5 +243,29 @@ module.exports = {
       autorestart: true,
       max_memory_restart: "500M", // Prevent memory leaks
     },
+
+    // Slack interactivity listener — included ONLY if present (sibling brain). Reads
+    // its own tokens from .env (SLACK_OAUTH_TOKEN / SLACK_APP_TOKEN); outbound-only
+    // WebSocket, no inbound port. Logs to the standard repo logs dir for consistency.
+    ...(require("fs").existsSync(slackListenerScript)
+      ? [
+          {
+            name: "slack-listener",
+            script: slackListenerScript,
+            cwd: path.dirname(slackListenerScript),
+            instances: 1,
+            exec_mode: "fork",
+            env_file: envFile,
+            env: { NODE_ENV: process.env.NODE_ENV || "production" },
+            error_file: log("slack-listener-error.log"),
+            out_file: log("slack-listener-out.log"),
+            log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+            merge_logs: true,
+            autorestart: true,
+            max_restarts: 20,
+            min_uptime: "10s",
+          },
+        ]
+      : []),
   ],
 };
