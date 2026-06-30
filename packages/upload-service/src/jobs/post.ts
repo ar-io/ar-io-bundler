@@ -111,6 +111,32 @@ export async function postBundleHandler(
     await enqueue(jobLabels.seedBundle, { planId });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error.";
+
+    // The post may have ERRORED while the tx actually landed on-chain — most
+    // notably an HTTP 208 "Already Reported" (the node already has this tx), or a
+    // slow/timed-out ack after the node accepted it. This is more likely with
+    // multi-gateway failover re-posting the same tx to a second node. Our retry
+    // strategy treats anything but 200 as a failure, so without this check the
+    // handler would mark a SUCCESSFULLY-posted bundle as failed and repack +
+    // RE-BUNDLE its items → duplicate permaweb data AND a double-spent AR reward.
+    // So before treating this as a failure, ask the network: if the tx is already
+    // there, it IS posted — record it and seed, do not fail it.
+    const txStatus = await arweaveGateway
+      .getTransactionStatus(bundleTx.id)
+      .catch(() => ({ status: "not found" as const }));
+    if (txStatus.status === "found" || txStatus.status === "pending") {
+      logger.warn(
+        "Bundle post errored but the tx is already on-chain; treating as posted (not failed).",
+        { bundleId, error: message, txStatus: txStatus.status }
+      );
+      const usdToArRate = await paymentService
+        .getFiatToARConversionRate("usd")
+        .catch(() => undefined);
+      await database.insertPostedBundle({ bundleId, usdToArRate });
+      await enqueue(jobLabels.seedBundle, { planId });
+      return;
+    }
+
     logger.error("Post Bundle Job has failed!", {
       bundleId,
       error: message,
