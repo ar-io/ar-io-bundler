@@ -22,7 +22,15 @@ let client: Redis | undefined;
 
 function getClient(): Redis {
   if (!client) {
-    client = new Redis(createRedisConnection() as RedisOptions);
+    client = new Redis({
+      ...(createRedisConnection() as RedisOptions),
+      // Override BullMQ's `maxRetriesPerRequest: null` (retry forever) for this
+      // request-path client: a Redis outage must FAIL FAST so the custody route
+      // returns 503 (fail-closed — never bypass the replay check) instead of
+      // hanging the HTTP request indefinitely.
+      maxRetriesPerRequest: 2,
+      commandTimeout: 5000,
+    });
   }
   return client;
 }
