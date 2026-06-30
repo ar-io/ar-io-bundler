@@ -694,6 +694,19 @@ export class PostgresDatabase implements Database {
           .returning("*")
       )[0];
 
+      if (newBundleDbResult === undefined) {
+        // The new_bundle row is already gone — this bundle was already transitioned
+        // (e.g. a redriven/duplicate post after it moved to posted/failed). Spreading
+        // `undefined` here would INSERT a row with a null bundle_id and violate the
+        // NOT NULL constraint (crashing the post job). It's already been handled, so
+        // skip idempotently rather than write a corrupt row.
+        this.log.warn(
+          "insertPostedBundle: no new_bundle row for bundle_id (already transitioned); skipping insert.",
+          { bundleId }
+        );
+        return;
+      }
+
       // append USD/AR conversion rate for accounting purposes
       await tx(tableNames.postedBundle).insert({
         ...newBundleDbResult,

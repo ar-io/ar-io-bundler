@@ -1034,4 +1034,47 @@ describe("PostgresDatabase class", () => {
       expect(failedDataItemDbResult[0].failed_date).to.exist;
     });
   });
+
+  describe("insertPostedBundle method", () => {
+    const bundleId = stubTxId16;
+    const planId = "idempotent-posted-insert-plan";
+
+    afterEach(async () => {
+      await Promise.all([
+        dbTestHelper.cleanUpEntityInDb(tableNames.newBundle, bundleId),
+        dbTestHelper.cleanUpEntityInDb(tableNames.postedBundle, bundleId),
+      ]);
+    });
+
+    it("promotes new_bundle to posted_bundle with its bundle_id, and is idempotent (no null bundle_id crash) when the new_bundle row is already gone", async () => {
+      await dbTestHelper.insertStubNewBundle({
+        bundleId,
+        planId,
+        signedDate: stubDates.earliestDate,
+      });
+
+      // First call: new_bundle exists → promoted to posted_bundle WITH its bundle_id.
+      await db.insertPostedBundle({ bundleId, usdToArRate: stubUsdToArRate });
+      let posted = await db["writer"]<PostedBundleDBResult>(
+        tableNames.postedBundle
+      ).where({ bundle_id: bundleId });
+      expect(posted.length).to.equal(1);
+      expect(posted[0].bundle_id).to.equal(bundleId);
+      expect(posted[0].plan_id).to.equal(planId);
+
+      // Second call: the new_bundle row is already gone (e.g. a redriven/duplicate
+      // post after the bundle moved state). This MUST NOT throw and MUST NOT insert a
+      // row with a null bundle_id (the legacy NOT NULL violation that crashed the job).
+      await db.insertPostedBundle({ bundleId, usdToArRate: stubUsdToArRate });
+      posted = await db["writer"]<PostedBundleDBResult>(
+        tableNames.postedBundle
+      ).where({ bundle_id: bundleId });
+      expect(posted.length).to.equal(1); // unchanged — no duplicate row written
+
+      const nullBundleIdRows = await db["writer"]<PostedBundleDBResult>(
+        tableNames.postedBundle
+      ).whereNull("bundle_id");
+      expect(nullBundleIdRows.length).to.equal(0);
+    });
+  });
 });
