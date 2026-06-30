@@ -44,12 +44,20 @@ consume it directly. It's black-box and pointable: no pm2/docker/psql, just an
 | Tier | Stages | Cost / speed | Cadence |
 |---|---|---|---|
 | **fast** (default) | accept → bundler status → optical access (**byte-verify**) → graphql index | free*, ~seconds | every ~10 min |
-| **deep** (`--deep`) | …fast… → bundled → bundle tx posted → bundle tx mined → permanent | mines a bundle → spends a little AR, ~minutes | hourly/daily |
+| **deep** (`--deep`) | …fast… → bundled → bundle tx posted → bundle tx mined (tip nodes) → permanent | mines a bundle → spends a little AR, ~minutes | hourly/daily |
 
 The **fast** tier catches the outages that matter most (upload down, payment/
 balance broken, MinIO broken, optical bridge broken, gateway down) in seconds and
 mines nothing. The **deep** tier additionally proves the bundle actually lands +
 confirms on Arweave and the bundler marks it permanent — run it rarely.
+
+The **bundle tx mined** stage verifies the tx mined across **multiple independent
+tip nodes** (`--tip-nodes`, requiring `--min-tip-nodes`, default 1), not just the
+read gateway. Because a chunk is only accepted by a node that already knows the
+tx's `data_root`, requiring N tip nodes to report it mined is a direct check on
+chunk seeding/propagation — it catches the failure mode behind the
+`CHUNK_BROADCAST_TX_CONFIRM_GATE` work that a single-gateway check would miss.
+With no `--tip-nodes` configured it falls back to the gateway (unchanged).
 
 \* "free" = the item must be accepted without you paying. There are two ways:
 the target has a **free tier** (`freeUploadLimitBytes > 0` on `/v1/info`, e.g.
