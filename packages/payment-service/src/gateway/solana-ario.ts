@@ -101,6 +101,17 @@ function toWebsocketUrl(httpUrl: URL): string {
 
 type ArNSRecord = Awaited<ReturnType<SolanaARIOReadable["getArNSRecord"]>>;
 
+// The subset of an on-chain ArNS record the refund/confirm paths need. `antId`
+// confirms a Buy-Name landed; `type`/`endTimestamp`/`undernameLimit` let the
+// non-buy intents (Upgrade/Extend/Increase) confirm a thrown-but-landed write.
+export type ArNSRecordSummary = {
+  antId?: string;
+  type?: NonNullable<ArNSRecord>["type"];
+  // Lease-only on-chain (permabuy records have none) → optional number.
+  endTimestamp?: number;
+  undernameLimit?: NonNullable<ArNSRecord>["undernameLimit"];
+};
+
 export class SolanaARIOGateway extends Gateway {
   public endpoint: URL;
 
@@ -310,17 +321,31 @@ export class SolanaARIOGateway extends Gateway {
 
   // Read the live on-chain ArNS record for a name (undefined if unregistered).
   // Used by the refund-confirm paths (catch path + reconciler) to decide whether
-  // a name a receipt paid for actually landed on-chain (and resolves to our
-  // antId). It MUST bypass the 5-min read cache: the pre-buy price check
-  // populates that cache with "available" (undefined) for the name being bought,
-  // so a cached read right after a thrown-but-landed buy would wrongly conclude
-  // the name did NOT land and refund a bought name. Evict first → fresh fetch.
+  // a write a receipt paid for actually landed on-chain. Besides `antId` (for
+  // Buy-Name confirms), it returns `type`/`endTimestamp`/`undernameLimit` so the
+  // non-buy intents can confirm thrown-but-landed too (Upgrade → type permabuy,
+  // Extend → endTimestamp grew, Increase → undernameLimit grew). It MUST bypass
+  // the 5-min read cache: the pre-buy price check populates that cache with
+  // "available" (undefined) for the name being bought, so a cached read right
+  // after a thrown-but-landed write would wrongly conclude it did NOT land and
+  // refund a paid-for op. Evict first → fresh fetch.
   public async getArNSRecord(
     name: string,
-  ): Promise<{ antId?: string } | undefined> {
+  ): Promise<ArNSRecordSummary | undefined> {
     this.arnsRecordPromiseCache.remove(name);
     const record = await this.arnsRecordPromiseCache.get(name);
-    return record ? { antId: record.processId } : undefined;
+    return record
+      ? {
+          antId: record.processId,
+          type: record.type,
+          // endTimestamp exists only on lease records (not permabuy).
+          endTimestamp:
+            "endTimestamp" in record && record.endTimestamp != null
+              ? Number(record.endTimestamp)
+              : undefined,
+          undernameLimit: record.undernameLimit,
+        }
+      : undefined;
   }
 
   // Spawn a fresh ANT owned by the server (Turbo) signer — custodial Model A —
