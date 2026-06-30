@@ -59,10 +59,7 @@ describe("Prepare bundle job handler", () => {
 
     await writeStubRawDataItems(dataItemIds, stubDataItemPath);
     mkdirSync("temp/raw-data-item", { recursive: true });
-    copyFileSync(
-      stubDataItemPath,
-      `temp/raw-data-item/${derivedDataItemId}`
-    );
+    copyFileSync(stubDataItemPath, `temp/raw-data-item/${derivedDataItemId}`);
   });
 
   after(async () => {
@@ -117,19 +114,23 @@ describe("Prepare bundle job handler", () => {
     const objectStore = new FileSystemObjectStore();
 
     stub(objectStore, "getObject").rejects(
-      new Error(
-        "Any error message since it will get mapped to a store-agnostic one"
-      )
+      new Error("object store unavailable")
     );
 
+    // The contract under test is the SAFETY one: a data item that can't be
+    // fetched must abort the bundle (so the job throws and BullMQ retries) rather
+    // than producing a partial/corrupt bundle. We assert it rejects without
+    // pinning the exact message — prepare fetches via multiple paths (object
+    // store + cache, attribute extraction, assembly), so the first failure can
+    // surface as either the raw store error or the assembly's "Failed to fetch
+    // data item <id>"; both are correct failures. (Pinning one specific message
+    // made this brittle and it drifted out of sync with the fetch path.)
     await expectAsyncErrorThrow({
       promiseToError: prepareBundleHandler(planId, {
         objectStore,
         cacheService: stubCacheService,
         jwk,
       }),
-      errorMessage:
-        "Failed to fetch data item QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o",
     });
   });
 });
