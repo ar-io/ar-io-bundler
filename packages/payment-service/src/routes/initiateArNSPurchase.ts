@@ -23,6 +23,7 @@ import {
   Unauthorized,
   UserNotFoundWarning,
 } from "../database/errors";
+import { ArNSRecordSummary } from "../gateway/solana-ario";
 import { durableRefundArNSPurchase } from "../jobs/arnsRefund";
 import {
   enqueueArNSRefund,
@@ -30,6 +31,7 @@ import {
 } from "../queues/producers";
 import { KoaContext } from "../server";
 import { W } from "../types";
+import { confirmArNSWriteLanded } from "../utils/confirmArNSWriteLanded";
 import {
   getSanitizedReferer,
   getValidatedArNSPurchaseParams,
@@ -100,6 +102,18 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       referer: getSanitizedReferer(ctx),
     });
 
+    // For Extend-Lease / Increase-Undername-Limit there is no antId to match on,
+    // so capture the current on-chain value BEFORE the write — a thrown-but-landed
+    // write is then confirmed by the value having GROWN (endTimestamp /
+    // undernameLimit). Read fresh (getArNSRecord bypasses the price-check cache).
+    let beforeEndTimestamp: ArNSRecordSummary["endTimestamp"];
+    let beforeUndernameLimit: ArNSRecordSummary["undernameLimit"];
+    if (intent === "Extend-Lease" || intent === "Increase-Undername-Limit") {
+      const beforeRecord = await ario.getArNSRecord(name).catch(() => undefined);
+      beforeEndTimestamp = beforeRecord?.endTimestamp;
+      beforeUndernameLimit = beforeRecord?.undernameLimit;
+    }
+
     // The buyer's credits are now debited. The on-chain write is the point of
     // no return: if it FAILS, the name was not bought → refund durably. If it
     // SUCCEEDS, the name is paid for on-chain → we must NEVER refund, even if a
@@ -120,24 +134,21 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
       });
     } catch (writeError) {
       // The write THREW — but a Solana confirm/RPC timeout can throw AFTER the tx
-      // actually landed. Before refunding, confirm on-chain: for a fresh-name buy
-      // (Buy-Name/Buy-Record), if the name now resolves to this purchase's antId,
-      // WE bought it → mark `bought`, do NOT refund (the client can poll status).
-      // Otherwise refund durably. (Extend/Upgrade/Increase can't be confirmed via
-      // antId — they refund; the rare threw-but-landed case is logged.)
-      const isFreshNameBuy = intent === "Buy-Name" || intent === "Buy-Record";
+      // actually landed. Before refunding, confirm the op's effect on-chain
+      // (idempotent, per-intent): Buy → name resolves to our antId; Upgrade → now
+      // permabuy; Extend → endTimestamp grew; Increase → undernameLimit grew. If
+      // it LANDED, mark `bought` and do NOT refund (the client can poll status);
+      // otherwise refund durably. This closes the thrown-but-landed gap for the
+      // non-buy intents, which previously always refunded a landed write.
       const antId = processId ?? spawnedAntId;
-      let landed = false;
-      if (isFreshNameBuy && antId) {
-        landed = await ario
-          .getArNSRecord(name)
-          .then((record) => record?.antId === antId)
-          .catch(() => false);
-      }
+      const landed = await confirmArNSWriteLanded(
+        (recordName) => ario.getArNSRecord(recordName),
+        { intent, name, antId, beforeEndTimestamp, beforeUndernameLimit },
+      );
       if (landed) {
         await paymentDatabase.markArNSPurchaseBought(nonce).catch((markError) =>
           logger.error(
-            "ArNS write threw but name LANDED on-chain; failed to mark bought — on-chain reconcile is the backstop",
+            "ArNS write threw but op LANDED on-chain; failed to mark bought — on-chain reconcile is the backstop",
             {
               nonce,
               error: markError instanceof Error ? markError.message : markError,
@@ -145,8 +156,8 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
           ),
         );
         logger.warn(
-          "ArNS write threw but the name LANDED on-chain — marked bought, NOT refunded (client can poll status)",
-          { nonce, name, antId },
+          "ArNS write threw but the op LANDED on-chain — marked bought, NOT refunded (client can poll status)",
+          { nonce, name, intent, antId },
         );
       } else {
         await durableRefundArNSPurchase(

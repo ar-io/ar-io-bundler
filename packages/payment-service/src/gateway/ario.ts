@@ -20,7 +20,11 @@ import winston from "winston";
 import { GatewayParams } from ".";
 import { ArNSPurchase, ArNSTokenCostParams } from "../database/dbTypes";
 import { JWKInterface } from "../types/jwkTypes";
-import { SolanaARIOGateway, SolanaARIOGatewayParams } from "./solana-ario";
+import {
+  ArNSRecordSummary,
+  SolanaARIOGateway,
+  SolanaARIOGatewayParams,
+} from "./solana-ario";
 
 export interface ARIOInterface {
   getTokenCost(p: ArNSTokenCostParams): Promise<mARIOToken>;
@@ -31,8 +35,9 @@ export interface ARIOInterface {
     p: ArNSPurchase & { onAntSpawned?: (antId: string) => Promise<void> },
   ): Promise<MessageResult & { spawnedAntId?: string }>;
   // Live on-chain ArNS record for a name (undefined if unregistered). Lets the
-  // reconciler confirm a buy landed before refunding.
-  getArNSRecord(name: string): Promise<{ antId?: string } | undefined>;
+  // reconciler/catch path confirm a write landed before refunding — `antId` for
+  // Buy-Name, plus `type`/`endTimestamp`/`undernameLimit` for the non-buy intents.
+  getArNSRecord(name: string): Promise<ArNSRecordSummary | undefined>;
   // Self-custody exit: transfer a Turbo-owned ANT to a user-designated Solana
   // pubkey. Returns the on-chain message id.
   transferAnt(p: { antId: string; target: string }): Promise<string>;
