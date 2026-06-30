@@ -60,11 +60,16 @@ const DEFAULTS = {
   // keeps failed jobs until cleaned, so cumulative counts are mostly stale cruft.
   queueRecentFailedWarn: 10,
   queueRecentFailedCrit: 50,
-  // Best-effort queues self-recover (circuit breaker / safety nets) and never
-  // lose data — gateway warming/serving optimizations, not the on-chain path.
-  // Their failures cap at DEGRADED (never a CRITICAL page); a benign optical
-  // breaker-burst shouldn't read the same as a stuck post/seed/verify pileup.
-  bestEffortQueues: ['upload-optical-post', 'upload-archive-copy'],
+  // Best-effort queues self-recover and never lose data, so their failures cap at
+  // DEGRADED (never a CRITICAL page). Two kinds: (1) gateway warming/serving
+  // optimizations OFF the on-chain path (optical-post, archive-copy); (2) per-chunk
+  // seeding (broadcast-chunks) which IS on-chain but self-recovers — a failed chunk
+  // re-lands via retry and the bundle re-seeds via redrive-posted. A TERMINAL seed
+  // failure surfaces separately as stuck-posted / failed_bundle (both CRITICAL above),
+  // so the raw broadcast-chunks failure count is a noisy LEADING symptom, not the
+  // authoritative signal — a benign gateway TX-propagation race (the data lands via
+  // retry; pending=0) shouldn't page like a stuck post/seed/verify pileup.
+  bestEffortQueues: ['upload-optical-post', 'upload-archive-copy', 'upload-broadcast-chunks'],
   bestEffortQueueFailedWarn: 25,
   // PM2 processes whose outage is critical to the pipeline / money path.
   criticalServices: ['upload-workers', 'payment-workers'],
