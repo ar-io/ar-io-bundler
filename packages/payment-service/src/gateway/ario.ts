@@ -36,6 +36,11 @@ export interface ARIOInterface {
   // Self-custody exit: transfer a Turbo-owned ANT to a user-designated Solana
   // pubkey. Returns the on-chain message id.
   transferAnt(p: { antId: string; target: string }): Promise<string>;
+  // Live on-chain owner of an ANT (undefined if unreadable). Lets the transfer
+  // route confirm a "thrown-but-landed" transfer (the RPC failed on
+  // confirmation but the tx actually landed) so it can reconcile custody
+  // instead of stranding a stale user_ant row.
+  getAntOwner(antId: string): Promise<string | undefined>;
   // Manage a custodied ANT's resolution records. Returns the on-chain message id.
   setAntRecord(p: {
     antId: string;

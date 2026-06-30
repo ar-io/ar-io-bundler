@@ -153,6 +153,18 @@ ArNS purchases settle on **Solana** with the SPL ARIO token, using
   Solana secret key) to authorize writes; if unset, ArNS is **read-only** (price/
   quote work, purchases disabled). Mint/RPC default to devnet in dev/test and
   mainnet otherwise (override via `ARIO_MINT_ADDRESS` / `ARIO_GATEWAY_URL`).
+- **Cluster selection (`ARIO_PROGRAM_CLUSTER`).** AR.IO's Anchor program IDs are
+  cluster-specific. `@ar.io/sdk@4.0.2` ships both `MAINNET_PROGRAM_IDS` and
+  `DEVNET_PROGRAM_IDS` (devnet = "staging v2"), and defaults to mainnet IDs when
+  none are passed — so RPC + mint alone are NOT enough to target devnet (mainnet
+  IDs on a devnet RPC → `DemandFactor account not found`). Set
+  `ARIO_PROGRAM_CLUSTER=devnet` to wire `DEVNET_PROGRAM_IDS` into every ANT/ARIO
+  read+write AND derive the RPC from the devnet cluster (`DEVNET_RPC_URL`,
+  overridable via `ARIO_DEVNET_RPC_URL`) — independent of the generic, often
+  pm2-pinned `ARIO_GATEWAY_URL`. Unset (or `mainnet`) = unchanged mainnet
+  behavior. This lets ArNS provisioning be validated on devnet (real chain, $0
+  mainnet value) before enabling it in production. Verified end-to-end on-chain
+  on devnet 2026-06-30 (buy → set-record → transfer).
 - `src/gateway/ario.ts` — `ARIOGateway extends SolanaARIOGateway`, wired into
   `gatewayMap.ario` and used by `initiateArNSPurchase.ts`.
 - The ARIO payment recipient is `ARIO_ADDRESS` (falls back to `SOLANA_ADDRESS`);

@@ -17,11 +17,14 @@
 import {
   BadRequest,
   DEVNET_ARIO_MINT,
+  DEVNET_PROGRAM_IDS,
   DEVNET_RPC_URL,
   MAINNET_ARIO_MINT,
+  MAINNET_PROGRAM_IDS,
   MAINNET_RPC_URL,
   MessageResult,
   NotFound,
+  SolanaANTReadable,
   SolanaANTWriteable,
   SolanaARIOReadable,
   SolanaARIOWriteable,
@@ -30,6 +33,7 @@ import {
 } from "@ar.io/sdk";
 import { ReadThroughPromiseCache } from "@ardrive/ardrive-promise-cache";
 import {
+  Address,
   createKeyPairSignerFromBytes,
   createSolanaRpc,
   createSolanaRpcSubscriptions,
@@ -67,6 +71,86 @@ const defaultArioMintAddress =
 const defaultArioSolanaGatewayUrl = new URL(
   isDevEnv || isTestEnv ? DEVNET_RPC_URL : MAINNET_RPC_URL,
 );
+
+// AR.IO Anchor program IDs are cluster-specific. @ar.io/sdk's class defaults are
+// the MAINNET program IDs, and the SDK requires explicit `programIds` to talk to
+// devnet (RPC + mint alone are NOT enough — calling mainnet program IDs against a
+// devnet RPC throws AccountDiscriminatorMismatch). `ARIO_PROGRAM_CLUSTER=devnet`
+// selects the devnet/"staging v2" set so the whole ARIO/ANT path (reads, buys,
+// spawn, record writes, transfers, mint, RPC) is internally consistent on devnet.
+// Unset leaves the existing mainnet behavior unchanged — production passes no
+// programIds and relies on the SDK's mainnet defaults.
+type ArioProgramIds = {
+  coreProgramId: Address;
+  garProgramId: Address;
+  arnsProgramId: Address;
+  antProgramId: Address;
+};
+
+// Parse ARIO_PROGRAM_CLUSTER. Only `devnet`/`mainnet` are valid; unset → undefined
+// (mainnet defaults). FAIL CLOSED on any other value: a typo like `devnett` must
+// NOT silently fall back to mainnet, which would point this payment path at the
+// wrong cluster and defeat the safe-devnet rollout.
+function resolveArioCluster(): "devnet" | "mainnet" | undefined {
+  const cluster = process.env.ARIO_PROGRAM_CLUSTER?.trim().toLowerCase();
+  if (!cluster) return undefined;
+  if (cluster === "devnet" || cluster === "mainnet") return cluster;
+  throw new Error(
+    `Unsupported ARIO_PROGRAM_CLUSTER: "${process.env.ARIO_PROGRAM_CLUSTER}" (expected "devnet" or "mainnet")`,
+  );
+}
+
+export function resolveArioProgramIds(): ArioProgramIds | undefined {
+  const cluster = resolveArioCluster();
+  if (cluster === "devnet") {
+    return {
+      coreProgramId: DEVNET_PROGRAM_IDS.core,
+      garProgramId: DEVNET_PROGRAM_IDS.gar,
+      arnsProgramId: DEVNET_PROGRAM_IDS.arns,
+      antProgramId: DEVNET_PROGRAM_IDS.ant,
+    };
+  }
+  if (cluster === "mainnet") {
+    return {
+      coreProgramId: MAINNET_PROGRAM_IDS.core,
+      garProgramId: MAINNET_PROGRAM_IDS.gar,
+      arnsProgramId: MAINNET_PROGRAM_IDS.arns,
+      antProgramId: MAINNET_PROGRAM_IDS.ant,
+    };
+  }
+  // Unset → preserve current behavior: pass no programIds (SDK mainnet defaults).
+  return undefined;
+}
+
+// Resolve the Solana RPC endpoint. When the devnet cluster is explicitly
+// selected, the endpoint is derived from the cluster (DEVNET_RPC_URL, overridable
+// via ARIO_DEVNET_RPC_URL) and the generic ARIO_GATEWAY_URL is intentionally
+// ignored — that var is the production/mainnet override and is often pinned in
+// the process env, which would otherwise point a devnet-program run at a mainnet
+// RPC (→ "DemandFactor account not found"). With no cluster set (production), the
+// behavior is unchanged: ARIO_GATEWAY_URL if present, else the env default.
+export function resolveArioEndpoint(): URL {
+  if (resolveArioCluster() === "devnet") {
+    return new URL(process.env.ARIO_DEVNET_RPC_URL ?? DEVNET_RPC_URL);
+  }
+  return process.env.ARIO_GATEWAY_URL
+    ? new URL(process.env.ARIO_GATEWAY_URL)
+    : defaultArioSolanaGatewayUrl;
+}
+
+// Resolve the ARIO SPL mint default. An explicitly-selected cluster drives the
+// mint too (devnet/staging-v2 vs mainnet), so `ARIO_PROGRAM_CLUSTER=devnet` is
+// self-contained — otherwise the constructor would derive recipient token
+// accounts (and `readSolanaTokenTransaction` would filter) against the MAINNET
+// mint while everything else is on devnet, and devnet ARIO payments would never
+// reconcile. `ARIO_MINT_ADDRESS` still overrides; unset cluster = unchanged
+// (NODE_ENV-based) default.
+export function resolveArioMintAddress(): string {
+  const cluster = resolveArioCluster();
+  if (cluster === "devnet") return DEVNET_ARIO_MINT;
+  if (cluster === "mainnet") return MAINNET_ARIO_MINT;
+  return defaultArioMintAddress;
+}
 
 const splTokenProgramIds = [
   new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
@@ -113,6 +197,7 @@ export class SolanaARIOGateway extends Gateway {
   private readonly signerSecretKey?: string;
   private readonly rpcUrl: string;
   private readonly wsRpcUrl: string;
+  private readonly arioProgramIds?: ArioProgramIds;
   private arioWriteablePromise?: Promise<SolanaARIOWriteable>;
   private serverSignerPromise?: Promise<
     Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>
@@ -174,11 +259,9 @@ export class SolanaARIOGateway extends Gateway {
   });
 
   constructor({
-    endpoint = process.env.ARIO_GATEWAY_URL
-      ? new URL(process.env.ARIO_GATEWAY_URL)
-      : defaultArioSolanaGatewayUrl,
+    endpoint = resolveArioEndpoint(),
     recipientOwnerAddress = walletAddresses.ario,
-    mintAddress = process.env.ARIO_MINT_ADDRESS ?? defaultArioMintAddress,
+    mintAddress = process.env.ARIO_MINT_ADDRESS ?? resolveArioMintAddress(),
     signerSecretKey = process.env.ARIO_SOLANA_SIGNER_SECRET_KEY,
     logger = globalLogger,
     ...params
@@ -212,8 +295,19 @@ export class SolanaARIOGateway extends Gateway {
       );
     }
     this.mintAddress = new PublicKey(mintAddress);
+    this.arioProgramIds = resolveArioProgramIds();
+    if (this.arioProgramIds) {
+      logger.info("ArNS gateway using explicit program IDs", {
+        cluster: process.env.ARIO_PROGRAM_CLUSTER,
+        antProgramId: this.arioProgramIds.antProgramId,
+        arnsProgramId: this.arioProgramIds.arnsProgramId,
+        endpoint: this.endpoint.toString(),
+        mintAddress: mintAddress,
+      });
+    }
     this.arioReadable = new SolanaARIOReadable({
       rpc: createSolanaRpc(this.rpcUrl),
+      ...this.arioProgramIds,
     });
     this.recipientTokenAccounts = splTokenProgramIds.map((tokenProgramId) => ({
       tokenProgramId,
@@ -293,6 +387,7 @@ export class SolanaARIOGateway extends Gateway {
         rpc: createSolanaRpc(this.rpcUrl),
         rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
         signer,
+        ...this.arioProgramIds,
       });
     })();
 
@@ -339,6 +434,9 @@ export class SolanaARIOGateway extends Gateway {
       rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
       signer,
       state: { name, ...(transactionId ? { transactionId } : {}) },
+      ...(this.arioProgramIds
+        ? { antProgramId: this.arioProgramIds.antProgramId }
+        : {}),
     });
     return result.processId;
   }
@@ -355,6 +453,9 @@ export class SolanaARIOGateway extends Gateway {
       signer,
       rpc: createSolanaRpc(this.rpcUrl),
       rpcSubscriptions: createSolanaRpcSubscriptions(this.wsRpcUrl),
+      ...(this.arioProgramIds
+        ? { antProgramId: this.arioProgramIds.antProgramId }
+        : {}),
     });
   }
 
@@ -368,6 +469,31 @@ export class SolanaARIOGateway extends Gateway {
     const ant = await this.getAntWriteable(antId);
     const result = await ant.transfer({ target });
     return result.id;
+  }
+
+  // Read the live on-chain owner of an ANT (undefined if it can't be read).
+  // Used by the transfer route to confirm a "thrown-but-landed" exit: when the
+  // transfer tx lands but the RPC fails on confirmation (e.g. a 429), the owner
+  // is already the target — so custody can be reconciled instead of leaving a
+  // stale user_ant row that no retry could ever clear (the signer no longer owns
+  // the ANT → NotCurrentOwner). Read-only, so no signer required.
+  public async getAntOwner(antId: string): Promise<string | undefined> {
+    const ant = new SolanaANTReadable({
+      processId: antId,
+      rpc: createSolanaRpc(this.rpcUrl),
+      ...(this.arioProgramIds
+        ? { antProgramId: this.arioProgramIds.antProgramId }
+        : {}),
+    });
+    try {
+      return await ant.getOwner();
+    } catch (error) {
+      this.logger.warn("Failed to read ANT owner on-chain", {
+        antId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   // Set a resolution record on a Turbo-custodied ANT. undername "@" sets the

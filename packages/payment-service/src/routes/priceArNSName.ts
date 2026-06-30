@@ -133,7 +133,11 @@ export async function priceArNSPurchaseHandler(ctx: KoaContext, next: Next) {
       ctx.response.status = 400;
       ctx.body = error.message;
     } else {
-      logger.error("Failed to get price for ArNS Purchase!", { error }, error);
+      logger.error("Failed to get price for ArNS Purchase!", {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorName: error instanceof Error ? error.name : undefined,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       ctx.response.status = 503;
       ctx.body = "Price Oracle Unavailable";
     }
