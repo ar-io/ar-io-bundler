@@ -315,6 +315,10 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
 
   it("when post to Arweave fails, promotes new_bundle to failed_bundle and demotes each planned_data_item back to new_data_item", async () => {
     stub(gateway, "postBundleTx").throws();
+    // The tx genuinely never landed on-chain → status check returns not found, so the
+    // handler proceeds to the failed path (the prior test mined this bundleId on the
+    // shared arlocal, so we must stub rather than rely on a live lookup).
+    stub(gateway, "getTransactionStatus").resolves({ status: "not found" });
     stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
 
     // We expect this handler to run without error so SQS will not attempt to retry this work
@@ -355,6 +359,9 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
 
   it("throw and error as expected when post to Arweave fails and balance for wallet is empty", async () => {
     stub(gateway, "postBundleTx").throws();
+    // Genuine failure (tx not on-chain) → proceed past the status check to the
+    // balance check, which throws because the wallet is empty.
+    stub(gateway, "getTransactionStatus").resolves({ status: "not found" });
     stub(gateway, "getBalanceForWallet").resolves(new Winston(0));
 
     // We expect this handler to encounter an error so SQS will retry this work then send to DLQ
@@ -395,5 +402,39 @@ describe("Post bundle job handler function integrated with PostgresDatabase clas
     plannedDataItemDbResult.forEach(({ data_item_id }) =>
       expect(dataItemIds).to.include(data_item_id)
     );
+  });
+
+  it("when the post errors but the tx is already on-chain (e.g. 208 Already Reported), promotes to posted_bundle instead of failing — no duplicate re-bundle", async () => {
+    // Regression guard for the 208 footgun: the post throws (a 208 / slow-ack error),
+    // but the network confirms the tx IS there. It must be recorded as posted and
+    // seeded — NOT marked failed and re-bundled (which would duplicate on-chain data
+    // and double-spend the AR reward).
+    stub(gateway, "postBundleTx").throws();
+    stub(gateway, "getTransactionStatus").resolves({ status: "pending" });
+    stub(paymentService, "getFiatToARConversionRate").resolves(stubUsdToArRate);
+
+    await postBundleHandler(planId, {
+      objectStore,
+      database: db,
+      arweaveGateway: gateway,
+      paymentService,
+    });
+
+    const postedBundleDbResult = await db["writer"]<PostedBundleDBResult>(
+      tableNames.postedBundle
+    ).where(columnNames.bundleId, bundleId);
+    expect(postedBundleDbResult.length).to.equal(1);
+    expect(postedBundleDbResult[0].plan_id).to.equal(planId);
+
+    const failedBundleDbResult = await db["writer"]<FailedBundleDBResult>(
+      tableNames.failedBundle
+    ).where(columnNames.bundleId, bundleId);
+    expect(failedBundleDbResult.length).to.equal(0);
+
+    // The items must NOT be demoted back to new_data_item (i.e. not re-bundled).
+    const newDataItemDbResult = await db["writer"]<NewDataItemDBResult>(
+      tableNames.newDataItem
+    ).whereIn(columnNames.dataItemId, dataItemIds);
+    expect(newDataItemDbResult.length).to.equal(0);
   });
 });
