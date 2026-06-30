@@ -130,6 +130,13 @@ PAYMENT_SERVICE_BASE_URL=localhost:4001
 
 # x402 Payment Address (payment-service ONLY)
 X402_PAYMENT_ADDRESS=<your-ethereum-address>
+
+# ArNS with credits (payment-service ONLY). Unset signer = ArNS read-only.
+# To enable writes/provisioning: set the bs58 Solana signer (fund it with SOL)
+# and ARNS_PROVISIONING_ENABLED=true. Off by default → inert. Full guide:
+# docs/guides/ARNS_INTEGRATION_GUIDE.md
+ARIO_SOLANA_SIGNER_SECRET_KEY=
+ARNS_PROVISIONING_ENABLED=false
 ```
 
 **CRITICAL**:

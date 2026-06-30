@@ -80,13 +80,23 @@ The repo-root `ecosystem.config.js` is a deprecated shim that re-exports the can
 - `payment_service` DB holds users, balances (Winston credits), receipts, crypto/x402 payments.
 - Objects (raw uploads, bundles) live in **MinIO** via the S3 abstraction (`getS3ObjectStore()`), even locally — `FileSystemObjectStore` exists but is not wired.
 
-### The bundle pipeline (BullMQ, 15 upload queues + 1 payment queue)
+### The bundle pipeline (BullMQ, 15 upload queues + 2 payment queues)
 
 ```
 upload → new-data-item → plan-bundle → prepare-bundle → post-bundle → seed-bundle → verify-bundle → permanent
                          ↑ (in-process scheduler)            ↘ optical-post → gateway      ↘ put-offsets
-other queues: finalize-upload, unbundle-bdi, cleanup-fs, redrive-posted, refund-balance, broadcast-chunks, archive-copy   payment-pending-tx (payment-workers)
+other queues: finalize-upload, unbundle-bdi, cleanup-fs, redrive-posted, refund-balance, broadcast-chunks, archive-copy   payment-pending-tx + payment-arns-refund (payment-workers)
 ```
+
+- **Payment queues (`payment-workers`):** `payment-pending-tx` (crypto-credit
+  finalization) and **`payment-arns-refund`** — refund / store-message-id /
+  `reconcile-stale` jobs for ArNS-with-credits. The `reconcile-stale` job runs on
+  an in-process scheduler (`ARNS_RECONCILE_CRON`, default `*/5 * * * *`); it finds
+  ArNS receipts stuck in `reserved`/`spawned` past `ARNS_RECEIPT_STALE_THRESHOLD_MS`
+  (default 90 min), **confirms on-chain** before acting (never refunds a name that
+  actually landed), and logs `Reconciled stale ArNS purchases {refunded, confirmedBought}`.
+  If `payment-workers` is down, this backstop stops running — same boot check as
+  upload-workers (it must self-load `.env` before importing config).
 
 - **`plan-bundle` is driven by an in-process BullMQ scheduler, NOT cron.** At startup `upload-workers` registers repeatable schedulers (`upsertRepeatable` in `src/arch/queues.ts`, wired in `src/workers/allWorkers.ts`): `plan-bundle` (`PLAN_SCHEDULE_CRON`, default `*/5 * * * *`), `cleanup-fs` (`CLEANUP_SCHEDULE_CRON`, `0 2 * * *`), and `redrive-posted` (`POSTED_REDRIVE_SCHEDULE_CRON`, `*/10 * * * *`). So the #1 "uploads work but nothing posts" check is: **is `upload-workers` up and did it log `Registered BullMQ job schedulers`?** — not "is the cron installed." The `cron-trigger-*.sh` scripts still exist but are **manual** on-demand triggers only; do NOT add them to crontab or they double-fire alongside the scheduler.
 - `post-bundle` posts the bundle tx; `seed-bundle` prepares + stages the bundle's chunks in the object store and enqueues **one `broadcast-chunks` job per chunk** (each chunk is then POSTed to one of `AR_IO_NODE_URLS` with shuffle + per-node retry + failover), then enqueues `verify-bundle` with a **5-min delay**; `verify-bundle` promotes data items to `permanent_data_items` once confirmed. (So after `seed-bundle` runs, watch the **`broadcast-chunks`** queue for the actual chunk delivery; a backlog there means a distributor is unreachable — check `chunk_seed_post_total{result="failure"}`.)
@@ -121,8 +131,9 @@ Bundle planning, cleanup, and the posted-bundle re-driver are **BullMQ repeatabl
 | Bundle planning | `PLAN_SCHEDULE_CRON` (`*/5 * * * *`) | The thing that turns `new_data_item` into bundles. If nothing bundles, check the worker logged `Registered BullMQ job schedulers`, not crontab. |
 | Tiered cleanup | `CLEANUP_SCHEDULE_CRON` (`0 2 * * *`) | Retention deletes (DB-aware). |
 | Posted-bundle re-driver | `POSTED_REDRIVE_SCHEDULE_CRON` (`*/10 * * * *`) | #40 seed-failure recovery (see pipeline above). |
+| ArNS reconciler | `ARNS_RECONCILE_CRON` (`*/5 * * * *`) | In **`payment-workers`** (not upload). Refunds/confirms orphaned ArNS debits; see the payment-queues note above. |
 
-- Set any `*_SCHEDULE_CRON` to `""` to disable that scheduler. BullMQ dedupes each schedule by id in the queues Redis, so it's safe even multi-instance — **no crontab, no leader-lock needed** for these.
+- Set any `*_SCHEDULE_CRON` (or `ARNS_RECONCILE_CRON`) to `""` to disable that scheduler. BullMQ dedupes each schedule by id in the queues Redis, so it's safe even multi-instance — **no crontab, no leader-lock needed** for these.
 - **Do NOT install `cron-trigger-plan.sh` / `cron-trigger-cleanup.sh` in crontab** — they're manual on-demand triggers now; a crontab entry double-fires alongside the in-process scheduler.
 - The only optional crontab entry is `scripts/trigger-verify.sh` (hourly), and even that is unnecessary — seeding already enqueues verify with a 5-min delay.
 - Confirm the schedulers are live: `pm2 logs upload-workers | grep "Registered BullMQ job schedulers"`, or inspect the repeat keys: `redis-cli -p 6381 KEYS 'bull:upload-plan-bundle:repeat:*'`.
@@ -141,6 +152,32 @@ A second, HDD-backed MinIO (`minio-hdd`, `:9002`, `docker-compose.hdd.yml`) that
 - **🔴 Existing DB → seed the cursor FIRST.** The sweep scans `permanent_bundle` from epoch; pre-existing bundles have no HDD copy, so they defer + re-enqueue `archive-copy`, and any whose SSD source was already 90-day-cleaned wedge the persisted cursor (`config` key `archive-ssd-cleanup-cursor`) at the oldest one → every run re-scans the whole table. Pin the cursor to the current `max(permanent_date)` before enabling (SQL in the runbook §13 / design doc) so only newly-permanent bundles are swept.
 - **Bucket/region must be distinct** from `DATA_ITEM_BUCKET`/`S3_REGION` (routing is keyed by both) — on a collision the bundler refuses to wire the archive and logs an error (stays inert). HDD keeps a **90-day ILM expiry** (`ARCHIVE_RETENTION_DAYS`); after that, served copies fall back to chain retrieval. `SSD_CLEANUP_GRACE_DAYS` (default 0) adds a margin before SSD reclaim.
 - **Monitor:** `archive_copy_total{kind,result}` (kind=`raw-data-item`/`bundle-payload`, result=`success`/`error`/`skipped`), `upload-archive-copy` depth, and whether `archive-ssd-cleanup-cursor` advances run-to-run (stuck = a persistent deferral / HDD copy that never lands). The sweep **re-enqueues** missing copies (self-healing) and verifies copy byte-count parity before deleting the SSD original.
+
+## ArNS with Turbo credits
+
+Buy + manage ArNS names paying with credits (Solana-settled; ANTs = Metaplex
+Core assets). Full detail: `docs/guides/ARNS_INTEGRATION_GUIDE.md`. Operator notes:
+
+- **Feature gate.** Custodial ANT *provisioning* (spawn-on-buy) is OFF unless
+  `ARNS_PROVISIONING_ENABLED=true`. Off ⇒ a Buy without a `processId` is a 400
+  (inert). The *transfer* / *manage* routes 404 for everyone until a provisioned
+  ANT exists. So deploying this is safe with the feature off — only the schema
+  migration, the reconciler, and the (hardened) buy/refund flow go live.
+- **Signer + SOL.** ArNS writes (buys + ANT spawn/transfer/record) are signed by
+  `ARIO_SOLANA_SIGNER_SECRET_KEY` (bs58 Solana key). It must be **funded with
+  SOL** — a spawn costs ~0.02 SOL rent; records/transfers are gas-only. Empty
+  signer ⇒ provisioned buys fail (and durably refund). **Monitor its SOL balance.**
+- **Custody routes need Redis.** `POST /v1/arns/{transfer,manage/...}` verify an
+  action-bound, single-use signature; the nonce store calls the **queues Redis**
+  (`:6381`) on every request and **fails closed (503)** if Redis is down. If those
+  routes 503, check `ar-io-bundler-redis-queues`.
+- **Money safety is automatic.** A buyer is never debited without an eventual
+  credit-back, and a name that actually landed is never refunded (status machine
+  + on-chain-confirm reconciler). A `503` on a buy can be a thrown-but-landed tx —
+  the client polls `GET /v1/arns/purchase/:nonce` (it'll read `success`/`bought`).
+- **Quick checks:** is provisioning on? `grep ARNS_PROVISIONING_ENABLED .env`.
+  Reconciler alive? `pm2 logs payment-workers | grep "Reconciled stale ArNS"`.
+  Queues: Bull Board `:3002` → `payment-arns-refund`.
 
 ## Pitfalls (learned on this deployment)
 

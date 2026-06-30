@@ -456,6 +456,30 @@ curl "http://localhost:4001/v1/price/bytes/1000000"
 ./scripts/restart.sh
 ```
 
+## ArNS Provisioning Surcharge (`ANT_SPAWN_WINC_SURCHARGE`)
+
+Separate from the upload fee adjustments above, the **ArNS-with-credits** feature
+has a single fee knob for cost recovery on provisioned name purchases.
+
+```bash
+# .env (payment service). Winc surcharge, default 0.
+ANT_SPAWN_WINC_SURCHARGE=0
+```
+
+**What it does:** when a buyer has **no ANT** of their own and `ARNS_PROVISIONING_ENABLED=true`,
+Turbo spawns a fresh Metaplex Core ANT owned by its server wallet, which costs the
+signer real **SOL** (rent ~0.02 SOL + gas). `ANT_SPAWN_WINC_SURCHARGE` is folded
+into that provisioned buy's credit debit so you recover the spawn SOL rent.
+
+- Denominated in **winc** (the same credit unit as upload pricing), added to the
+  name's purchase price for that buy.
+- **Only applies to provisioned buys** (no `processId`/`antId` supplied). A
+  bring-your-own-ANT buy, an extend, or an upgrade is **not** surcharged.
+- Default `0` = no surcharge (you absorb the SOL rent). Set it to roughly the
+  winc-equivalent of the spawn rent + a margin to break even on provisioning.
+- Requires a **restart** to apply (payment service env). See
+  `docs/guides/ARNS_INTEGRATION_GUIDE.md` for the full ArNS feature/ops detail.
+
 ## Support
 
 For questions about fee configuration:

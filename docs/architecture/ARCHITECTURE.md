@@ -1310,6 +1310,119 @@ Response:
    └─ Check purchase status
 ```
 
+### ArNS with Turbo Credits
+
+Buy **and manage ArNS names paying with a Turbo credit balance** — no ARIO
+tokens or SOL in the user's hands. A user authenticates with their existing
+credit-account wallet (Arweave / Ethereum / Solana, or a keyless credit-card
+balance); Turbo performs the on-chain Solana work and debits credits.
+
+> **ArNS settles on Solana now.** ARIO migrated off Arweave/AO — ANTs are
+> **Metaplex Core** assets and the bundler signs the Solana transactions with a
+> server wallet. The legacy AO term `processId` is the ANT's Solana **asset
+> address**; the AR.IO gateway surfaces it as `x-arns-ant-id`, so this codebase
+> calls it **`antId`** (the SDK still says `processId` internally).
+
+Full operational detail lives in `docs/guides/ARNS_INTEGRATION_GUIDE.md`;
+implementation in `packages/payment-service/src/routes/{initiateArNSPurchase,
+transferArNSAnt,manageArNSAnt}.ts`, `src/jobs/arnsRefund.ts`,
+`src/utils/arnsCustodySignature.ts`, and `src/gateway/solana-ario.ts`.
+
+#### Custody model (Model A — custodial)
+
+| Case | Behavior |
+|------|----------|
+| **BYO-ANT** (caller supplies `processId`/`antId`) | Used as-is — Turbo registers the name to the caller's own ANT (typical self-custody Solana user). |
+| **No ANT** (common Arweave / ETH / credit-card case) | Turbo **spawns a fresh Metaplex Core ANT owned by the Turbo server wallet**, registers the name to it, and records the user↔ANT link in the `user_ant` table. The user "owns" the name via that mapping + their credit account. |
+
+A custodied user can later:
+
+- **Exit** (`POST /v1/arns/transfer/:antId?target=`) — Turbo (the on-chain owner)
+  signs a **cooperative transfer** of the ANT to a user-designated Solana pubkey
+  and drops the custody mapping. This is a real ownership transfer, **not an
+  escrow contract**.
+- **Manage** (`POST /v1/arns/manage/:antId/{set-record,remove-record}`) — Turbo,
+  as owner, writes the name's resolution records (base `@` or an undername) on
+  the user's behalf.
+
+Custodial provisioning is **off by default** — gated on `ARNS_PROVISIONING_ENABLED`
+(false). With it off, a no-`processId` buy is an inert 400; only BYO-ANT buys and
+the hardened money-path go live.
+
+#### Purchase money-path state machine
+
+The hard rule: a buyer is **never debited without an eventual credit-back on
+failure**, and **never refunded a name they actually bought**. Each purchase
+carries a `status` lifecycle on `arns_purchase_receipt`:
+
+```
+reserved ──────► spawned ──────► bought ──────► recorded
+(debited)   (antId persisted   (on-chain buy   (message_id
+            BEFORE the buy)    confirmed)      stored)
+```
+
+- **`status`, not `message_id`, is the success signal.** `bought` is set the
+  instant the on-chain buy confirms — *before* the `message_id` is stored — so a
+  later storage failure can never refund a paid name (the durable
+  store-message-id retry just fills in `recorded`).
+- The spawned `antId` is persisted to the receipt (`spawned`) **before** the buy.
+  If the post-buy `user_ant` link write hiccups, the antId is already on the
+  receipt — the mapping is a **rebuildable index**, never permanently lost
+  (anti-orphan).
+- The **synchronous failure path confirms on-chain before refunding**: for a
+  fresh-name buy (`Buy-Name`/`Buy-Record`) it checks whether the name now
+  resolves to this receipt's antId (`getArNSRecord`); a write that threw but
+  actually landed (RPC/confirmation timeout) is marked `bought`, **not** refunded.
+
+#### Reconciler (backstop) and durable refunds
+
+A `payment-arns-refund` BullMQ queue carries refund / store-message-id /
+`reconcile-stale` jobs (scheduled by `ARNS_RECONCILE_CRON`, `*/5 * * * *`).
+
+- **`reconcile-stale`** finds receipts stuck in `reserved`/`spawned` past the
+  stale threshold (`ARNS_RECEIPT_STALE_THRESHOLD_MS`, default 90 min) and
+  **confirms on-chain (`getArNSRecord`) before acting**: it promotes a landed
+  fresh-name buy to `bought` (only a fresh-name antId match proves *this* op
+  landed — extend/upgrade matches don't, so they fall through), refunds only
+  genuinely-unbought debits, and **fails safe on a gateway error** (skips that
+  pass, never refunds blindly).
+- **Durable refunds**: the critical-path refund tries inline, then enqueues a
+  retry so a debit is *always* credited back even through an extended outage.
+  Refunds are idempotent — `updateFailedArNSPurchase` only deletes a receipt with
+  no `message_id`, so a duplicate/stale refund can't double-credit a bought name.
+
+#### Auth for custody-mutating routes
+
+`transfer`, `set-record`, and `remove-record` require an **action-bound,
+single-use** signature (not the plain signed-request scheme used by price/buy):
+
+- The signature is over a canonical newline-delimited message committing to the
+  action + antId + params, concatenated with the nonce:
+  `arns\n<action>\n<antId>\n<...params>` + nonce. A signature captured for any
+  other route or different params can't authorize the operation — closing
+  cross-route replay.
+- The **nonce is consumed** (single-use, Redis `SET NX EX` in the BullMQ-queues
+  Redis) after verification, so the exact request can't be replayed (e.g. to
+  revert a record to an older value). The nonce store **fails closed (503)** if
+  Redis is down.
+- Ownership is enforced against `user_ant`; "not found" and "not yours" both
+  return **404** (no ownership leak).
+
+#### Routes
+
+| Route | Method | Auth |
+|-------|--------|------|
+| `/v1/arns/price/:intent/:name` | GET | signed |
+| `/v1/arns/purchase/:intent/:name` | POST | signed (provisioning gated by `ARNS_PROVISIONING_ENABLED`) |
+| `/v1/arns/purchase/:nonce` | GET | public |
+| `/v1/arns/quote/...` | GET | public (Stripe / fiat) |
+| `/v1/arns/transfer/:antId?target=` | POST | action-bound signed |
+| `/v1/arns/manage/:antId/set-record` | POST | action-bound signed |
+| `/v1/arns/manage/:antId/remove-record` | POST | action-bound signed |
+
+Intents: `Buy-Name`, `Buy-Record`, `Extend-Lease`, `Upgrade-Name`,
+`Increase-Undername-Limit`.
+
 ### BDI Unbundling Flow
 
 ```

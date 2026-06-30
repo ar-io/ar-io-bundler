@@ -519,13 +519,25 @@ TOP_UP_QUOTE_EXPIRATION_MS=1800000  # 30 minutes
 - `GET /v1/account/approvals/get` - Get all approvals (packages/payment-service/src/routes/getAllApprovals.ts:23)
 - `GET /v1/account/approvals/revoke` - Revoke approvals (packages/payment-service/src/routes/revokeApprovals.ts:26)
 
-### 3.6 ArNS (Arweave Name System) Purchases
+### 3.6 ArNS (Arweave Name System) with Turbo credits
 
 **What is ArNS?**
-- Decentralized naming system on Arweave (like DNS for Web3)
-- Human-readable names pointing to Arweave transaction IDs
-- Managed by AR.IO Network smart contracts
-- Requires ARIO tokens (AR.IO network token)
+- Decentralized naming system (like DNS for Web3); human-readable names that
+  point to data. Managed by the AR.IO Network, **settled on Solana** (ARIO is a
+  Solana SPL token; names resolve via **ANTs** = Metaplex Core assets).
+- Turbo lets a user **buy AND manage** names paying with their **credit balance**
+  — no ARIO tokens or SOL in the user's hands.
+
+**Beyond buying — custodial Model A** (gated by `ARNS_PROVISIONING_ENABLED`):
+- **Provisioning** — a buyer with no ANT gets a fresh Turbo-owned ANT spawned for
+  them (`POST /v1/arns/purchase/...` with no `processId`).
+- **Self-custody exit** — move that ANT to a Solana pubkey they control
+  (`POST /v1/arns/transfer/:antId`).
+- **Record management** — set/remove a name's resolution records
+  (`POST /v1/arns/manage/:antId/{set,remove}-record`).
+- Custody routes use **action-bound, single-use signatures** (anti-replay), and
+  the money path is failure-safe (a name that landed is never refunded). Full
+  detail: [ARNS_INTEGRATION_GUIDE.md](./ARNS_INTEGRATION_GUIDE.md).
 
 **Purchase Intents:**
 1. **Buy-Name:** Purchase new ArNS name (permabuy or lease)

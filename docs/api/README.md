@@ -50,9 +50,13 @@ The Payment Service manages user balances and payment processing.
 | `/v1/x402/price/:signatureType/:address` | GET | Get x402 payment quote (USDC) |
 | `/v1/x402/payment/:signatureType/:address` | POST | Verify and settle x402 payment |
 | `/v1/x402/finalize` | POST | Finalize x402 payment (fraud detection) |
-| `/v1/arns/price/:intent/:name` | GET | Get ArNS name price |
-| `/v1/arns/purchase/:intent/:name` | POST | Purchase ArNS name |
-| `/v1/arns/purchase/:nonce` | GET | Check purchase status |
+| `/v1/arns/price/:intent/:name` | GET | Get ArNS name price (mARIO + winc) |
+| `/v1/arns/purchase/:intent/:name` | POST | Buy / extend / upgrade / increase-undername an ArNS name with credits. Omit `processId` to **provision** a Turbo-owned ANT (gated by `ARNS_PROVISIONING_ENABLED`; otherwise 400) |
+| `/v1/arns/purchase/:nonce` | GET | Check purchase status (`pending`/`success`/`failed`) |
+| `/v1/arns/quote/:method/:address/:currency/:intent/:name` | GET | Fiat (Stripe) quote for an ArNS purchase |
+| `/v1/arns/transfer/:antId?target=<solana_pubkey>` | POST | Self-custody exit: transfer a Turbo-custodied ANT to a Solana pubkey. **Action-bound, single-use signature** required |
+| `/v1/arns/manage/:antId/set-record?undername=&transactionId=&ttlSeconds=` | POST | Set a name's resolution record (base `@` or undername). Action-bound signature |
+| `/v1/arns/manage/:antId/remove-record?undername=` | POST | Remove an undername record. Action-bound signature |
 | `/v1/account/approvals` | POST | Create payment approval |
 | `/v1/account/approvals` | GET | List approvals |
 | `/v1/account/approvals/:id` | DELETE | Revoke approval |
