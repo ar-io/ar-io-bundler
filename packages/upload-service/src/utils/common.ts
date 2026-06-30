@@ -150,6 +150,21 @@ export function payloadContentTypeFromDecodedTags(tags: Tag[]): string {
   );
 }
 
+/**
+ * The `Bundler-App-Name` tag value for a plan's premium feature type (e.g. "ArDrive",
+ * "AR.IO Network"), or undefined for non-dedicated ("default") types. plan.ts segregates
+ * each plan to a single feature type, so this is the whole bundle's identity. Pure +
+ * exported so it can be unit-tested without infra (see common.test.ts).
+ */
+export function bundlerAppNameForFeatureType(
+  featureType: string | undefined
+): string | undefined {
+  if (!featureType) return undefined;
+  return (dedicatedBundleTypes as Record<string, { bundlerAppName?: string }>)[
+    featureType
+  ]?.bundlerAppName;
+}
+
 export function getPremiumFeatureType(
   ownerPublicAddress: string,
   tags: Tag[],
