@@ -70,6 +70,7 @@ import { W, Winston } from "../src/types/winston";
 import { filterKeysFromObject } from "../src/utils/common";
 import { arweaveRSAModulusToAddress } from "../src/utils/jwkUtils";
 import {
+  signedArNSCustodyHeaders,
   signedRequestHeadersFromJwk,
   signedRequestHeadersFromSolanaKeypair,
 } from "../tests/helpers/signData";
@@ -3408,6 +3409,8 @@ describe("Router tests", () => {
       stub(gatewayMap.ario, "initiateArNSPurchase").rejects(
         new Error("on-chain write boom"),
       );
+      // On-chain confirm says the name did NOT land → genuine failure → refund.
+      stub(gatewayMap.ario, "getArNSRecord").resolves(undefined);
 
       // Clean slate for this name + a known balance for the signer.
       await dbTestHelper
@@ -3466,6 +3469,61 @@ describe("Router tests", () => {
       );
       expect(status).to.equal(400);
       expect(data).to.contain("provisioning is disabled");
+    });
+
+    it("does NOT refund when the write threw but the name LANDED on-chain (F1)", async () => {
+      const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+      const name = "threw-but-landed";
+
+      stub(gatewayMap.ario, "getTokenCost").resolves(new mARIOToken(100));
+      // The write THREW (confirm/RPC timeout) ...
+      stub(gatewayMap.ario, "initiateArNSPurchase").rejects(
+        new Error("confirmation timeout"),
+      );
+      // ... but the name actually resolves to the bought antId on-chain.
+      stub(gatewayMap.ario, "getArNSRecord").resolves({
+        antId: "stubProcessId",
+      });
+
+      await dbTestHelper
+        .knex(tableNames.arNSPurchaseReceipt)
+        .where({ name })
+        .del();
+      const startingBalance = "1000000000";
+      await dbTestHelper
+        .knex(tableNames.user)
+        .where({ user_address: signerAddress })
+        .del();
+      await dbTestHelper.insertStubUser({
+        user_address: signerAddress,
+        winston_credit_balance: startingBalance,
+      });
+
+      const { status } = await axios.post(
+        `/v1/arns/purchase/Buy-Name/${name}?type=permabuy&processId=stubProcessId`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(status).to.equal(503); // the write still threw
+
+      // ...but the buyer is NOT refunded (they own the name); the receipt is
+      // marked `bought` and survives — NOT moved to the failed table.
+      const user = await dbTestHelper
+        .knex<UserDBResult>(tableNames.user)
+        .where({ user_address: signerAddress })
+        .first();
+      expect(Number(user?.winston_credit_balance ?? "0")).to.be.lessThan(
+        Number(startingBalance),
+      ); // debited, NOT refunded
+      const receipt = await dbTestHelper
+        .knex<ArNSPurchaseDBResult>(tableNames.arNSPurchaseReceipt)
+        .where({ name })
+        .first();
+      expect(receipt?.status).to.equal("bought");
+      const failed = await dbTestHelper
+        .knex(tableNames.failedArNSPurchase)
+        .where({ name });
+      expect(failed.length).to.equal(0);
     });
 
     it("provisions + records a Turbo-owned ANT when Buy-Name has no processId", async () => {
@@ -3598,12 +3656,33 @@ describe("Router tests", () => {
       expect(data).to.contain("target");
     });
 
+    it("rejects a signature bound to a DIFFERENT target (replay/forgery)", async () => {
+      // A valid signature, but bound to a different target than the request →
+      // the binding check fails → 401. (Closes cross-request signature replay.)
+      const headers = await signedArNSCustodyHeaders(testArweaveWallet, {
+        action: "transfer",
+        antId: "some-ant",
+        target: "8888888888888888888888888888888888888888888",
+      });
+      const { status } = await axios.post(
+        `/v1/arns/transfer/some-ant?target=${validTarget}`,
+        "",
+        { headers },
+      );
+      expect(status).to.equal(401);
+    });
+
     it("404s for an ANT not in the caller's custody (unknown or not theirs)", async () => {
-      // Unknown processId.
       const unknown = await axios.post(
         `/v1/arns/transfer/unknown-ant?target=${validTarget}`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "transfer",
+            antId: "unknown-ant",
+            target: validTarget,
+          }),
+        },
       );
       expect(unknown.status).to.equal(404);
 
@@ -3621,16 +3700,75 @@ describe("Router tests", () => {
       const notYours = await axios.post(
         `/v1/arns/transfer/${otherOwnersAnt}?target=${validTarget}`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "transfer",
+            antId: otherOwnersAnt,
+            target: validTarget,
+          }),
+        },
       );
       expect(notYours.status).to.equal(404);
     });
 
-    it("transfers an owned ANT and removes the custody mapping", async () => {
+    it("transfers an owned ANT, removes the mapping, and rejects a replay", async () => {
       const processId = "owned-ant-to-transfer";
       const transferMsgId = "transfer-message-id";
       stub(gatewayMap.ario, "transferAnt").resolves(transferMsgId);
 
+      const seed = async () => {
+        await dbTestHelper
+          .knex(tableNames.userAnt)
+          .where({ process_id: processId })
+          .del();
+        await dbTestHelper.knex(tableNames.userAnt).insert({
+          process_id: processId,
+          owner: signerAddress,
+          name: "my-name",
+        });
+      };
+      await seed();
+
+      const action = {
+        action: "transfer" as const,
+        antId: processId,
+        target: validTarget,
+      };
+      const headers = await signedArNSCustodyHeaders(testArweaveWallet, action);
+
+      const { status, data } = await axios.post(
+        `/v1/arns/transfer/${processId}?target=${validTarget}`,
+        "",
+        { headers },
+      );
+      expect(status).to.equal(200);
+      expect(data.messageId).to.equal(transferMsgId);
+      expect(data.antId).to.equal(processId);
+      expect(
+        (
+          await dbTestHelper
+            .knex(tableNames.userAnt)
+            .where({ process_id: processId })
+        ).length,
+      ).to.equal(0);
+
+      // Single-use nonce: replaying the EXACT same signed request → 401.
+      await seed(); // re-seed so a non-replay would otherwise succeed
+      const replay = await axios.post(
+        `/v1/arns/transfer/${processId}?target=${validTarget}`,
+        "",
+        { headers },
+      );
+      expect(replay.status).to.equal(401);
+    });
+  });
+
+  describe("POST /v1/arns/manage/:processId/* (record management)", () => {
+    const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+    const txId = "AnYvLJTWcG9lr2Ll5MwYWZR2o5uTE39WbpYB0zCxwKM"; // valid arweave tx id
+    const processId = "managed-ant";
+
+    const seedOwnedAnt = async () => {
       await dbTestHelper
         .knex(tableNames.userAnt)
         .where({ process_id: processId })
@@ -3638,25 +3776,170 @@ describe("Router tests", () => {
       await dbTestHelper.knex(tableNames.userAnt).insert({
         process_id: processId,
         owner: signerAddress,
-        name: "my-name",
+        name: "managed-name",
       });
+    };
+
+    it("set-record: owner sets the base (@) record", async () => {
+      const setAntRecord = stub(gatewayMap.ario, "setAntRecord").resolves(
+        "set-msg-id",
+      );
+      await seedOwnedAnt();
 
       const { status, data } = await axios.post(
-        `/v1/arns/transfer/${processId}?target=${validTarget}`,
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=3600`,
         "",
-        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "set-record",
+            antId: processId,
+            undername: "@",
+            transactionId: txId,
+            ttlSeconds: 3600,
+          }),
+        },
       );
 
       expect(status).to.equal(200);
-      expect(data.messageId).to.equal(transferMsgId);
-      expect(data.target).to.equal(validTarget);
-      expect(data.antId).to.equal(processId);
+      expect(data.messageId).to.equal("set-msg-id");
+      expect(data.undername).to.equal("@"); // defaults to base record
+      expect(
+        setAntRecord.calledOnceWithExactly({
+          antId: processId,
+          undername: "@",
+          transactionId: txId,
+          ttlSeconds: 3600,
+        }),
+      ).to.be.true;
+    });
 
-      // The custody mapping was removed (the ANT left Turbo's control).
-      const mapping = await dbTestHelper
+    it("set-record: owner sets a specific undername", async () => {
+      const setAntRecord = stub(gatewayMap.ario, "setAntRecord").resolves(
+        "set-msg-2",
+      );
+      await seedOwnedAnt();
+
+      const { status } = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?undername=docs&transactionId=${txId}&ttlSeconds=900`,
+        "",
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "set-record",
+            antId: processId,
+            undername: "docs",
+            transactionId: txId,
+            ttlSeconds: 900,
+          }),
+        },
+      );
+
+      expect(status).to.equal(200);
+      expect(setAntRecord.firstCall.args[0].undername).to.equal("docs");
+    });
+
+    it("set-record: 400 on an invalid transactionId or ttlSeconds", async () => {
+      await seedOwnedAnt();
+      const badTx = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=nope&ttlSeconds=60`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badTx.status).to.equal(400);
+      expect(badTx.data).to.contain("transactionId");
+
+      const badTtl = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=0`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badTtl.status).to.equal(400);
+      expect(badTtl.data).to.contain("ttlSeconds");
+
+      // Out-of-range (too large) is rejected at the edge, not sent to the chain.
+      const hugeTtl = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=999999999`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(hugeTtl.status).to.equal(400);
+      expect(hugeTtl.data).to.contain("ttlSeconds");
+
+      // A bad undername charset is rejected too.
+      const badUndername = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?undername=bad!name&transactionId=${txId}&ttlSeconds=900`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(badUndername.status).to.equal(400);
+      expect(badUndername.data).to.contain("undername");
+    });
+
+    it("set-record: 401 unsigned, 404 for an ANT not in the caller's custody", async () => {
+      const unsigned = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=60`,
+      );
+      expect(unsigned.status).to.equal(401);
+
+      // Owned by someone else → 404 (the auth check runs only for valid input).
+      stub(gatewayMap.ario, "setAntRecord").resolves("unused");
+      await dbTestHelper
         .knex(tableNames.userAnt)
-        .where({ process_id: processId });
-      expect(mapping.length).to.equal(0);
+        .where({ process_id: processId })
+        .del();
+      await dbTestHelper.knex(tableNames.userAnt).insert({
+        process_id: processId,
+        owner: "someone-else",
+        name: "not-yours",
+      });
+      const notYours = await axios.post(
+        `/v1/arns/manage/${processId}/set-record?transactionId=${txId}&ttlSeconds=60`,
+        "",
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "set-record",
+            antId: processId,
+            undername: "@",
+            transactionId: txId,
+            ttlSeconds: 60,
+          }),
+        },
+      );
+      expect(notYours.status).to.equal(404);
+    });
+
+    it("remove-record: owner removes an undername (and 400 without one)", async () => {
+      const removeAntRecord = stub(gatewayMap.ario, "removeAntRecord").resolves(
+        "remove-msg-id",
+      );
+      await seedOwnedAnt();
+
+      const missing = await axios.post(
+        `/v1/arns/manage/${processId}/remove-record`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(missing.status).to.equal(400);
+      expect(missing.data).to.contain("undername");
+
+      const { status, data } = await axios.post(
+        `/v1/arns/manage/${processId}/remove-record?undername=docs`,
+        "",
+        {
+          headers: await signedArNSCustodyHeaders(testArweaveWallet, {
+            action: "remove-record",
+            antId: processId,
+            undername: "docs",
+          }),
+        },
+      );
+      expect(status).to.equal(200);
+      expect(data.messageId).to.equal("remove-msg-id");
+      expect(
+        removeAntRecord.calledOnceWithExactly({
+          antId: processId,
+          undername: "docs",
+        }),
+      ).to.be.true;
     });
   });
 

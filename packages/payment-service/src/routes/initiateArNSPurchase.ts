@@ -105,22 +105,57 @@ export async function initiateArNSPurchase(ctx: KoaContext, next: Next) {
     // SUCCEEDS, the name is paid for on-chain → we must NEVER refund, even if a
     // later step (recording the message_id) fails.
     let arioWriteResult: Awaited<ReturnType<typeof ario.initiateArNSPurchase>>;
+    // Captured so a thrown-but-landed buy can be confirmed on-chain below.
+    let spawnedAntId: string | undefined;
     try {
       arioWriteResult = await ario.initiateArNSPurchase({
         ...purchaseReceipt,
         // Durably record the spawned antId on the receipt BEFORE the on-chain
         // buy, so a crash/failed buy can never lose it (reclaimable orphan +
         // rebuildable mapping). status: reserved → spawned.
-        onAntSpawned: (antId) =>
-          paymentDatabase.persistSpawnedAntId(nonce, antId),
+        onAntSpawned: (antId) => {
+          spawnedAntId = antId;
+          return paymentDatabase.persistSpawnedAntId(nonce, antId);
+        },
       });
     } catch (writeError) {
-      await durableRefundArNSPurchase(
-        { paymentDatabase, logger },
-        enqueueArNSRefund,
-        purchaseReceipt.nonce,
-        "PURCHASE_FAILED",
-      );
+      // The write THREW — but a Solana confirm/RPC timeout can throw AFTER the tx
+      // actually landed. Before refunding, confirm on-chain: for a fresh-name buy
+      // (Buy-Name/Buy-Record), if the name now resolves to this purchase's antId,
+      // WE bought it → mark `bought`, do NOT refund (the client can poll status).
+      // Otherwise refund durably. (Extend/Upgrade/Increase can't be confirmed via
+      // antId — they refund; the rare threw-but-landed case is logged.)
+      const isFreshNameBuy = intent === "Buy-Name" || intent === "Buy-Record";
+      const antId = processId ?? spawnedAntId;
+      let landed = false;
+      if (isFreshNameBuy && antId) {
+        landed = await ario
+          .getArNSRecord(name)
+          .then((record) => record?.antId === antId)
+          .catch(() => false);
+      }
+      if (landed) {
+        await paymentDatabase.markArNSPurchaseBought(nonce).catch((markError) =>
+          logger.error(
+            "ArNS write threw but name LANDED on-chain; failed to mark bought — on-chain reconcile is the backstop",
+            {
+              nonce,
+              error: markError instanceof Error ? markError.message : markError,
+            },
+          ),
+        );
+        logger.warn(
+          "ArNS write threw but the name LANDED on-chain — marked bought, NOT refunded (client can poll status)",
+          { nonce, name, antId },
+        );
+      } else {
+        await durableRefundArNSPurchase(
+          { paymentDatabase, logger },
+          enqueueArNSRefund,
+          nonce,
+          "PURCHASE_FAILED",
+        );
+      }
       throw writeError;
     }
 

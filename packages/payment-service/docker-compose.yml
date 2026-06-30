@@ -82,8 +82,18 @@ services:
       X402_BASE_ENABLED: "false"
       X402_BASE_TESTNET_ENABLED: "true"
       X402_FACILITATOR_URLS_BASE_TESTNET: https://x402.org/facilitator
+      # Redis for BullMQ queues + the ArNS custody single-use-nonce store
+      # (consumeArNSNonce). The nonce store calls Redis synchronously on every
+      # custody request, so the suite needs a reachable Redis or those tests hang.
+      REDIS_QUEUE_HOST: payment-service-redis
+      REDIS_QUEUE_PORT: 6379
     depends_on:
       - payment-service-pg
+      - payment-service-redis
+
+  payment-service-redis:
+    image: redis:7.2-alpine
+    command: ["redis-server", "--port", "6379", "--save", ""]
 
 volumes:
   payment-service-data:

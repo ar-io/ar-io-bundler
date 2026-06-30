@@ -18,24 +18,21 @@ import { Next } from "koa";
 
 import { BadRequest, Unauthorized } from "../database/errors";
 import { KoaContext } from "../server";
+import { verifyArNSCustodySignature } from "../utils/arnsCustodySignature";
 import { isValidSolanaAddress } from "../utils/base64";
 
 /**
  * Self-custody exit (custodial Model A). A credit-authenticated owner moves a
  * Turbo-custodied ANT to a Solana pubkey they designate; Turbo (the on-chain
- * owner) signs the transfer. No escrow contract — just a cooperative transfer
- * gated by the same signature the user already uses.
+ * owner) signs the transfer. The request must carry an ACTION-BOUND, single-use
+ * signature (over the antId + target), so a captured signature can't be replayed
+ * to move the ANT elsewhere.
  */
 export async function transferArNSAnt(ctx: KoaContext, next: Next) {
   const { paymentDatabase, logger, gatewayMap } = ctx.state;
   const { ario } = gatewayMap;
 
   try {
-    const owner = ctx.state.walletAddress;
-    if (!owner || typeof owner !== "string") {
-      throw new Unauthorized("Signed request is required for this route");
-    }
-
     const antId = ctx.params.antId;
     if (!antId) {
       throw new BadRequest("Missing required parameter: antId");
@@ -48,6 +45,13 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
         "Missing or invalid target: must be a Solana address",
       );
     }
+
+    // Verify the action-bound, single-use signature over (antId, target).
+    const owner = await verifyArNSCustodySignature(ctx, {
+      action: "transfer",
+      antId,
+      target,
+    });
 
     // Authorize: the caller must own this ANT in Turbo custody. "Not found" and
     // "not yours" are treated identically (404) so we never reveal that an ANT

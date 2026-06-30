@@ -33,6 +33,10 @@ import { createAdminCreditWorker } from "./adminCreditTool.worker";
 import { createArNSRefundWorker } from "./arnsRefund.worker";
 import { createPendingTxWorker } from "./creditPendingTx.worker";
 
+// MUST run before the imports below — constants.ts throws at module-eval if X402
+// is set without an address, and the worker imports pull it in transitively.
+// CommonJS preserves textual order, so this statement runs before the require()s
+// that follow (same pattern as src/index.ts). Do NOT move it back under them.
 loadEnvFile({ path: path.join(__dirname, "../../../../.env") });
 
 async function main() {
