@@ -124,6 +124,12 @@ export class X402PricingOracle {
           ids: "arweave",
           vs_currencies: "usd",
         },
+        // Demo API key raises the per-IP rate limit (anonymous CoinGecko 429s
+        // are the cause of intermittent x402-quote 5xx → upload 503s). Sent as a
+        // header, not a query param, so the key never lands in any logged URL.
+        headers: process.env.COINGECKO_API_KEY
+          ? { "x-cg-demo-api-key": process.env.COINGECKO_API_KEY }
+          : undefined,
         timeout: 5000,
       });
 
