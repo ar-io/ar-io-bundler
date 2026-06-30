@@ -63,11 +63,41 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
       return next();
     }
 
-    const messageId = await ario.transferAnt({ antId, target });
+    // The on-chain transfer can be "thrown-but-landed": the tx confirms on-chain
+    // but the RPC fails on the confirmation read (e.g. a 429). If we treated that
+    // 503 as a plain failure, the custody mapping would be left behind even
+    // though the ANT already moved — and a retry can NEVER clear it, because the
+    // signer is no longer the owner (the chain returns NotCurrentOwner). So on a
+    // transfer error, confirm the on-chain owner: if it is already the target,
+    // the transfer DID land and we reconcile custody as success; otherwise it
+    // genuinely failed and we surface the error (leaving the mapping for retry).
+    let messageId: string | undefined;
+    let confirmed = true;
+    try {
+      messageId = await ario.transferAnt({ antId, target });
+    } catch (transferError) {
+      const onChainOwner = await ario.getAntOwner(antId).catch(() => undefined);
+      if (onChainOwner !== target) {
+        throw transferError;
+      }
+      confirmed = false;
+      logger.warn(
+        "ArNS transfer RPC failed but the ANT is already owned by the target on-chain — reconciling custody (thrown-but-landed)",
+        {
+          antId,
+          target,
+          error:
+            transferError instanceof Error
+              ? transferError.message
+              : transferError,
+        },
+      );
+    }
 
-    // Transfer succeeded — the ANT left Turbo's control. Drop the custody
-    // mapping (best-effort: a stale row only causes a later exit to fail on the
-    // on-chain owner check, never a double-transfer).
+    // Transfer succeeded (or was confirmed landed on-chain) — the ANT left
+    // Turbo's control. Drop the custody mapping (best-effort: a stale row only
+    // causes a later exit to fail on the on-chain owner check, never a
+    // double-transfer).
     try {
       await paymentDatabase.deleteUserAnt(antId);
     } catch (deleteError) {
@@ -89,7 +119,10 @@ export async function transferArNSAnt(ctx: KoaContext, next: Next) {
       target,
       owner,
       name: mapping.name,
-      messageId,
+      // null when the transfer landed on-chain but the confirming RPC call
+      // failed, so no message id was returned. `confirmed: false` flags that.
+      messageId: messageId ?? null,
+      confirmed,
     };
   } catch (error) {
     if (
