@@ -77,8 +77,8 @@ const defaultArioSolanaGatewayUrl = new URL(
 // devnet (RPC + mint alone are NOT enough — calling mainnet program IDs against a
 // devnet RPC throws AccountDiscriminatorMismatch). `ARIO_PROGRAM_CLUSTER=devnet`
 // selects the devnet/"staging v2" set so the whole ARIO/ANT path (reads, buys,
-// spawn, record writes, transfers) is internally consistent on devnet. Unset (or
-// `mainnet`) leaves the existing mainnet behavior unchanged — production passes no
+// spawn, record writes, transfers, mint, RPC) is internally consistent on devnet.
+// Unset leaves the existing mainnet behavior unchanged — production passes no
 // programIds and relies on the SDK's mainnet defaults.
 type ArioProgramIds = {
   coreProgramId: Address;
@@ -87,8 +87,21 @@ type ArioProgramIds = {
   antProgramId: Address;
 };
 
+// Parse ARIO_PROGRAM_CLUSTER. Only `devnet`/`mainnet` are valid; unset → undefined
+// (mainnet defaults). FAIL CLOSED on any other value: a typo like `devnett` must
+// NOT silently fall back to mainnet, which would point this payment path at the
+// wrong cluster and defeat the safe-devnet rollout.
+function resolveArioCluster(): "devnet" | "mainnet" | undefined {
+  const cluster = process.env.ARIO_PROGRAM_CLUSTER?.trim().toLowerCase();
+  if (!cluster) return undefined;
+  if (cluster === "devnet" || cluster === "mainnet") return cluster;
+  throw new Error(
+    `Unsupported ARIO_PROGRAM_CLUSTER: "${process.env.ARIO_PROGRAM_CLUSTER}" (expected "devnet" or "mainnet")`,
+  );
+}
+
 export function resolveArioProgramIds(): ArioProgramIds | undefined {
-  const cluster = process.env.ARIO_PROGRAM_CLUSTER?.toLowerCase();
+  const cluster = resolveArioCluster();
   if (cluster === "devnet") {
     return {
       coreProgramId: DEVNET_PROGRAM_IDS.core,
@@ -117,13 +130,26 @@ export function resolveArioProgramIds(): ArioProgramIds | undefined {
 // RPC (→ "DemandFactor account not found"). With no cluster set (production), the
 // behavior is unchanged: ARIO_GATEWAY_URL if present, else the env default.
 export function resolveArioEndpoint(): URL {
-  const cluster = process.env.ARIO_PROGRAM_CLUSTER?.toLowerCase();
-  if (cluster === "devnet") {
+  if (resolveArioCluster() === "devnet") {
     return new URL(process.env.ARIO_DEVNET_RPC_URL ?? DEVNET_RPC_URL);
   }
   return process.env.ARIO_GATEWAY_URL
     ? new URL(process.env.ARIO_GATEWAY_URL)
     : defaultArioSolanaGatewayUrl;
+}
+
+// Resolve the ARIO SPL mint default. An explicitly-selected cluster drives the
+// mint too (devnet/staging-v2 vs mainnet), so `ARIO_PROGRAM_CLUSTER=devnet` is
+// self-contained — otherwise the constructor would derive recipient token
+// accounts (and `readSolanaTokenTransaction` would filter) against the MAINNET
+// mint while everything else is on devnet, and devnet ARIO payments would never
+// reconcile. `ARIO_MINT_ADDRESS` still overrides; unset cluster = unchanged
+// (NODE_ENV-based) default.
+export function resolveArioMintAddress(): string {
+  const cluster = resolveArioCluster();
+  if (cluster === "devnet") return DEVNET_ARIO_MINT;
+  if (cluster === "mainnet") return MAINNET_ARIO_MINT;
+  return defaultArioMintAddress;
 }
 
 const splTokenProgramIds = [
@@ -235,7 +261,7 @@ export class SolanaARIOGateway extends Gateway {
   constructor({
     endpoint = resolveArioEndpoint(),
     recipientOwnerAddress = walletAddresses.ario,
-    mintAddress = process.env.ARIO_MINT_ADDRESS ?? defaultArioMintAddress,
+    mintAddress = process.env.ARIO_MINT_ADDRESS ?? resolveArioMintAddress(),
     signerSecretKey = process.env.ARIO_SOLANA_SIGNER_SECRET_KEY,
     logger = globalLogger,
     ...params

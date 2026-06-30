@@ -15,13 +15,19 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 import {
+  DEVNET_ARIO_MINT,
   DEVNET_PROGRAM_IDS,
   DEVNET_RPC_URL,
+  MAINNET_ARIO_MINT,
   MAINNET_PROGRAM_IDS,
 } from "@ar.io/sdk";
 import { expect } from "chai";
 
-import { resolveArioEndpoint, resolveArioProgramIds } from "./solana-ario";
+import {
+  resolveArioEndpoint,
+  resolveArioMintAddress,
+  resolveArioProgramIds,
+} from "./solana-ario";
 
 // These two resolvers select the Solana cluster the ArNS/ANT path talks to. The
 // whole point of ARIO_PROGRAM_CLUSTER=devnet is that it must be SELF-CONTAINED:
@@ -83,9 +89,27 @@ describe("ARIO cluster resolvers", () => {
       expect(resolveArioProgramIds()).to.equal(undefined);
     });
 
-    it("returns undefined for an unknown cluster value", () => {
-      process.env.ARIO_PROGRAM_CLUSTER = "testnet";
-      expect(resolveArioProgramIds()).to.equal(undefined);
+    it("FAILS CLOSED (throws) on an unsupported cluster value", () => {
+      process.env.ARIO_PROGRAM_CLUSTER = "devnett";
+      expect(() => resolveArioProgramIds()).to.throw(/Unsupported/);
+      expect(() => resolveArioEndpoint()).to.throw(/Unsupported/);
+      expect(() => resolveArioMintAddress()).to.throw(/Unsupported/);
+    });
+  });
+
+  describe("resolveArioMintAddress", () => {
+    it("uses the devnet mint for cluster=devnet", () => {
+      process.env.ARIO_PROGRAM_CLUSTER = "devnet";
+      expect(resolveArioMintAddress()).to.equal(DEVNET_ARIO_MINT);
+    });
+    it("uses the mainnet mint for cluster=mainnet", () => {
+      process.env.ARIO_PROGRAM_CLUSTER = "mainnet";
+      expect(resolveArioMintAddress()).to.equal(MAINNET_ARIO_MINT);
+    });
+    it("falls back to the env default when unset", () => {
+      // NODE_ENV=test in the suite → DEVNET default; the point is it does not
+      // throw and returns a non-empty mint when no cluster is selected.
+      expect(resolveArioMintAddress()).to.be.a("string").and.not.empty;
     });
   });
 
