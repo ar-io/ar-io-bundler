@@ -293,10 +293,14 @@ function buildStages() {
       async probe(s) {
         const tipNodes =
           CFG.tipNodes && CFG.tipNodes.length ? CFG.tipNodes : [gw];
+        // Clamp the required count to how many nodes we actually probe, so a
+        // single-gateway fallback (or minTipNodes set higher than the tip-node
+        // count) can still complete instead of being unsatisfiable forever.
+        const need = Math.max(1, Math.min(CFG.minTipNodes, tipNodes.length));
         const r = await probeTxStatusMulti(tipNodes, s.bundleId);
         if (!r.anyReachable)
           return { done: false, lastDetail: "no tip node responded yet" };
-        if (r.minedCount >= CFG.minTipNodes && r.blockHeight != null)
+        if (r.minedCount >= need && r.blockHeight != null)
           return {
             done: true,
             ok: true,
@@ -304,7 +308,7 @@ function buildStages() {
           };
         return {
           done: false,
-          lastDetail: `mined on ${r.minedCount}/${r.total} tip nodes (need ${CFG.minTipNodes})`,
+          lastDetail: `mined on ${r.minedCount}/${r.total} tip nodes (need ${need})`,
         };
       },
     },
