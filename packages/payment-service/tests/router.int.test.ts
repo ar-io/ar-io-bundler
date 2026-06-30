@@ -3577,6 +3577,89 @@ describe("Router tests", () => {
     });
   });
 
+  describe("POST /v1/arns/transfer/:processId", () => {
+    const signerAddress = "-kYy3_LcYeKhtqNNXDN6xTQ7hW8S5EV0jgq_6j8a830";
+    const validTarget = "11111111111111111111111111111111"; // a valid Solana pubkey
+
+    it("rejects unsigned requests", async () => {
+      const { status } = await axios.post(
+        `/v1/arns/transfer/some-ant?target=${validTarget}`,
+      );
+      expect(status).to.equal(401);
+    });
+
+    it("400s on a missing/invalid target", async () => {
+      const { status, data } = await axios.post(
+        `/v1/arns/transfer/some-ant?target=not-a-solana-address`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(status).to.equal(400);
+      expect(data).to.contain("target");
+    });
+
+    it("404s for an ANT not in the caller's custody (unknown or not theirs)", async () => {
+      // Unknown processId.
+      const unknown = await axios.post(
+        `/v1/arns/transfer/unknown-ant?target=${validTarget}`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(unknown.status).to.equal(404);
+
+      // Exists but owned by someone else → still 404 (no info leak).
+      const otherOwnersAnt = "other-owner-ant";
+      await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: otherOwnersAnt })
+        .del();
+      await dbTestHelper.knex(tableNames.userAnt).insert({
+        process_id: otherOwnersAnt,
+        owner: "someone-else",
+        name: "not-yours",
+      });
+      const notYours = await axios.post(
+        `/v1/arns/transfer/${otherOwnersAnt}?target=${validTarget}`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+      expect(notYours.status).to.equal(404);
+    });
+
+    it("transfers an owned ANT and removes the custody mapping", async () => {
+      const processId = "owned-ant-to-transfer";
+      const transferMsgId = "transfer-message-id";
+      stub(gatewayMap.ario, "transferAnt").resolves(transferMsgId);
+
+      await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: processId })
+        .del();
+      await dbTestHelper.knex(tableNames.userAnt).insert({
+        process_id: processId,
+        owner: signerAddress,
+        name: "my-name",
+      });
+
+      const { status, data } = await axios.post(
+        `/v1/arns/transfer/${processId}?target=${validTarget}`,
+        "",
+        { headers: await signedRequestHeadersFromJwk(testArweaveWallet) },
+      );
+
+      expect(status).to.equal(200);
+      expect(data.messageId).to.equal(transferMsgId);
+      expect(data.target).to.equal(validTarget);
+      expect(data.antId).to.equal(processId);
+
+      // The custody mapping was removed (the ANT left Turbo's control).
+      const mapping = await dbTestHelper
+        .knex(tableNames.userAnt)
+        .where({ process_id: processId });
+      expect(mapping.length).to.equal(0);
+    });
+  });
+
   describe("GET /v1/arns/purchase/:nonce", () => {
     it("should return success status for valid purchase in the database", async () => {
       await dbTestHelper.insertStubArNSPurchase({

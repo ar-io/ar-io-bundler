@@ -3061,6 +3061,30 @@ describe("PostgresDatabase class", () => {
       });
     });
 
+    describe("getUserAnt / deleteUserAnt methods", () => {
+      it("looks up a custodied ANT and removes it on exit", async () => {
+        const processId = "user-ant -- getUserAnt";
+        const name = "user-ant-name";
+        await dbTestHelper.knex(tableNames.userAnt).insert({
+          process_id: processId,
+          owner,
+          name,
+        });
+
+        const found = await db.getUserAnt(processId);
+        expect(found).to.deep.equal({ owner, name });
+
+        await db.deleteUserAnt(processId);
+        const afterDelete = await db.getUserAnt(processId);
+        expect(afterDelete).to.be.undefined;
+      });
+
+      it("returns undefined for an unknown processId", async () => {
+        const result = await db.getUserAnt("nope -- getUserAnt unknown");
+        expect(result).to.be.undefined;
+      });
+    });
+
     describe("getArNSPurchaseStatus method", () => {
       it("gets the ArNS name purchase status as expected", async () => {
         const name = "Name -- Get ArNS Purchase Status Test";

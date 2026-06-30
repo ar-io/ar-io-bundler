@@ -55,6 +55,11 @@ export function isValidArweaveBase64URL(base64URL: Base64URLString) {
 
 export function isValidSolanaAddress(address: string) {
   try {
+    // on-curve check is intentional: this validates USER WALLET / transfer-target
+    // addresses, which are ed25519 public keys (on the curve). Off-curve values
+    // (PDAs / program accounts) are not user wallets and are correctly rejected.
+    // (Red-team M-1 proposed dropping this; verified that would wrongly admit
+    // non-wallet addresses as users — keeping isOnCurve.)
     return PublicKey.isOnCurve(address);
   } catch {
     return false;
@@ -78,7 +83,7 @@ export function isValidKyveAddress(address: string) {
 
 export function isValidUserAddress(
   address: string,
-  type: UserAddressType
+  type: UserAddressType,
 ): boolean {
   switch (type) {
     case "arweave":

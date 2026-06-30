@@ -41,6 +41,7 @@ import { revokeApprovals } from "./routes/revokeApprovals";
 import { stripeRoute } from "./routes/stripe/stripeRoute";
 import { swaggerDocs, swaggerDocsJSON } from "./routes/swagger";
 import { topUp } from "./routes/topUp";
+import { transferArNSAnt } from "./routes/transferArNSAnt";
 import { x402FinalizeRoute } from "./routes/x402Finalize";
 import { x402PaymentRoute } from "./routes/x402Payment";
 import { x402PriceRoute } from "./routes/x402Price";
@@ -64,26 +65,28 @@ router.get("/v1/price/:currency/:amount", verifySignature, priceRoutes);
 router.get(
   "/v1/arns/price/:intent/:name",
   verifySignature,
-  priceArNSPurchaseHandler
+  priceArNSPurchaseHandler,
 );
 
 router.post(
   "/v1/arns/purchase/:intent/:name",
   verifySignature,
-  initiateArNSPurchase
+  initiateArNSPurchase,
 );
 
 router.get("/v1/arns/purchase/:nonce", getArNSPurchaseStatus);
 
+router.post("/v1/arns/transfer/:antId", verifySignature, transferArNSAnt);
+
 router.get(
   "/v1/top-up/:method/:address/:currency/:amount",
   verifySignature,
-  topUp
+  topUp,
 );
 
 router.get(
   "/v1/arns/quote/:method/:address/:currency/:intent/:name",
-  arnsPurchaseQuote
+  arnsPurchaseQuote,
 );
 
 router.get("/v1/redeem", redeem);
@@ -121,7 +124,7 @@ router.post("/v1/account/balance/:token", addPendingPaymentTx);
 const backwardsCompatibleGetApprovalRoute = "/account/approval";
 router.get(
   [backwardsCompatibleGetApprovalRoute, "/v1/account/approvals"],
-  getApprovals
+  getApprovals,
 );
 router.get("/v1/account/approvals/get", getAllApprovals);
 

@@ -2166,6 +2166,27 @@ export class PostgresDatabase implements Database {
     });
   }
 
+  // Look up a Turbo-custodied ANT by its process_id (the asset pubkey). Returns
+  // the credit-account owner + name, or undefined if not custodied by Turbo.
+  public async getUserAnt(
+    processId: string,
+  ): Promise<{ owner: string; name: string } | undefined> {
+    const row = await this.reader(tableNames.userAnt)
+      .where({ [columnNames.processId]: processId })
+      .first();
+    return row
+      ? { owner: row[columnNames.owner], name: row[columnNames.name] }
+      : undefined;
+  }
+
+  // Remove the custody mapping once an ANT has been transferred out of Turbo's
+  // control (self-custody exit).
+  public async deleteUserAnt(processId: string): Promise<void> {
+    await this.writer(tableNames.userAnt)
+      .where({ [columnNames.processId]: processId })
+      .del();
+  }
+
   public async getArNSPurchaseQuote(
     nonce: string,
   ): Promise<{ quote: ArNSPurchaseQuote }> {
