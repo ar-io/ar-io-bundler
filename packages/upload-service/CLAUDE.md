@@ -169,6 +169,24 @@ Jobs are enqueued via `enqueue()` / `enqueueBatch()` in `src/arch/queues.ts`.
   (shuffled, per-node retry + failover via `broadcastChunkToArioNode`), then
   best-effort deletes the staged bytes. Unset `AR_IO_NODE_URLS` → single
   `ARWEAVE_UPLOAD_NODE`. Metric `chunk_seed_post_total{endpoint,result}`.
+- **Chunk-broadcast TX-confirmation gate** (`chunkBroadcastGate.ts`, opt-in via
+  `CHUNK_BROADCAST_TX_CONFIRM_GATE`, default OFF): a chunk is only accepted by a
+  node that already knows the TX's `data_root`. The bundle TX header is posted
+  ~0.38s before its chunks, so when propagation to the chunk quorum lags the first
+  chunk POSTs 400 ("rejected chunk") and only land via retries (noisy, not data
+  loss). With the gate ON, `seed.ts` waits until the bundle TX is confirmed
+  network-wide (`getTransactionStatus` → `"found"` = mined) before staging +
+  broadcasting, so chunks can't lose the race. It is a **BullMQ re-queue** (the
+  `seed-bundle` job re-delays itself with `chunkGateDeadlineMs` carried in job
+  data), NOT a blocking sleep — no worker-concurrency starvation — and
+  **hard-capped** (`CHUNK_BROADCAST_GATE_MAX_MS`, default 10 min): a
+  slow/never-confirming TX broadcasts anyway at the cap (`redrive-posted` still
+  recovers it), so bundles never strand. While gating, the bundle stays in
+  `posted_bundle` (the seed DB read is a pure SELECT; the gate re-enqueues and
+  returns before `insertSeededBundle`, so it's idempotent per poll). Default OFF =
+  byte-for-byte current immediate-seed behavior. Knobs:
+  `CHUNK_BROADCAST_GATE_MIN_CONFIRMATIONS` (1), `CHUNK_BROADCAST_GATE_POLL_MS`
+  (5000). Metric `chunk_broadcast_gate_total{result=confirmed|requeued|cap_reached}`.
 - `optical-post.ts` posts data-item headers to the AR.IO Gateway optical bridge
   for optimistic caching (`OPTICAL_BRIDGE_URL`).
 - `putOffsets.ts` writes data-item offsets to PostgreSQL (for retrieval).

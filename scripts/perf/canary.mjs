@@ -277,18 +277,39 @@ function buildStages() {
     },
     {
       key: "mined",
-      label: "bundle tx mined",
+      // Verify the bundle tx mined across MULTIPLE independent tip nodes, not just
+      // the read gateway. This is the chunk-propagation property directly: a chunk
+      // is only accepted by a node that already knows the tx's data_root, so
+      // requiring minTipNodes of the configured tip nodes to report it mined
+      // catches a seeding/propagation regression that a single-gateway check would
+      // miss. Falls back to [gateway] + minTipNodes=1 when no tip nodes are set, so
+      // the single-node default behavior is unchanged.
+      label: "bundle tx mined (tip nodes)",
       tier: "deep",
       required: true,
       sloMs: 1500000,
       deadlineMs: CFG.d.mined,
       needsBundleId: true,
       async probe(s) {
-        const r = await probeTxStatus(gw, s.bundleId);
-        if (!r.ok) return { done: false, lastDetail: `http ${r.httpStatus || r.error}` };
-        if (r.state === "mined" && r.blockHeight != null)
-          return { done: true, ok: true, detail: `block ${r.blockHeight}, ${r.confirmations} conf` };
-        return { done: false, lastDetail: r.state };
+        const tipNodes =
+          CFG.tipNodes && CFG.tipNodes.length ? CFG.tipNodes : [gw];
+        // Clamp the required count to how many nodes we actually probe, so a
+        // single-gateway fallback (or minTipNodes set higher than the tip-node
+        // count) can still complete instead of being unsatisfiable forever.
+        const need = Math.max(1, Math.min(CFG.minTipNodes, tipNodes.length));
+        const r = await probeTxStatusMulti(tipNodes, s.bundleId);
+        if (!r.anyReachable)
+          return { done: false, lastDetail: "no tip node responded yet" };
+        if (r.minedCount >= need && r.blockHeight != null)
+          return {
+            done: true,
+            ok: true,
+            detail: `mined on ${r.minedCount}/${r.total} tip nodes @block ${r.blockHeight}, ${r.maxConfirmations} conf`,
+          };
+        return {
+          done: false,
+          lastDetail: `mined on ${r.minedCount}/${r.total} tip nodes (need ${need})`,
+        };
       },
     },
     {
