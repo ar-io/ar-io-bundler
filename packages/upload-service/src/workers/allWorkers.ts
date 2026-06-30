@@ -116,12 +116,17 @@ const postWorker = createWorker<{ planId: string }>(
 );
 
 // Seed Bundle Worker - Seeds bundles to additional gateways
-const seedWorker = createWorker<{ planId: string }>(
+const seedWorker = createWorker<{
+  planId: string;
+  chunkGateDeadlineMs?: number;
+}>(
   jobLabels.seedBundle,
-  async (job: Job<{ planId: string }>) => {
+  async (job: Job<{ planId: string; chunkGateDeadlineMs?: number }>) => {
     await seedBundleHandler(job.data.planId, {
       database,
       objectStore: defaultArchitecture.objectStore,
+      arweaveGateway: defaultArchitecture.arweaveGateway,
+      chunkGateDeadlineMs: job.data.chunkGateDeadlineMs,
     });
   },
   { concurrency: 2 }
@@ -173,7 +178,10 @@ const newDataItemWorker = createWorker<EnqueuedNewDataItem>(
 // NaN-guarded so a non-numeric env value falls back to the default rather than
 // handing NaN to BullMQ. Note 0 is a VALID value for the rate max (disables the
 // limiter), so we can't use `|| 50` here — distinguish NaN explicitly.
-const opticalPostRateMaxRaw = parseInt(process.env.OPTICAL_POST_RATE_MAX || "50", 10);
+const opticalPostRateMaxRaw = parseInt(
+  process.env.OPTICAL_POST_RATE_MAX || "50",
+  10
+);
 const opticalPostRateMax = Number.isNaN(opticalPostRateMaxRaw)
   ? 50
   : opticalPostRateMaxRaw;

@@ -23,6 +23,10 @@ import { getQueue } from "./queues/config";
 
 type PlanMessage = { planId: PlanId };
 
+// seed-bundle carries an optional cap deadline that the chunk-broadcast
+// TX-confirmation gate threads across its self-re-enqueues (chunkBroadcastGate.ts).
+type SeedBundleMessage = PlanMessage & { chunkGateDeadlineMs?: number };
+
 export type EnqueuedNewDataItem = Omit<PostedNewDataItem, "signature"> & {
   signature: string;
 };
@@ -48,7 +52,7 @@ type QueueTypeToMessageType = {
   [jobLabels.planBundle]: PlanMessage;
   [jobLabels.prepareBundle]: PlanMessage;
   [jobLabels.postBundle]: PlanMessage;
-  [jobLabels.seedBundle]: PlanMessage;
+  [jobLabels.seedBundle]: SeedBundleMessage;
   [jobLabels.verifyBundle]: PlanMessage;
   [jobLabels.opticalPost]: DatedSignedDataItemHeader;
   [jobLabels.unbundleBdi]: UnbundleBDIMessageBody;
@@ -84,11 +88,11 @@ export type QueueType = keyof QueueTypeToMessageType;
 // recovers. Tunable via OPTICAL_POST_ATTEMPTS / OPTICAL_POST_BACKOFF_MS.
 const opticalPostAttempts = Math.max(
   1,
-  Number.parseInt(process.env.OPTICAL_POST_ATTEMPTS || "5", 10) || 5,
+  Number.parseInt(process.env.OPTICAL_POST_ATTEMPTS || "5", 10) || 5
 );
 const opticalPostBackoffMs = Math.max(
   1000,
-  Number.parseInt(process.env.OPTICAL_POST_BACKOFF_MS || "15000", 10) || 15000,
+  Number.parseInt(process.env.OPTICAL_POST_BACKOFF_MS || "15000", 10) || 15000
 );
 
 // Per-queue job options, centralized so BOTH enqueue() and the batched
@@ -116,7 +120,7 @@ const jobOptionsFor = (queueType: QueueType): Record<string, unknown> => {
 export const enqueue = async <T extends QueueType>(
   queueType: T,
   message: QueueTypeToMessageType[T],
-  options?: { delay?: number; timeout?: number },
+  options?: { delay?: number; timeout?: number }
 ) => {
   const queue = getQueue(queueType);
 
@@ -135,7 +139,7 @@ export const enqueue = async <T extends QueueType>(
 
 export const enqueueBatch = async <T extends QueueType>(
   queueType: T,
-  messages: QueueTypeToMessageType[T][],
+  messages: QueueTypeToMessageType[T][]
 ) => {
   if (messages.length === 0) return;
 
@@ -146,7 +150,7 @@ export const enqueueBatch = async <T extends QueueType>(
       name: queueType,
       data: message,
       opts,
-    })),
+    }))
   );
 };
 
@@ -175,7 +179,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   queueType: T,
   schedulerId: string,
   pattern: string,
-  data: QueueTypeToMessageType[T],
+  data: QueueTypeToMessageType[T]
 ): Promise<void> => {
   const queue = getQueue(queueType);
   const trimmed = pattern.trim();
@@ -189,7 +193,7 @@ export const upsertRepeatable = async <T extends QueueType>(
   await queue.upsertJobScheduler(
     schedulerId,
     { pattern: trimmed },
-    { name: queueType, data },
+    { name: queueType, data }
   );
 };
 

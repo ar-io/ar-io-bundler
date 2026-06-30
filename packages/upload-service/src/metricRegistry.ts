@@ -224,6 +224,21 @@ export class MetricRegistry {
     help: "Count of bundles demoted to failed_bundle after exhausting seed re-drives",
   });
 
+  // Outcome of the (opt-in) chunk-broadcast TX-confirmation gate, by result:
+  //   result="confirmed"   — TX confirmed network-wide; chunks broadcast now
+  //   result="requeued"    — TX not yet confirmed; seed re-delayed for another poll
+  //   result="cap_reached" — hit CHUNK_BROADCAST_GATE_MAX_MS; broadcast anyway
+  // A sustained "cap_reached" rate means TXs aren't confirming within the cap
+  // (slow propagation/mining) — chunks are still broadcast, but it's a signal.
+  public static chunkBroadcastGate = MetricRegistry.createCounter({
+    name: "chunk_broadcast_gate_total",
+    help: "Outcome of the chunk-broadcast TX-confirmation gate (confirmed/requeued/cap_reached)",
+    labelNames: ["result"],
+    expectedLabelNames: {
+      result: ["confirmed", "requeued", "cap_reached"],
+    },
+  });
+
   public static newDataItemInsertBatchSizes = MetricRegistry.createHistogram({
     name: "new_data_item_insert_batch_size",
     help: "Size of the batch of new data items being inserted",

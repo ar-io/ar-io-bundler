@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 // import { defaultArchitecture } from "../arch/architecture"; // Unused - removed
+import { Gateway, MultiGatewayArweaveGateway } from "../arch/arweaveGateway";
 import { Database } from "../arch/db/database";
 import { PostgresDatabase } from "../arch/db/postgres";
 import { ObjectStore } from "../arch/objectStore";
@@ -22,6 +23,7 @@ import { ObjectStore } from "../arch/objectStore";
 import { ArweaveInterface } from "../arweaveJs";
 // import { jobLabels } from "../constants"; // Unused - removed
 import defaultLogger from "../logger";
+import { MetricRegistry } from "../metricRegistry";
 import { PlanId, PlannedDataItem, PostedBundle } from "../types/dbTypes";
 import { filterKeysFromObject } from "../utils/common";
 import { BundlePlanExistsInAnotherStateWarning } from "../utils/errors";
@@ -30,11 +32,23 @@ import {
   getBundleTx,
   getS3ObjectStore,
 } from "../utils/objectStoreUtils";
+import {
+  decideChunkBroadcastGate,
+  getChunkBroadcastGateConfig,
+  isTxConfirmed,
+} from "./chunkBroadcastGate";
 
 interface SeedBundleJobInjectableArch {
   database?: Database;
   objectStore?: ObjectStore;
   arweave?: ArweaveInterface;
+  arweaveGateway?: Gateway;
+  /**
+   * Cap deadline carried across `seed-bundle` re-enqueues by the chunk-broadcast
+   * TX-confirmation gate; undefined on the first seed attempt. Job data, not a
+   * dependency, but threaded here since the handler only takes (planId, arch).
+   */
+  chunkGateDeadlineMs?: number;
 }
 
 export async function seedBundleHandler(
@@ -43,6 +57,8 @@ export async function seedBundleHandler(
     database = new PostgresDatabase(),
     objectStore = getS3ObjectStore(),
     arweave = new ArweaveInterface(),
+    arweaveGateway = new MultiGatewayArweaveGateway(),
+    chunkGateDeadlineMs,
   }: SeedBundleJobInjectableArch,
   logger = defaultLogger.child({ job: "seed-bundle-job", planId })
 ): Promise<void> {
@@ -63,6 +79,52 @@ export async function seedBundleHandler(
 
   const { bundleToSeed, dataItemsToSeed } = dbResult;
   const { bundleId, transactionByteCount } = bundleToSeed;
+
+  // TX-confirmation gate (opt-in, default-off): make chunk broadcasting immune to
+  // the data_root-propagation race by waiting until the bundle TX is confirmed
+  // network-wide before staging + broadcasting its chunks. Implemented as a
+  // BullMQ re-queue (not a blocking sleep), hard-capped so it can never stall.
+  // Until it clears, the bundle stays in `posted_bundle` (the DB read above is a
+  // pure SELECT; we re-enqueue and return before any state transition), so this
+  // is idempotent and re-runnable on every poll. See chunkBroadcastGate.ts.
+  const gateConfig = getChunkBroadcastGateConfig();
+  if (gateConfig.enabled) {
+    const decision = await decideChunkBroadcastGate({
+      transactionId: bundleId,
+      deadlineMs: chunkGateDeadlineMs,
+      nowMs: Date.now(),
+      config: gateConfig,
+      isConfirmed: () =>
+        isTxConfirmed(arweaveGateway, bundleId, gateConfig.minConfirmations),
+      logger,
+    });
+
+    if (decision.action === "requeue") {
+      MetricRegistry.chunkBroadcastGate.inc({ result: "requeued" });
+      const { enqueue } = await import("../arch/queues");
+      const { jobLabels } = await import("../constants");
+      await enqueue(
+        jobLabels.seedBundle,
+        { planId, chunkGateDeadlineMs: decision.deadlineMs },
+        { delay: decision.delayMs }
+      );
+      logger.info(
+        "Chunk-broadcast gate: TX not yet confirmed; re-enqueued seed-bundle",
+        {
+          bundleId,
+          delayMs: decision.delayMs,
+          deadlineMs: decision.deadlineMs,
+        }
+      );
+      return;
+    }
+
+    MetricRegistry.chunkBroadcastGate.inc({ result: decision.reason });
+    logger.info("Chunk-broadcast gate cleared; proceeding to seed", {
+      bundleId,
+      reason: decision.reason,
+    });
+  }
 
   logger.info("Getting transaction to seed...", {
     bundleToSeed,
