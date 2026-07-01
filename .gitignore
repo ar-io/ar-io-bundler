@@ -83,3 +83,11 @@ scripts/perf/results/
 
 # Admin dashboard first-run credential (hash only) — never commit
 .admin-auth.json
+
+# Payment/DB dumps (PII — never commit; live data + off-box restic backup are the source of truth)
+*.dump
+# .env backups (contain all secrets)
+.env.bak*
+# Root-level throwaway secrets/artifacts (test-fixture wallets under packages/ stay tracked)
+/pre-prod-wallet.json
+/bundle-ids.csv
