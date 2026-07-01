@@ -92,7 +92,14 @@ export class CoingeckoTokenToFiatOracle implements TokenToFiatOracle {
     const url = `${coinGeckoUrl}simple/price?ids=${tokenTypesString}&vs_currencies=${currencyTypesString}`;
     try {
       logger.debug(`Getting AR prices from Coingecko`, { url });
-      const { data } = await this.axiosInstance.get<CoinGeckoResponse>(url);
+      // Demo API key raises the per-IP rate limit (anonymous CoinGecko 429s drive
+      // the x402-quote 5xx → upload 503s). Header, not query param, so the key is
+      // never written into the `url` we log above / on error below.
+      const { data } = await this.axiosInstance.get<CoinGeckoResponse>(url, {
+        headers: process.env.COINGECKO_API_KEY
+          ? { "x-cg-demo-api-key": process.env.COINGECKO_API_KEY }
+          : undefined,
+      });
 
       const coinGeckoResponse = data;
 

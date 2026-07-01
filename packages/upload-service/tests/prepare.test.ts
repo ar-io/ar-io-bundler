@@ -23,9 +23,11 @@ import { stubCacheService } from "../src/arch/cacheServiceTypes";
 import { columnNames, tableNames } from "../src/arch/db/dbConstants";
 import { PostgresDatabase } from "../src/arch/db/postgres";
 import { FileSystemObjectStore } from "../src/arch/fileSystemObjectStore";
+import { arDriveDedicatedBundlesPremiumFeatureType } from "../src/constants";
 import { prepareBundleHandler } from "../src/jobs/prepare";
 import { BundlePlanDBResult, NewBundleDBResult } from "../src/types/dbTypes";
 import { JWKInterface } from "../src/types/jwkTypes";
+import { fromB64Url } from "../src/utils/base64";
 import { getBundlePayload, getBundleTx } from "../src/utils/objectStoreUtils";
 import { streamToBuffer } from "../src/utils/streamToBuffer";
 import { DbTestHelper } from "./helpers/dbTestHelpers";
@@ -132,5 +134,110 @@ describe("Prepare bundle job handler", () => {
         jwk,
       }),
     });
+  });
+});
+
+// PR #156: dedicated bundles must carry a Bundler-App-Name tag on the L1 bundle
+// tx identifying them (e.g. "ArDrive"); non-dedicated ("default") bundles must
+// NOT (byte-identical to pre-PR behavior). Proven by building a plan with a
+// given premium_feature_type, running prepare, and decoding the resulting bundle
+// tx's tags from the object store.
+describe("Prepare bundle job handler — Bundler-App-Name tag (PR #156)", () => {
+  let jwk: JWKInterface;
+  const objectStore = new FileSystemObjectStore();
+  const stubDataItemPath = "tests/stubFiles/stub1115ByteDataItem";
+  // Every stub planned item shares stubDataItemBufferSignature, which prepare
+  // derives to this raw-data-item id when assembling the bundle payload.
+  // cspell:disable-next-line
+  const derivedDataItemId = "QpmY8mZmFEC8RxNsgbxSV6e36OF6quIYaPRKzvUco0o";
+
+  const ardrivePlanId = "ardrive-app-name-tag-plan";
+  const defaultPlanId = "default-app-name-tag-plan";
+  const ardriveItemIds = ["ArDriveTagItem" + "0".repeat(29)]; // 43-char id
+  const defaultItemIds = ["DefaultTagItem" + "0".repeat(29)]; // 43-char id
+
+  before(async () => {
+    jwk = await Arweave.crypto.generateJWK();
+    mkdirSync("temp/raw-data-item", { recursive: true });
+    copyFileSync(stubDataItemPath, `temp/raw-data-item/${derivedDataItemId}`);
+  });
+
+  after(() => {
+    rmSync(`temp/raw-data-item/${derivedDataItemId}`, { force: true });
+  });
+
+  afterEach(async () => {
+    // Clean both the success state (prepare made a new_bundle) AND the failure
+    // state (bundle_plan still present) so a run that errors before prepare
+    // can't leak rows into the shared dev DB and collide on the next run.
+    for (const [planId, dataItemIds] of [
+      [ardrivePlanId, ardriveItemIds],
+      [defaultPlanId, defaultItemIds],
+    ] as const) {
+      await dbTestHelper.cleanUpNewBundleInDb({ planId, dataItemIds });
+      await dbTestHelper.cleanUpBundlePlanInDb({ planId, dataItemIds });
+    }
+  });
+
+  // Build a plan of the given premium_feature_type, prepare it, and return the
+  // decoded tag list off the resulting bundle tx.
+  const prepareAndDecodeBundleTags = async (
+    planId: string,
+    dataItemIds: string[],
+    premiumFeatureType: string
+  ): Promise<{ bundleId: string; tags: { name: string; value: string }[] }> => {
+    await dbTestHelper.insertStubBundlePlan({
+      planId,
+      dataItemIds,
+      premiumFeatureType,
+    });
+    await prepareBundleHandler(planId, { objectStore, jwk });
+
+    const newBundle = await db["writer"]<NewBundleDBResult>(
+      tableNames.newBundle
+    ).where(columnNames.planId, planId);
+    expect(
+      newBundle.length,
+      "prepare produced exactly one new_bundle"
+    ).to.equal(1);
+
+    const bundleTx = await getBundleTx(objectStore, newBundle[0].bundle_id);
+    const tags = bundleTx.tags.map((t) => ({
+      name: fromB64Url(t.name).toString(),
+      value: fromB64Url(t.value).toString(),
+    }));
+    return { bundleId: newBundle[0].bundle_id, tags };
+  };
+
+  it("ardrive_dedicated_bundles plan → bundle tx carries Bundler-App-Name = ArDrive (alongside standard tags)", async () => {
+    const { tags } = await prepareAndDecodeBundleTags(
+      ardrivePlanId,
+      ardriveItemIds,
+      arDriveDedicatedBundlesPremiumFeatureType
+    );
+
+    expect(
+      tags.map((t) => t.name),
+      "standard bundle tags still present"
+    ).to.include.members([
+      "Bundle-Format",
+      "Bundle-Version",
+      "App-Name",
+      "App-Version",
+    ]);
+    expect(
+      tags.find((t) => t.name === "Bundler-App-Name")?.value,
+      "Bundler-App-Name tag value"
+    ).to.equal("ArDrive");
+  });
+
+  it("default (non-dedicated) plan → bundle tx has NO Bundler-App-Name tag", async () => {
+    const { tags } = await prepareAndDecodeBundleTags(
+      defaultPlanId,
+      defaultItemIds,
+      "default"
+    );
+
+    expect(tags.map((t) => t.name)).to.not.include("Bundler-App-Name");
   });
 });

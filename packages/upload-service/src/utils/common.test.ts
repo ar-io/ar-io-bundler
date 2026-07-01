@@ -17,12 +17,16 @@
 import { expect } from "chai";
 
 import {
+  arDriveDedicatedBundlesPremiumFeatureType,
+  arioDedicatedBundlesPremiumFeatureType,
   arioProcesses,
   dedicatedBundleTypes,
+  defaultPremiumFeatureType,
   rePostDataItemThresholdNumberOfBlocks,
 } from "../constants";
 import { ParsedDataItemHeader } from "../types/types";
 import {
+  bundlerAppNameForFeatureType,
   filterKeysFromObject,
   generateArrayChunks,
   getByteCountBasedRePackThresholdBlockCount,
@@ -321,5 +325,34 @@ describe("getPremiumFeatureType function", () => {
       };
       expect(getErrorCodeFromErrorObject(error)).to.equal("CUSTOM_ERROR");
     });
+  });
+});
+
+describe("bundlerAppNameForFeatureType function", () => {
+  it("returns the Bundler-App-Name tag value for dedicated types", () => {
+    expect(
+      bundlerAppNameForFeatureType(arDriveDedicatedBundlesPremiumFeatureType)
+    ).to.equal("ArDrive");
+    expect(
+      bundlerAppNameForFeatureType(arioDedicatedBundlesPremiumFeatureType)
+    ).to.equal("AR.IO Network");
+  });
+
+  it("returns undefined for the default / non-dedicated type", () => {
+    expect(bundlerAppNameForFeatureType(defaultPremiumFeatureType)).to.equal(
+      undefined
+    );
+  });
+
+  it("returns undefined for unknown, empty, or missing types", () => {
+    expect(bundlerAppNameForFeatureType("not_a_real_type")).to.equal(undefined);
+    expect(bundlerAppNameForFeatureType("")).to.equal(undefined);
+    expect(bundlerAppNameForFeatureType(undefined)).to.equal(undefined);
+  });
+
+  it("matches the configured bundlerAppName for every dedicated type", () => {
+    for (const [type, cfg] of Object.entries(dedicatedBundleTypes)) {
+      expect(bundlerAppNameForFeatureType(type)).to.equal(cfg.bundlerAppName);
+    }
   });
 });

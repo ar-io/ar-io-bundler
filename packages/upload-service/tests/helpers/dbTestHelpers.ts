@@ -56,6 +56,7 @@ function stubNewDataItemInsert({
   byte_count = stubByteCount.toString(),
   signature = stubDataItemBufferSignature,
   failedBundles = [],
+  premiumFeatureType = "test",
 }: InsertStubNewDataItemParams): NewDataItemDBInsert & {
   uploaded_date: string | undefined;
 } {
@@ -69,7 +70,7 @@ function stubNewDataItemInsert({
     signature_type: 1,
     failed_bundles: failedBundles.join(","),
     content_type: "text/plain",
-    premium_feature_type: "test",
+    premium_feature_type: premiumFeatureType,
     signature,
     deadline_height: "200",
   };
@@ -81,11 +82,17 @@ export function stubPlannedDataItemInsert({
   plannedDate = stubDates.earliestDate,
   signature,
   failedBundles = [],
+  premiumFeatureType,
 }: InsertStubPlannedDataItemParams): PlannedDataItemDBInsert & {
   planned_date: string | undefined;
 } {
   return {
-    ...stubNewDataItemInsert({ dataItemId, signature, failedBundles }),
+    ...stubNewDataItemInsert({
+      dataItemId,
+      signature,
+      failedBundles,
+      premiumFeatureType,
+    }),
     plan_id: planId ?? stubPlanId,
     uploaded_date: stubDates.earliestDate,
     planned_date: plannedDate,
@@ -227,6 +234,7 @@ export class DbTestHelper {
     planId,
     dataItemIds = [],
     plannedDate,
+    premiumFeatureType,
   }: InsertStubBundlePlanParams) {
     await Promise.all([
       ...dataItemIds.map((dataItemId) =>
@@ -234,6 +242,7 @@ export class DbTestHelper {
           dataItemId,
           planId,
           plannedDate,
+          premiumFeatureType,
           signature: stubDataItemBufferSignature, // may not work depending on invariants checked
         })
       ),
@@ -423,6 +432,9 @@ interface InsertStubNewDataItemParams {
   byte_count?: string;
   signature?: Buffer;
   failedBundles?: string[];
+  // Overrides the stub `premium_feature_type` (default "test"). Used to exercise
+  // dedicated-bundle behavior (e.g. "ardrive_dedicated_bundles" → Bundler-App-Name tag).
+  premiumFeatureType?: string;
 }
 
 interface InsertStubPlannedDataItemParams
@@ -447,6 +459,9 @@ interface InsertStubBundlePlanParams {
   planId: PlanId;
   plannedDate?: Timestamp;
   dataItemIds?: TransactionId[];
+  // Applied to every planned item in the plan (default "test"). plan.ts segregates a
+  // real plan to one premium_feature_type, so a single value models a real plan.
+  premiumFeatureType?: string;
 }
 
 interface InsertStubNewBundleBundleParams

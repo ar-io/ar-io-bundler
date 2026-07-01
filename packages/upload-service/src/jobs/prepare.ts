@@ -44,6 +44,7 @@ import { JWKInterface } from "../types/jwkTypes";
 import { DataItemOffsetsInfo } from "../types/types";
 import { W } from "../types/winston";
 import {
+  bundlerAppNameForFeatureType,
   filterKeysFromObject,
   generateArrayChunks,
   sleep,
@@ -275,6 +276,16 @@ export async function prepareBundleHandler(
   bundleTx.addTag("Bundle-Version", "2.0.0");
   bundleTx.addTag("App-Name", process.env.APP_NAME ?? "AR.IO Bundler");
   bundleTx.addTag("App-Version", version);
+  // Dedicated bundles get a Bundler-App-Name tag (e.g. "ArDrive", "AR.IO Network") so
+  // downstream consumers can identify them on-chain. plan.ts segregates a plan to a
+  // single premium_feature_type, so every item shares it → the first item's type is the
+  // bundle's. Non-dedicated ("default") types aren't keys in dedicatedBundleTypes → no tag.
+  const bundlerAppName = bundlerAppNameForFeatureType(
+    dbDataItems[0]?.premiumFeatureType
+  );
+  if (bundlerAppName) {
+    bundleTx.addTag("Bundler-App-Name", bundlerAppName);
+  }
 
   await arweave.signTx(bundleTx, jwk);
 
