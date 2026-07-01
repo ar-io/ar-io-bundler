@@ -357,9 +357,10 @@ function getEmptyPaymentStats() {
     },
     integrity: {
       pendingCrypto: { count: 0, winc: '0', ar: '0.000000', oldestAgeSec: null },
-      failedCrypto: { count: 0, recent: [] },
-      failedTopUpQuotes: { count: 0 },
-      chargebacks: { count: 0 }
+      failedCrypto: { count: 0, recentCount: 0, recent: [] },
+      failedTopUpQuotes: { count: 0, recentCount: 0 },
+      chargebacks: { count: 0, recentCount: 0 },
+      x402StuckUploads: { count: 0, oldestAgeSec: null }
     },
     recentTopUps: [],
     recentPayments: []

@@ -48,8 +48,12 @@ const DEFAULTS = {
   seededAgeCritSec: 21600, // 6 h — verify almost certainly stuck
   failedBundlesWarn: 1,
   failedBundlesCrit: 20,
-  pendingPayAgeWarnSec: 1800,
-  pendingPayAgeCritSec: 7200,
+  // Native Arweave top-ups credit only after on-chain confirmations, and AR blocks
+  // are ~2 min — empirically AR credits avg ~39 min, max ~48 min (fast chains: <2 min).
+  // WARN sits ABOVE the AR max so healthy AR top-ups don't cry wolf; CRIT (2 h) is the
+  // real "took money, never credited — worker down?" line. (Tuned 2026-07-01.)
+  pendingPayAgeWarnSec: 3600, // 60 min (was 1800 — fired on every normal AR top-up)
+  pendingPayAgeCritSec: 7200, // 2 h
   // x402-paid uploads stuck in pending_validation (never finalized). Generous —
   // a slow/large upload legitimately sits here until it completes + reconciles.
   x402StuckAgeWarnSec: 21600, // 6 h
@@ -138,8 +142,10 @@ function computeHealthRollup(stats, overrides = {}) {
     else if (pend.oldestAgeSec >= t.pendingPayAgeWarnSec)
       add('degraded', 'payments', `${pend.count} crypto payments awaiting credit (oldest ${fmtAge(pend.oldestAgeSec)})`);
   }
-  if ((integ.failedCrypto || {}).count > 0)
-    add('degraded', 'payments', `${integ.failedCrypto.count} failed crypto payments`);
+  // Alert on RECENT failures (last 24h), not lifetime — old/migrated failures
+  // (33 from 2024-2026 in the imported AWS history) would nag forever otherwise.
+  if ((integ.failedCrypto || {}).recentCount > 0)
+    add('degraded', 'payments', `${integ.failedCrypto.recentCount} failed crypto payment(s) in the last 24h`);
   // Chargebacks/disputes in the last 24h (recent, not lifetime — wouldn't nag).
   const cb = integ.chargebacks || {};
   if ((cb.recentCount || 0) > 0) {

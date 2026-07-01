@@ -352,15 +352,23 @@ async function getPaymentIntegrity(db) {
     };
   }
 
-  let failedCrypto = { count: 0, recent: [] };
+  let failedCrypto = { count: 0, recentCount: 0, recent: [] };
   if (hasFailed) {
     const countRow = await db(tableNames.failedPaymentTransaction).count('* as count').first();
+    // recentCount (last 24h) is what the rollup alerts on — lifetime totals nag
+    // forever once anything has ever failed (the migrated AWS history carries old
+    // failures, e.g. 33 from 2024-2026 that are not actionable now).
+    const recentRow = await db(tableNames.failedPaymentTransaction)
+      .where('failed_date', '>', db.raw("now() - interval '24 hours'"))
+      .count('* as count')
+      .first();
     const recent = await db(tableNames.failedPaymentTransaction)
       .select('transaction_id', 'token_type', 'winston_credit_amount', 'failed_reason', 'failed_date')
       .orderBy('failed_date', 'desc')
       .limit(15);
     failedCrypto = {
       count: parseInt(countRow.count) || 0,
+      recentCount: parseInt(recentRow.count) || 0,
       recent: recent.map((r) => ({
         transactionId: r.transaction_id,
         tokenType: r.token_type,
