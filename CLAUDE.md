@@ -357,7 +357,7 @@ CDP_API_KEY_SECRET=<required-for-mainnet>
 ## PM2 Process Management
 
 The canonical config is `infrastructure/pm2/ecosystem.config.js` (what `yarn pm2:start`
-uses). It defines **five** processes:
+uses). It defines **five** always-on processes plus a **sixth** conditional one:
 - `payment-service`: cluster mode, default 2 instances (`API_INSTANCES`), API :4001
 - `upload-api`: cluster mode, default 2 instances (`UPLOAD_API_INSTANCES`, falling
   back to `API_INSTANCES`), API :3001
@@ -367,6 +367,12 @@ uses). It defines **five** processes:
   payment credits (`creditPendingTx` + `adminCreditTool`); never scaled, to avoid
   duplicate financial processing
 - `admin-dashboard`: fork mode, 1 instance — Bull Board + admin stats :3002
+- `slack-listener`: fork mode, 1 instance — Slack interactivity listener, registered
+  **only if** the sibling brain script exists (`existsSync` guard on
+  `../permaweb-services/agents/bill-gates/tools/slack-listener.js`). Outbound-only
+  WebSocket (no inbound port), reads `SLACK_OAUTH_TOKEN`/`SLACK_APP_TOKEN` from `.env`.
+  Absent on a stock checkout, so `pm2 list` shows five procs there and six on the box
+  that hosts the brain.
 
 The repo-root `ecosystem.config.js` is a thin re-export shim of the canonical file
 (`module.exports = require("./infrastructure/pm2/ecosystem.config.js")`), so
